@@ -84,6 +84,12 @@ ODOM_TOPIC = '/visual_slam/tracking/odometry'
 
 IDLE_STATES = ('WAIT_FOR_OFFBOARD', 'PAUSED', 'DONE')
 
+# Pre-arm height check (see heights_agree): once passed, it holds until the
+# disagreement is this much past prearm_height_tol_m, or PX4 has sent no
+# height for PREARM_PX4_TIMEOUT_S.
+PREARM_HYSTERESIS_M = 0.05
+PREARM_PX4_TIMEOUT_S = 1.0
+
 PARAMETERS = (
     ('takeoff_altitude_m', 0.85),
     ('arrival_radius_m', 0.25),
@@ -165,7 +171,8 @@ class CourseMission(Node):
         self.going_home = False
         self.prearm_tol = param('prearm_height_tol_m')
         self.prearm_settle = param('prearm_settle_s')
-        self.px4_z = None           # PX4's height (local_enu z), None if unknown
+        self.px4_z = None           # PX4's last valid height (local_enu z)
+        self.px4_z_at = None
         self.heights_agree_since = None
         self.prearm_passed = False
         self.prearm_warned_at = None
@@ -252,7 +259,10 @@ class CourseMission(Node):
             z = float(local[2])
         except (TypeError, IndexError, ValueError):
             z = None
-        self.px4_z = z if z is not None and math.isfinite(z) else None
+        if z is not None and math.isfinite(z):
+            # Keep the last valid height: one message without a position
+            # must not refuse a takeover (heights_agree checks its age).
+            self.px4_z, self.px4_z_at = z, self.now_s()
         if state.get('clamped'):
             self.info_once(
                 'clamped:' + ','.join(state['clamped']),
@@ -319,9 +329,18 @@ class CourseMission(Node):
                            '(prearm_height_tol_m 0).')
             return True
         now = self.now_s()
-        dz = (None if self.px4_z is None
-              else abs(self.px4_z - self.position[2]))
-        if dz is None or dz > self.prearm_tol:
+        fresh = (self.px4_z is not None
+                 and now - self.px4_z_at <= PREARM_PX4_TIMEOUT_S)
+        dz = abs(self.px4_z - self.position[2]) if fresh else None
+        # Hysteresis: pass at prearm_height_tol_m held for prearm_settle_s;
+        # once passed, only a clear disagreement (PREARM_HYSTERESIS_M more)
+        # or no PX4 height for PREARM_PX4_TIMEOUT_S revokes it. Otherwise
+        # noise at the threshold or an arming transient can drop the stream
+        # just as the pilot switches, and the takeover becomes a REFUSED
+        # descent (Gazebo, simulated pilot arming at a 0.15 m boot offset).
+        limit = self.prearm_tol + (PREARM_HYSTERESIS_M if self.prearm_passed
+                                   else 0.0)
+        if dz is None or dz > limit:
             self.heights_agree_since = None
             self.prearm_passed = False
             if (self.prearm_warned_at is None
@@ -332,7 +351,7 @@ class CourseMission(Node):
                         f'{self.position[2]:.2f} m: {dz:.2f} m apart')
                 self.get_logger().warn(
                     f'pre-arm height check: {seen} (limit '
-                    f'{self.prearm_tol:.2f} m). Not streaming setpoints, so '
+                    f'{limit:.2f} m). Not streaming setpoints, so '
                     'flight_interface will not take over. Keep the drone '
                     'still on the floor; if it stays off, power-cycle the '
                     'Pixhawk.')
