@@ -93,6 +93,19 @@ def test_carrot_advance_slides_along_the_path_and_stops_at_its_end():
     assert close(c.advance(-1.0), (1.0, 1.0, 0.0))
 
 
+def test_carrot_catch_up_moves_forward_to_the_drone_only():
+    path = [(0, 0, 0), (1, 0, 0), (2, 0, 0), (2, 2, 0)]
+    c = Carrot(path, speed=0.1, max_lead=0.6)
+    c.advance(0.5)
+    assert abs(c.catch_up((1.4, 0.1, 0.0)) - 0.9) < 1e-9          # ahead: moves up
+    assert close(c.point, (1.4, 0.0, 0.0))
+    assert c.catch_up((0.2, 0.0, 0.0)) == 0.0                      # behind: never back
+    assert close(c.point, (1.4, 0.0, 0.0))
+    assert c.catch_up((2.6, 1.0, 0.0)) == 0.0                      # 0.6 m off the path
+    assert abs(c.catch_up((2.1, 1.0, 0.0)) - 1.6) < 1e-9          # round the corner
+    assert close(c.point, (2.0, 1.0, 0.0)) and c.index == 2
+
+
 def test_turn_radius_is_measured():
     path = _arc(0.5)
     r = turn_radii(path)
