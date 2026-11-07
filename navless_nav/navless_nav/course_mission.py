@@ -128,10 +128,24 @@ PARAMETERS = (
     ('land_xy_max_mps', 0.3),     # centring on the pad while descending
     # Bonus return leg after the pad landing. Off by default. When on, the
     # pilot's next arming climbs to home_altitude_m (above the floor; the
-    # walls are 1.727 m, flight_interface's ceiling 2.5 m), flies straight
-    # over the wall to the launch mark and lands there.
+    # walls are 1.727 m), flies straight over the wall to the launch mark and
+    # lands there. At 2.2 m the feet clear the wall by ~0.38 m (~0.18 m if
+    # PX4 flies 0.20 m low, the most the pre-arm check holds a pass for:
+    # prearm_height_tol_m 0.15 + PREARM_HYSTERESIS_M 0.05). The ceiling is
+    # navless.launch.py's max_altitude_m 2.5 m above the odom origin (2.57 m
+    # above the floor; flight_interface's own default is 3.0): the 2.13 m
+    # odom setpoint stays 0.37 m under it. Lower that clamp and this too.
     ('fly_home', False),
-    ('home_altitude_m', 2.03),
+    ('home_altitude_m', 2.2),
+    # The hop's horizontal leg starts only once odom z, or PX4's own height,
+    # is this close to the hop height (not at arrival_radius_m): starting
+    # early crossed Barrier 1 at 1.91-1.99 m in SITL with home_altitude_m
+    # 2.03. See climbed().
+    ('home_climb_tol_m', 0.05),
+    # The home leg lands only within this of the launch mark (not
+    # arrival_radius_m): Barrier 1 is right behind the mark, and descending
+    # while still closing the last 0.25 m left 14.2 cm to it in SITL.
+    ('home_arrival_radius_m', 0.10),
     # Pre-arm height check (see WAIT_FOR_OFFBOARD). Largest |PX4 z - odom z|
     # we will take off with, m; 0 = off. Assumes flight_interface's
     # anchor_setpoints is false (its default, and navless.launch.py's). The
@@ -177,6 +191,8 @@ class CourseMission(Node):
                             ).lower() in ('true', '1')
         # Odom z of the hop: odom starts start_height_m above the floor.
         self.home_z = param('home_altitude_m') - param('start_height_m')
+        self.home_climb_tol = param('home_climb_tol_m')
+        self.home_arrival_radius = param('home_arrival_radius_m')
         self.going_home = False
         self.prearm_tol = param('prearm_height_tol_m')
         self.prearm_settle = param('prearm_settle_s')
@@ -451,7 +467,7 @@ class CourseMission(Node):
 
     def _state_takeoff(self):
         self.send(*self.target)
-        if self.arrived(self.target):
+        if self.arrived(self.target) and self.climbed():
             self.start_route()
         elif self.now_s() - self.state_since > self.takeoff_timeout:
             self.get_logger().error(
@@ -459,6 +475,20 @@ class CourseMission(Node):
                 f'({math.dist(self.position, self.target):.2f} m off); '
                 f'holding here. Check `clamped` in {STATE_TOPIC} and VIO.')
             self.goto('HOLD', self.position)
+
+    def climbed(self):
+        """On the fly_home hop, the climb must be (nearly) complete before
+        the leg over Barrier 1 starts; elsewhere arrival_radius_m is enough.
+        Complete by odom, or by PX4's own height: PX4 holds where its
+        estimate says the setpoint is, which can sit a few cm off odom (7 cm
+        short at 2.2 m in SITL), so waiting longer would never get there."""
+        if not self.going_home:
+            return True
+        need = self.target[2] - self.home_climb_tol
+        return (self.position[2] >= need
+                or (self.px4_z is not None
+                    and self.now_s() - self.px4_z_at <= PREARM_PX4_TIMEOUT_S
+                    and self.px4_z >= need))
 
     def start_route(self):
         if not self.route:
@@ -501,7 +531,16 @@ class CourseMission(Node):
         point = (self.carrot.step(self.position, dt) if vio_ok
                  else self.carrot.point)
         self.send(*point)
-        if vio_ok and self.carrot.done(self.position, self.arrival_radius):
+        if self.going_home:
+            # Over the launch mark by x/y only: PX4 can hold the hop height a
+            # few cm off odom (7 cm in SITL), which a 3D 0.10 m test could
+            # never meet.
+            arrived = (self.carrot.at_end and math.dist(
+                self.position[:2], self.carrot.point[:2])
+                <= self.home_arrival_radius)
+        else:
+            arrived = self.carrot.done(self.position, self.arrival_radius)
+        if vio_ok and arrived:
             if self.land_at_end:
                 self.get_logger().info('route complete; landing on its end.')
                 self.goto('LAND', point)
