@@ -83,7 +83,7 @@ def run_simulation_episode(
     fast_mode: bool = True,
     spawn_unmapped_boulder: bool = True,
     block_window: bool = False,
-    planner_mode: str = "nmpc",
+    planner_mode: str = "ego",
 ) -> Dict:
     """Execute a complete closed-loop physics + noisy VIO + raycasted depth episode and return telemetry."""
     cfg = PlannerConfig(fast_mode=fast_mode, short_term_planner=planner_mode)
@@ -400,9 +400,9 @@ HTML_PAGE = """<!DOCTYPE html>
 <body>
   <div id="canvas-container"></div>
   <div id="hud">
-    <h1>DroneHacks 2026 — 3D Sim (NMPC + EGO)</h1>
+    <h1>DroneHacks 2026 — 3D Sim (EGO + NMPC)</h1>
     <div class="row"><span class="label">Sim Time:</span><span class="val" id="val-t">0.00 s</span></div>
-    <div class="row"><span class="label">Short-Term Planner:</span><span class="val badge badge-win" id="val-planner">3D NMPC (MPCC)</span></div>
+    <div class="row"><span class="label">Short-Term Planner:</span><span class="val badge badge-win" id="val-planner">EGO B-Spline</span></div>
     <div class="row"><span class="label">PX4 Arm/Mode:</span><span class="val badge badge-win" id="val-px4">ARMED (OFFBOARD)</span></div>
     <div class="row"><span class="label">FSM Stage:</span><span class="val badge badge-stage" id="val-stage">LOADING...</span></div>
     <div class="row"><span class="label">Chicane Branch:</span><span class="val badge badge-win" id="val-branch">PENDING</span></div>
@@ -420,8 +420,8 @@ HTML_PAGE = """<!DOCTYPE html>
       <input type="range" id="timeline" min="0" max="100" value="0" />
       <div style="font-size:12px; color:#94a3b8; margin-top:4px;">Short-Term Planner Mode:</div>
       <div class="btn-group">
-        <button id="mode-nmpc" class="active">Receding-Horizon 3D NMPC</button>
-        <button id="mode-ego">EGO B-Spline Carrot</button>
+        <button id="mode-ego" class="active">EGO B-Spline (Default)</button>
+        <button id="mode-nmpc">Receding-Horizon 3D NMPC</button>
       </div>
       <div style="font-size:12px; color:#94a3b8; margin-top:4px;">Scenario Presets (runs live Python physics + 3D A*):</div>
       <div class="btn-group">
@@ -565,7 +565,7 @@ HTML_PAGE = """<!DOCTYPE html>
     let playing = true;
     let followCam = false;
     let currentBlockWindow = false;
-    let currentPlanner = 'nmpc';
+    let currentPlanner = 'ego';
     let lastTick = performance.now();
 
     const timeline = document.getElementById('timeline');
@@ -750,7 +750,7 @@ class SimViewerHandler(BaseHTTPRequestHandler):
             fast = qs.get("fast_mode", ["1"])[0] == "1"
             boulder = qs.get("boulder", ["1"])[0] == "1"
             block_win = qs.get("block_window", ["0"])[0] == "1"
-            planner_mode = qs.get("planner", ["nmpc"])[0]
+            planner_mode = qs.get("planner", ["ego"])[0]
             key = f"{planner_mode}_{fast}_{boulder}_{block_win}"
             if key not in self._cache:
                 ep = run_simulation_episode(
@@ -775,7 +775,7 @@ def main(port: int = 8090) -> None:
     import threading
 
     def _warm() -> None:
-        for pm in ("nmpc", "ego"):
+        for pm in ("ego", "nmpc"):
             for bw in (False, True):
                 key = f"{pm}_True_True_{bw}"
                 if key not in SimViewerHandler._cache:

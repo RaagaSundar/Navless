@@ -1609,9 +1609,9 @@ def run_ros2_node(argv=None) -> int:
     )
     parser.add_argument(
         "--planner",
-        choices=("nmpc", "ego"),
+        choices=("ego", "nmpc"),
         default=None,
-        help="Short-term trajectory planner mode: 'nmpc' (3D Receding-Horizon MPCC/NMPC) or 'ego' (EGO B-spline)",
+        help="Short-term trajectory planner mode: 'ego' (EGO B-spline, default) or 'nmpc' (3D Receding-Horizon MPCC/NMPC)",
     )
     args, unknown_args = parser.parse_known_args(argv)
     # Support `-p fly_home:=true` passed by master_sim/run_master.sh
@@ -2109,7 +2109,7 @@ def run_ros2_node(argv=None) -> int:
     timer = node.create_timer(period_s, timer_callback)
     node.get_logger().info(
         f"EGO-Planner PX4 Bridge started at {cfg.tracker_rate_hz:.1f} Hz "
-        f"(fast_mode={cfg.fast_mode}, approve_flight={args.approve_flight})"
+        f"(planner={cfg.short_term_planner}, fast_mode={cfg.fast_mode}, approve_flight={args.approve_flight})"
     )
 
     try:
