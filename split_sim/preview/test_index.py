@@ -201,6 +201,18 @@ def build(run_rows=None):
             row=_entry(key,name,label,files,root)
             if key in {'mac-runs','nvidia-runs','flyx-runs'}:
                 row.update(kind='setup / preflight attempt',outcome='unknown / unqualified session',summary='Historical session files exist, but verified platform/flight/grade metadata is incomplete. No flight or pass is inferred.')
+                # Unverified platform sessions remain discoverable as receipts,
+                # never promoted into the observed-flight catalog.
+                intent=_read(root/name/'trial-intent.json') if root/name/'trial-intent.json' in files else None
+                review=_read(root/name/'review.json') if root/name/'review.json' in files else None
+                platform=_read(root/name/'platform.json') if root/name/'platform.json' in files else None
+                if isinstance(intent,dict) and isinstance(intent.get('name'),str):
+                    row['title']=intent['name'][:160]+' · '+name
+                if isinstance(review,dict) and isinstance(review.get('failure'),str) and review['failure'].strip():
+                    row.update(outcome='reported setup failure',outcome_basis=name+'/review.json',summary=str(review.get('outcome') or 'Archived setup failure')[:500]+' · '+review['failure'][:500])
+                elif isinstance(platform,dict) and platform.get('setup_status') in {'preparing','blocked','partial'}:
+                    row.update(outcome='setup / '+platform['setup_status'],outcome_basis=name+'/platform.json')
+                row['limits'].append('Unverified session: intent and setup receipts do not establish mission execution, airborne telemetry or a course pass.')
             if row['source']=='wall-rotation/20261107T224200Z-experimental-m3-tangent-pair':
                 row['viewer_url']='/?run=bench%3Am3-wall-rotation'
             records.append(row)

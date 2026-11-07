@@ -47,6 +47,16 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(index._receipt(a)[0],'bounded goals met')
         b=self.write('physical/m3-physical-clearance.json',json.dumps({'clearance_and_contact_passed':True}))
         self.assertEqual(index._receipt(b)[0],'clearance check passed')
+    def test_unverified_named_setup_receipts_remain_not_flights(self):
+        self.write('attempt/trial-intent.json',json.dumps({'name':'Synthetic yaw intent','kind':'intent'}))
+        self.write('attempt/review.json',json.dumps({'outcome':'Deployment stopped before mission','failure':'Saved predeployment check failed'}))
+        with patch.object(index,'ROOTS',{'nvidia-runs':('evidence',2,'Synthetic sessions')}):
+            row=index.inventory(force=True)['records'][0]
+        self.assertEqual(row['kind'],'setup / preflight attempt')
+        self.assertEqual(row['outcome'],'reported setup failure')
+        self.assertIn('Synthetic yaw intent',row['title'])
+        self.assertNotIn('observed_flight',row)
+        self.assertNotIn('course_pass',row)
     def test_mixed_results_preserved(self):
         self.write('group/passed-tests.txt','PASS: first check\n')
         self.write('group/failed-tests.txt','FAILED (failures=1)\n')
