@@ -52,6 +52,24 @@ def test_route_starts_from_the_lead_point_and_still_lands():
     assert math.dist(pos[:2], node.route[-1][:2]) < 0.1 and pos[2] == 0.0
 
 
+def test_fly_home_takeoff_leans_toward_the_launch_mark():
+    node, px4, pad = h.run(fly_home=True, takeoff_lead_m=0.2)
+    assert node.state == 'WAIT_FOR_OFFBOARD' and node.going_home
+    t0 = h.T[0]
+    h.fly(node, px4, pad, lambda: h.T[0] - t0 >= 2.5, max_s=5.0)   # pre-arm settle
+    pos = list(pad)
+    h.arm(px4)
+    h.fly(node, px4, pos, lambda: node.state == 'TAKEOFF')
+    lean = (node.target[0] - pad[0], node.target[1] - pad[1])
+    home = (-pad[0], -pad[1])                   # the launch mark is the odom origin
+    along = (lean[0] * home[0] + lean[1] * home[1]) / math.hypot(*home)
+    assert abs(math.hypot(*lean) - 0.2) < 0.01 and along > 0.199
+    assert abs(node.target[2] - node.home_z) < 1e-9
+    h.fly(node, px4, pos, lambda: not px4['armed'])
+    assert node.state == 'DONE'
+    assert math.dist(pos[:2], (0.0, 0.0)) < 0.1 and pos[2] == 0.0
+
+
 if __name__ == '__main__':
     for name, fn in list(globals().items()):
         if name.startswith('test_'):

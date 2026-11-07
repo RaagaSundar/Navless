@@ -87,8 +87,12 @@ IDLE_STATES = ('WAIT_FOR_OFFBOARD', 'PAUSED', 'DONE')
 PARAMETERS = (
     ('takeoff_altitude_m', 0.85),
     # Climb target this far along the route's first leg instead of straight
-    # above the drone, m (see takeoff_target). 0 = straight up.
-    ('takeoff_lead_m', 0.0),
+    # above the drone, m (see takeoff_target). 0 = straight up. Gazebo, drone
+    # profile, centreline route: Barrier 1 clearance during the climb 3.1-4.7
+    # cm at 0, 16.1 cm at 0.15, 18.3 cm at 0.25. The first corridor is open
+    # for 1.6 m ahead, so the larger lean is free if the real drone does not
+    # drift at all, and it covers more backward drift if it does.
+    ('takeoff_lead_m', 0.25),
     ('arrival_radius_m', 0.25),
     ('takeoff_timeout_s', 15.0),
     ('publish_rate_hz', 10.0),

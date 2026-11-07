@@ -26,6 +26,9 @@ ARGUMENTS = [
     ('takeoff_altitude_m', '0.85',
      'hover height above the origin when no route loads; with a route, the '
      'climb goes to its first point'),
+    ('takeoff_lead_m', '0.25',
+     'climb target this far up the route\'s first leg (away from Barrier 1 '
+     'behind the launch mark), m; 0 = straight up'),
     ('arrival_radius_m', '0.25', 'how close counts as arrived, metres'),
     ('takeoff_timeout_s', '15.0', 'give up climbing and hold after this'),
     ('route_file', 'route_gate_b.json',
@@ -57,7 +60,8 @@ ARGUMENTS = [
 # The stack's flight-interface package. Its name is fixed by the image.
 FLIGHT_INTERFACE_PKG = 'skybeta_flight_interface'
 
-MISSION_PARAMS = ('takeoff_altitude_m', 'arrival_radius_m', 'takeoff_timeout_s',
+MISSION_PARAMS = ('takeoff_altitude_m', 'takeoff_lead_m', 'arrival_radius_m',
+                  'takeoff_timeout_s',
                   'route_file', 'start_bearing_deg', 'start_height_m',
                   'cruise_speed_mps', 'max_lead_m', 'max_lat_accel_mps2',
                   'net_margin_m',
