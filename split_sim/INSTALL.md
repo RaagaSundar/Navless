@@ -6,10 +6,10 @@ the Jetson runs actual cuVSLAM and the companion controller. The preview and
 video workers run on the Mac. ROS domain 219 is simulation-only; physical domain 19
 and Mac-only domain 220 are separate.
 
-The packaged controller now includes the frozen 215431 height/conditional-range
-candidate and optional window-forward yaw. The original 213553 airborne sill-stop
-failure and manifests are preserved for provenance. The newer moving trial's
-result is pending; this package does not claim a course pass. Actual laser
+The packaged controller now includes the exact frozen 221438 independently
+passing runtime and centered window-forward profile. The original 213553 airborne sill-stop
+failure and manifests are preserved for provenance. The sealed 221438 independent grader passed; this is one simulation result,
+not repeatability or hardware qualification. Actual laser
 freshness, fixed EV/barometer height, bounded sill-event evidence and all
 existing authority/estimator/recorder gates remain mandatory.
 
@@ -53,15 +53,15 @@ Check out this PR's branch in a new folder. Once merged, ordinary main suffices:
 ```bash
 git clone https://github.com/RaagaSundar/Navless.git Navless-split
 cd Navless-split
-# Until height PR #46 merges, explicitly fetch its reviewed head:
-git fetch origin pull/46/head:review-height-46
-git switch review-height-46
+# Until passing-profile PR #49 merges, fetch its reviewed head:
+git fetch origin pull/49/head:review-pass-49
+git switch review-pass-49
 python3 split_sim/doctor.py --source-only
 python3 -m unittest split_sim.test_install -v
 bash split_sim/setup_jetson.sh --dry-run
 ```
 
-The doctor verifies every tracked dependency and all 38 packaged runtime hashes.
+The doctor verifies every tracked dependency and all 39 packaged runtime hashes.
 The dry-run invokes neither SSH nor Docker. Preserve the checkout commit in your
 run notes. Existing hardware/team checkouts need no changes.
 
@@ -202,7 +202,7 @@ telemetry or lost authority. No second keyboard/controller/program may run.
 The default yaw remains `first-exterior`; the explicit `SPLIT_YAW_POLICY=window-forward`
 option selects the now-integrated route-pinned camera candidate. The corrected
 `ev-terrain` height profile is selected before starting the disarmed container.
-Both remain candidates while the moving outcome is pending. Do not pass an
+Their exact recorded configuration passed one bounded simulation trial; each new run still needs qualification. Do not pass an
 unsupported flag because it exists in another workspace. No argument disables
 the independent grader or fabricates a position fix.
 
@@ -238,6 +238,23 @@ The runtime suite needs NumPy; optional retained-ULog replay needs `pyulog` and
 an operator-retained original log. No raw logs are distributed. The source doctor,
 fresh-layout checks and dry-run need only Python. See `../split_height/README.md`
 for exact candidate provenance, known prior failure, finite measured transition
-conditions, replay limits and pending flight status. Do not change a running
+conditions and replay limits. The passing221438 profile and its current source
+identity are documented separately in profiles/README.md. Do not change a running
 container's profile: coordinate a disarmed fresh world, preserve failed evidence,
 and use the documented setup/start sequence under the team's approval workflow.
+
+
+## Independently passing centered-window recipe
+
+See [profiles/README.md](profiles/README.md) for the exact frozen221438 runtime,
+centered0.762m route, matching window-forward yaw, EV-height and original-perimeter
+neutral appearance. All39 packaged source members match its archived manifest.
+The sealed independent grade passed all six checkpoints with zero contacts,
+12.70cm minimum clearance and13.23cm pad landing followed by normal disarm.
+This is one simulation pass, not hardware qualification. The older215942 sole
+window-height failure remains archived separately, not relabeled.
+
+Until PR49 merges, the actual passing code must be fetched explicitly using
+`git fetch origin pull/49/head:review-pass-49`; do not assume it is already in
+main. The normal launcher now actually archives/invokes the passing route/config.
+No new return-hop, heading-all or obstacle prototype belongs to this profile.

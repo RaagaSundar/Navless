@@ -1,0 +1,18 @@
+{
+  "passed": true,
+  "reasons": [],
+  "checkpoints_sim_s": {
+    "corridor_done": 95.17030235472426,
+    "maze_m2": 117.32097019157689,
+    "gate_a": 134.59061014313625,
+    "tube_in": 152.05031260841093,
+    "tube_out": 162.02009984921494,
+    "window": 190.424213358579
+  },
+  "pad_distance_cm": 13.23,
+  "min_clearance_cm": 12.7,
+  "samples": 12602,
+  "contacts": [],
+  "aircraft_envelope_radius_m": 0.3,
+  "scope": "conservative full-aircraft simulation grading; truth solely for independent scoring"
+}

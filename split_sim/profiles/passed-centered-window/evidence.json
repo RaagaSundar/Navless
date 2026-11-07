@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "run_label": "221438",
+  "independently_graded_passed": true,
+  "reasons": [],
+  "all_six_ordered_checkpoints": true,
+  "contacts": 0,
+  "pad_distance_cm": 13.23,
+  "min_clearance_cm": 12.7,
+  "final_landed_disarmed": true,
+  "land_handoff": "fresh fused route endpoint -> single NAV_LAND -> accepted ACK -> PX4-owned landing and normal disarm",
+  "startup_observation": "30 uninterrupted healthy wallseconds; stable measured datum required independently; timer not reset solely while awaiting datum",
+  "startup_complete_sim_s": 76.7,
+  "setpoint_stream_start_sim_s": 76.8,
+  "checkpoints_sim_s": {
+    "corridor_done": 95.17030235472426,
+    "maze_m2": 117.32097019157689,
+    "gate_a": 134.59061014313625,
+    "tube_in": 152.05031260841093,
+    "tube_out": 162.02009984921494,
+    "window": 190.424213358579
+  },
+  "changes_from_215942": [
+    "centered window route .762m, same879 XY points",
+    "yaw schedule re-pinned to centered3D arclength",
+    "single route-end NAV_LAND handoff with ACK/mode/landed-disarm observation",
+    "stable datum waiting diagnostics and independent healthy-observation timing"
+  ],
+  "scope": "one bounded simulation pass; repeatability and hardware unqualified",
+  "evidence_sha256": {
+    "flight/grade.json": "a4f44d47e3e0e603887f29fb64ab2a85c29158f8d11695f1e029d341ffed903c",
+    "review.json": "881339e4fa3c1fd01124d9756b99253d34aee9894a17711c4f23a8f1048354c6",
+    "flight/track.json": "7d28d1ba1e7ccfc11f83eaf8b081c7ff5b14107985a951de5abc9ee4d91a79af",
+    "flight/mission.log": "ce5eedc5c61d27a39946daa4b54f6546e33746fe35c40f0df733a12824b97f46",
+    "settings.json": "83e1f9df240e5a047b7f6705884c90984ab83ccd7116845f30380673fe2966f4",
+    "sources.sha256": "573f920a1c37478f7a21b3573eb65b7b044c0cbae7b3635ce682185a92b68e91",
+    "simulated-vehicle.sdf": "a5d6131addc341245d145647efbc332f0e264a14ee38e775c20cf0c211aca852",
+    "px4-height-parameters.log": "ec3994d3527bc06bd02f8c331ef4684c7e220363cb5abf470ce4dfa1e54ec196"
+  },
+  "experiment_name": "Centered window \u00b7 PX4 auto-land",
+  "immutable_run_id": "20261107T221438Z-split-astar-flight",
+  "baseline_run_id": "20261107T215942Z-split-astar-flight",
+  "what_changed": {
+    "window_target_m": {
+      "before": 0.85,
+      "after": 0.762
+    },
+    "xy_waypoints": "879 point XY coordinates unchanged",
+    "heading": "same window-forward292.099deg at10deg/s;3D arclength re-pinned",
+    "landing": "single verified route-end NAV_LAND handoff,ACK/mode/passive landed-disarm observation",
+    "startup": "stable datum remains mandatory; awaiting it no longer resets independent30s healthy observation",
+    "integrity_and_grade": "unchanged checks,thresholds and independent grader"
+  },
+  "startup_timing": {
+    "reference": "elapsed wallseconds from first archived mission log line, not PX4 process start",
+    "continuous_observation_complete_wall_s": 49.230847299,
+    "first_stream_wall_s": 49.591118186,
+    "takeoff_state_wall_s": 57.212116439,
+    "route_state_wall_s": 73.946974409,
+    "continuous_observation_complete_sim_s": 76.7,
+    "first_stream_sim_s": 76.8
+  }
+}
