@@ -74,6 +74,40 @@ class Obstacles:
         return np.where(self.is_box[None], box, ell)
 
 
+class RayCaster:
+    """Rays vs. the course's collision primitives (boxes incl. the net, ellipsoid boulders) and the floor z = 0."""
+
+    def __init__(self, obstacles=None):
+        o = obstacles or Obstacles()
+        self.c, self.R, self.h, self.box = o.c, o.R, o.size, o.is_box
+
+    def cast_many(self, origins, directions):
+        """Distance along each unit ray to the first hit (inf if none). origins, directions: (K, 3) world."""
+        o = np.atleast_2d(np.asarray(origins, float))
+        d = np.atleast_2d(np.asarray(directions, float))
+        best = np.where(d[:, 2] < -1e-9, -o[:, 2] / np.where(d[:, 2] < -1e-9, d[:, 2], -1.0), np.inf)   # floor
+        ol = np.einsum("mji,kmj->kmi", self.R, o[:, None, :] - self.c[None])   # R^T (o - c), (K, M, 3)
+        dl = np.einsum("mji,kj->kmi", self.R, d)
+        dl = np.where(np.abs(dl) < 1e-12, 1e-12, dl)
+        # boxes: slab test, hits in front of the origin only
+        t1, t2 = (-self.h[None] - ol) / dl, (self.h[None] - ol) / dl
+        tmin, tmax = np.minimum(t1, t2).max(-1), np.maximum(t1, t2).min(-1)
+        hit = self.box[None] & (tmax >= np.maximum(tmin, 0)) & (tmin > 0)
+        best = np.minimum(best, np.where(hit, tmin, np.inf).min(-1))
+        # ellipsoids: unit sphere after scaling
+        os_, ds = ol / self.h[None], dl / self.h[None]
+        a = (ds * ds).sum(-1)
+        b = 2 * (os_ * ds).sum(-1)
+        cc = (os_ * os_).sum(-1) - 1
+        disc = b * b - 4 * a * cc
+        t = (-b - np.sqrt(np.maximum(disc, 0))) / (2 * a)
+        ok = ~self.box[None] & (disc >= 0) & (t > 0)
+        return np.minimum(best, np.where(ok, t, np.inf).min(-1))
+
+    def cast(self, origin, direction):
+        return float(self.cast_many([origin], [direction])[0])
+
+
 # Quad stand-in parts in body FLU (x fwd, y left, z up): (x, y, z, radius). Props on the measured rotor geometry.
 DRONE_PARTS = np.array([
     [0.08, -0.160, 0.03, 0.0775], [-0.15, 0.140, 0.03, 0.0775],     # props
