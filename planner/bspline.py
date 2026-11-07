@@ -280,9 +280,9 @@ class EgoBsplineOptimizer:
         *,
         control_point_spacing_m: float = 0.35,
         smoothness_weight: float = 0.25,
-        obstacle_weight: float = 0.60,
-        safe_clearance_m: float = 0.40,
-        max_iterations: int = 20,
+        obstacle_weight: float = 0.85,
+        safe_clearance_m: float = 0.48,
+        max_iterations: int = 24,
     ) -> None:
         self.grid = grid
         self.spacing = float(control_point_spacing_m)

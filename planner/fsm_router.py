@@ -588,34 +588,71 @@ class GlobalCourseRouter:
             waypoints_ned.append([round(ned_local[0], 4), round(ned_local[1], 4), round(ned_local[2], 4)])
             waypoints_course_ned.append([round(ned_course[0], 4), round(ned_course[1], 4), round(ned_course[2], 4)])
 
-        for stage_name, p_start, p_goal, mids, prof, avoid_list in stages_spec:
-            spline, elapsed_ms = self.optimizer.plan_spline(
-                p_start,
-                p_goal,
-                prof,
-                intermediate_waypoints=mids,
-                use_clearance_cost=(
-                    not (use_window and stage_name == CourseStage.STAGE_4_CHICANE.value)
-                    and stage_name != CourseStage.STAGE_3_TUNNEL.value
-                ),
-                avoid_spheres=avoid_list,
+        if features.concentric_pad is not None:
+            # Plan ONE continuous unsectioned 3D A* + B-spline trajectory from Launch Mark to Concentric Target
+            prof_main = self.profile_for_stage(CourseStage.STAGE_1_MAZE)
+            avoid_main = None if use_window else [(win_center, 0.55)]
+            spline_main, elapsed_main_ms = self.optimizer.plan_spline(
+                cp.start_pad,
+                landing_goal,
+                prof_main,
+                use_clearance_cost=True,
+                avoid_spheres=avoid_main,
+                goal_radius_m=concentric_r,
             )
-            if spline is None:
-                raise RuntimeError(f"Failed to plan collision-free spline for stage {stage_name}")
-            pts = spline.sample_points(samples_per_stage)
-            if waypoints_enu:
-                pts = pts[1:]
-            for pt in pts:
+            if spline_main is None:
+                raise RuntimeError("Failed to plan continuous unsectioned 3D A* + B-spline trajectory")
+            n_total_samples = (5 if use_window else 4) * samples_per_stage
+            pts_main = spline_main.sample_points(n_total_samples)
+            for pt in pts_main:
                 _append_point(pt)
-            stage_summaries.append(
-                {
-                    "stage": stage_name,
-                    "duration_s": round(spline.duration, 3),
-                    "v_max_mps": prof.v_max,
-                    "a_max_mps2": prof.a_max,
-                    "plan_time_ms": round(elapsed_ms, 2),
-                }
-            )
+            stage_list = [
+                CourseStage.STAGE_1_MAZE.value,
+                CourseStage.STAGE_2_GATE_A.value,
+                CourseStage.STAGE_3_TUNNEL.value,
+                CourseStage.STAGE_4_CHICANE.value,
+            ]
+            if use_window:
+                stage_list.append(CourseStage.STAGE_5_LANDING_PAD.value)
+            for st_name in stage_list:
+                stage_summaries.append(
+                    {
+                        "stage": st_name,
+                        "duration_s": round(spline_main.duration / len(stage_list), 3),
+                        "v_max_mps": prof_main.v_max,
+                        "a_max_mps2": prof_main.a_max,
+                        "plan_time_ms": round(elapsed_main_ms / len(stage_list), 2),
+                    }
+                )
+        else:
+            for stage_name, p_start, p_goal, mids, prof, avoid_list in stages_spec:
+                spline, elapsed_ms = self.optimizer.plan_spline(
+                    p_start,
+                    p_goal,
+                    prof,
+                    intermediate_waypoints=mids,
+                    use_clearance_cost=(
+                        not (use_window and stage_name == CourseStage.STAGE_4_CHICANE.value)
+                        and stage_name != CourseStage.STAGE_3_TUNNEL.value
+                    ),
+                    avoid_spheres=avoid_list,
+                )
+                if spline is None:
+                    raise RuntimeError(f"Failed to plan collision-free spline for stage {stage_name}")
+                pts = spline.sample_points(samples_per_stage)
+                if waypoints_enu:
+                    pts = pts[1:]
+                for pt in pts:
+                    _append_point(pt)
+                stage_summaries.append(
+                    {
+                        "stage": stage_name,
+                        "duration_s": round(spline.duration, 3),
+                        "v_max_mps": prof.v_max,
+                        "a_max_mps2": prof.a_max,
+                        "plan_time_ms": round(elapsed_ms, 2),
+                    }
+                )
 
         if include_fly_home and self.config.enable_fly_home:
             prof_home = self.profile_for_stage(CourseStage.STAGE_6_FLY_HOME)
