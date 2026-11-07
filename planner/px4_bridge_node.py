@@ -124,6 +124,16 @@ class PX4TrajectoryTrackerCore:
         else:
             self.launch_origin_enu = launch_origin_enu
         self.telemetry = TelemetryHealthState()
+        self.last_tube_offset_time_s: Optional[float] = None
+        self.tube_offset_left_m: float = 0.0
+        self.tube_width_m: float = 0.0
+
+    def update_tube_offset(self, now_s: float, offset_left_m: float, width_m: float = 0.0) -> None:
+        """Update lateral tunnel-centering offset `(L - R) / 2` from `/tube/offset` (`tube/tube_node.py`)."""
+        if math.isfinite(offset_left_m):
+            self.last_tube_offset_time_s = float(now_s)
+            self.tube_offset_left_m = float(offset_left_m)
+            self.tube_width_m = float(width_m)
 
     def update_local_position(
         self,
@@ -199,6 +209,20 @@ class PX4TrajectoryTrackerCore:
         )
         vel_enu = spline.evaluate_velocity(t_eval)
         yaw_enu = spline.evaluate_yaw(t_eval)
+
+        # If inside STAGE_3_TUNNEL and fresh `/tube/offset` is available, blend lateral centering nudge
+        if (
+            decision.stage == CourseStage.STAGE_3_TUNNEL
+            and self.last_tube_offset_time_s is not None
+            and (now_s - self.last_tube_offset_time_s) <= 0.15
+        ):
+            left_x = -math.sin(yaw_enu)
+            left_y = math.cos(yaw_enu)
+            nudge = float(np.clip(0.5 * self.tube_offset_left_m, -0.15, 0.15))
+            pos_enu = np.array(
+                [pos_enu[0] + nudge * left_x, pos_enu[1] + nudge * left_y, pos_enu[2]],
+                dtype=np.float64,
+            )
 
         pos_ned = enu_to_ned_pos(
             pos_enu,
@@ -308,7 +332,12 @@ def run_ros2_node(argv=None) -> int:
     parser.add_argument(
         "--approve-flight",
         action="store_true",
-        help="Explicit team flight approval required to publish setpoints onto /fmu/in/* (AGENTS.md)",
+        help="Explicit team flight approval required to publish setpoints (AGENTS.md)",
+    )
+    parser.add_argument(
+        "--skybeta-mode",
+        action="store_true",
+        help="Publish to /skybeta/setpoint/pose and subscribe to /visual_slam/tracking/odometry & /skybeta/state",
     )
     args = parser.parse_args(argv)
 
@@ -333,11 +362,13 @@ def run_ros2_node(argv=None) -> int:
     tracker = PX4TrajectoryTrackerCore(router)
 
     import rclpy
+    from geometry_msgs.msg import PointStamped, PoseStamped
+    from nav_msgs.msg import Odometry
     from rclpy.node import Node
     from rclpy.parameter import Parameter
     from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
     from sensor_msgs.msg import CameraInfo, Image, PointCloud2
-    from std_msgs.msg import Bool
+    from std_msgs.msg import Bool, String
     from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleLocalPosition, VehicleStatus
 
     rclpy.init()
@@ -424,6 +455,35 @@ def run_ros2_node(argv=None) -> int:
         if pts_world.size > 0:
             grid.insert_point_cloud(pts_world, sensor_origin_m=pos_enu)
 
+    def on_tube_offset(msg: PointStamped) -> None:
+        tracker.update_tube_offset(now_sec(), float(msg.point.y), float(msg.point.z))
+
+    def on_visual_slam_odom(msg: Odometry) -> None:
+        p = msg.pose.pose.position
+        v = msg.twist.twist.linear
+        # In skybeta odom (nose North = +x_odom North, +y_odom West -> NED: x_ned = +x_odom, y_ned = -y_odom, z_ned = -z_odom)
+        tracker.update_local_position(
+            now_sec(),
+            float(p.x),
+            float(-p.y),
+            float(-p.z),
+            float(v.x),
+            float(-v.y),
+            float(-v.z),
+            0.0,
+            True,
+            True,
+        )
+
+    def on_skybeta_state(msg: String) -> None:
+        try:
+            st = json.loads(msg.data)
+            armed = ARMING_STATE_ARMED if st.get("armed", False) else 1
+            nav = NAVIGATION_STATE_OFFBOARD if st.get("offboard_active", False) else 2
+            tracker.update_vehicle_status(now_sec(), armed, nav)
+        except ValueError:
+            pass
+
     node.create_subscription(VehicleLocalPosition, "/fmu/out/vehicle_local_position_v1", on_local_pos, px4_qos)
     node.create_subscription(VehicleStatus, "/fmu/out/vehicle_status_v1", on_status, px4_qos)
     node.create_subscription(Bool, "/estimator/healthy", on_estimator_health, px4_qos)
@@ -432,9 +492,13 @@ def run_ros2_node(argv=None) -> int:
     node.create_subscription(Image, "/camera/depth/image_raw", on_depth, px4_qos)
     node.create_subscription(Image, "/team/stereo/depth", on_depth, px4_qos)
     node.create_subscription(PointCloud2, "/team/stereo/points", on_pointcloud, px4_qos)
+    node.create_subscription(PointStamped, "/tube/offset", on_tube_offset, px4_qos)
+    node.create_subscription(Odometry, "/visual_slam/tracking/odometry", on_visual_slam_odom, 10)
+    node.create_subscription(String, "/skybeta/state", on_skybeta_state, 10)
 
     offboard_pub = node.create_publisher(OffboardControlMode, "/fmu/in/offboard_control_mode", 10)
     setpoint_pub = node.create_publisher(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", 10)
+    skybeta_pose_pub = node.create_publisher(PoseStamped, "/skybeta/setpoint/pose", 10)
 
     def timer_callback() -> None:
         t_now = now_sec()
@@ -444,6 +508,18 @@ def run_ros2_node(argv=None) -> int:
             return
         if not args.approve_flight:
             # Read-only / dry-run planning mode until team explicitly approves flight (AGENTS.md)
+            return
+
+        if args.skybeta_mode:
+            # Publish compliant /skybeta/setpoint/pose in odom frame (never touching /fmu/in/*)
+            pose_msg = PoseStamped()
+            pose_msg.header.stamp = node.get_clock().now().to_msg()
+            pose_msg.header.frame_id = "odom"
+            pose_msg.pose.position.x = float(sample.position_ned[0])
+            pose_msg.pose.position.y = float(-sample.position_ned[1])
+            pose_msg.pose.position.z = float(-sample.position_ned[2])
+            pose_msg.pose.orientation.w = 0.0
+            skybeta_pose_pub.publish(pose_msg)
             return
 
         ocm = OffboardControlMode()

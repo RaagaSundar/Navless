@@ -180,6 +180,25 @@ class TestPlannerScaffold(unittest.TestCase):
         self.assertLessEqual(sample_ok.position_ned[2], -0.5)
         self.assertGreaterEqual(sample_ok.position_ned[2], -1.1)
 
+        # Verify /tube/offset lateral centering nudge in STAGE_3_TUNNEL
+        tracker.router.stage = CourseStage.STAGE_3_TUNNEL
+        sample_before_tube, _ = tracker.sample_setpoint(1.1)
+        assert sample_before_tube is not None
+        tracker.update_tube_offset(1.1, offset_left_m=0.10, width_m=0.76)
+        sample_tube, reason_tube = tracker.sample_setpoint(1.1)
+        self.assertIsNotNone(sample_tube)
+        self.assertIn("spline", reason_tube)
+        assert sample_tube is not None
+        self.assertGreater(
+            float(
+                np.linalg.norm(
+                    np.asarray(sample_tube.position_ned[:2])
+                    - np.asarray(sample_before_tube.position_ned[:2])
+                )
+            ),
+            0.01,
+        )
+
         # Simulate pilot RC takeover out of OFFBOARD -> immediately yields authority
         tracker.update_vehicle_status(1.2, ARMING_STATE_ARMED, nav_state=2)
         sample_takeover, reason_takeover = tracker.sample_setpoint(1.2)
