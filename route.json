@@ -14,35 +14,35 @@
       "duration_s": 3.302,
       "v_max_mps": 1.1,
       "a_max_mps2": 1.5,
-      "plan_time_ms": 2883.88
+      "plan_time_ms": 2946.76
     },
     {
       "stage": "STAGE_2_GATE_A",
       "duration_s": 8.987,
       "v_max_mps": 1.1,
       "a_max_mps2": 1.5,
-      "plan_time_ms": 3018.75
+      "plan_time_ms": 3167.36
     },
     {
       "stage": "STAGE_3_TUNNEL",
       "duration_s": 13.075,
       "v_max_mps": 0.8,
       "a_max_mps2": 1.0,
-      "plan_time_ms": 44.4
+      "plan_time_ms": 73.87
     },
     {
       "stage": "STAGE_4_CHICANE",
       "duration_s": 9.067,
       "v_max_mps": 1.1,
       "a_max_mps2": 1.5,
-      "plan_time_ms": 3197.41
+      "plan_time_ms": 3317.4
     },
     {
       "stage": "STAGE_6_FLY_HOME",
       "duration_s": 6.913,
       "v_max_mps": 2.0,
       "a_max_mps2": 2.0,
-      "plan_time_ms": 17.2,
+      "plan_time_ms": 26.73,
       "detected_wall_xy_m": [
         -2.4,
         0.5

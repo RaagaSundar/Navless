@@ -122,12 +122,19 @@ def astar_search_3d(
             nbr = (nx_i, ny_i, nz_i)
             if nbr in closed:
                 continue
-            if grid.inflated_grid[nbr] and nbr != goal_vox:
+            if grid.raw_grid[nbr] and nbr != goal_vox:
                 continue
+            inflated_escape_penalty = 0.0
+            if grid.inflated_grid[nbr] and nbr != goal_vox:
+                # If the drone started inside the safety inflation buffer, allow escaping to non-raw voxels
+                if grid.inflated_grid[current]:
+                    inflated_escape_penalty = 8.0
+                else:
+                    continue
             if avoid_vox_spheres and nbr != goal_vox and is_masked_out(nx_i, ny_i, nz_i):
                 continue
             extra_cost = float(soft_clearance_cost[nbr]) if soft_clearance_cost is not None else 0.0
-            tentative_g = g_cur + step_cost * (1.0 + extra_cost)
+            tentative_g = g_cur + step_cost * (1.0 + extra_cost + inflated_escape_penalty)
             if tentative_g < g_score.get(nbr, float("inf")):
                 came_from[nbr] = current
                 g_score[nbr] = tentative_g
@@ -344,11 +351,19 @@ class EgoBsplineOptimizer:
                 if obs_cost <= 1e-6:
                     grad[i] += 0.20 * (ctrl[i] - ctrl_init[i])
 
-            ctrl[3 : n_ctrl - 3] -= grad[3 : n_ctrl - 3]
-            # Enforce hard vertical Z-ceiling clamp on all control points
-            ctrl[:, 2] = np.clip(ctrl[:, 2], profile.z_min_enu, profile.z_max_enu)
+            for i in range(3, n_ctrl - 3):
+                candidate = ctrl[i] - grad[i]
+                candidate[2] = float(np.clip(candidate[2], profile.z_min_enu, profile.z_max_enu))
+                if not self.grid.is_occupied(candidate, inflated=True):
+                    ctrl[i] = candidate
 
         optimized = UniformBspline(ctrl, dt_init).reallocate_time(profile.v_max, profile.a_max)
+        if not self.is_spline_collision_free(optimized):
+            # Fall back to tightly-spaced guiding path B-spline if corner smoothing clipped an inflated corner
+            dense_guiding = self._resample_polyline(full_guiding, max(0.18, 0.5 * self.spacing))
+            optimized = UniformBspline.from_waypoints(dense_guiding, dt_init).reallocate_time(
+                profile.v_max, profile.a_max
+            )
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         return optimized, elapsed_ms
 

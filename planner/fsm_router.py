@@ -91,7 +91,7 @@ class GlobalCourseRouter:
             return self.config.active_profile(self.config.tunnel_profile)
         if st in (CourseStage.STAGE_4_CHICANE, CourseStage.STAGE_5_LANDING_PAD):
             return self.config.active_profile(self.config.chicane_profile)
-        if st == CourseStage.STAGE_6_FLY_HOME:
+        if st in (CourseStage.STAGE_6_FLY_HOME, CourseStage.MISSION_COMPLETE):
             # Fly-home already runs at 2.0 m/s over the wall
             return self.config.active_profile(self.config.fly_home_profile, allow_fast_mode=False)
         return self.config.active_profile(self.config.maze_profile)
@@ -240,19 +240,33 @@ class GlobalCourseRouter:
         # Check 1 Hz periodic replanning condition or collision along current spline
         periodic_due = (now_s - self.last_replan_time_s) >= self.config.replan_period_s
         spline_blocked = False
+        spline_finished = False
         if self.active_spline is not None:
             t_rel = max(0.0, now_s - self.spline_start_time_s)
             spline_blocked = not self.optimizer.is_spline_collision_free(self.active_spline, t_start=t_rel)
+            spline_finished = t_rel >= (self.active_spline.duration - 0.05)
 
-        needs_replan = (
+        needs_new_spline = (
             force_replan
             or stage_changed
             or self.active_spline is None
-            or periodic_due
             or spline_blocked
+            or spline_finished
         )
 
-        if not needs_replan:
+        if not needs_new_spline:
+            if periodic_due:
+                self.last_replan_time_s = now_s
+                return PlannerDecision(
+                    stage=self.stage,
+                    selected_branch=self.selected_branch,
+                    goal_enu=self.current_goal_enu(),
+                    spline=self.active_spline,
+                    replanned=True,
+                    plan_time_ms=0.0,
+                    window_inspection=self.last_window_inspection,
+                    reason="periodic_1hz_route_verified_clear",
+                )
             return PlannerDecision(
                 stage=self.stage,
                 selected_branch=self.selected_branch,
@@ -322,12 +336,24 @@ class GlobalCourseRouter:
 
         goal_enu = self.current_goal_enu()
         mids: Optional[List[Tuple[float, float, float]]] = None
+        use_clearance = True
         if self.stage == CourseStage.STAGE_3_TUNNEL:
             features = self.grid.discover_course_features(
                 standoff_distance_m=self.config.window_inspect_distance_m,
             )
-            mids = [features.tunnel_entry_m, features.tunnel_mid_m, features.tunnel_exit_m]
-        spline, elapsed_ms = self.optimizer.plan_spline(pos, goal_enu, profile, intermediate_waypoints=mids)
+            all_tunnel_wps = [features.tunnel_entry_m, features.tunnel_mid_m, features.tunnel_exit_m]
+            # Only include tunnel waypoints that are still ahead (South) of the drone's current Y position
+            ahead_wps = [wp for wp in all_tunnel_wps if float(pos[1]) > float(wp[1]) + 0.25]
+            if ahead_wps:
+                mids = ahead_wps
+                use_clearance = False
+        spline, elapsed_ms = self.optimizer.plan_spline(
+            pos,
+            goal_enu,
+            profile,
+            intermediate_waypoints=mids,
+            use_clearance_cost=use_clearance,
+        )
         self.active_spline = spline
         reason = "collision_avoidance_replan" if spline_blocked else ("stage_transition" if stage_changed else "periodic_1hz_replan")
         return PlannerDecision(

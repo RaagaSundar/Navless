@@ -14,28 +14,28 @@
       "duration_s": 3.302,
       "v_max_mps": 1.1,
       "a_max_mps2": 1.5,
-      "plan_time_ms": 2864.41
+      "plan_time_ms": 2966.35
     },
     {
       "stage": "STAGE_2_GATE_A",
       "duration_s": 8.987,
       "v_max_mps": 1.1,
       "a_max_mps2": 1.5,
-      "plan_time_ms": 2961.46
+      "plan_time_ms": 3113.07
     },
     {
       "stage": "STAGE_3_TUNNEL",
       "duration_s": 13.075,
       "v_max_mps": 0.8,
       "a_max_mps2": 1.0,
-      "plan_time_ms": 43.22
+      "plan_time_ms": 66.07
     },
     {
       "stage": "STAGE_4_CHICANE",
       "duration_s": 9.067,
       "v_max_mps": 1.1,
       "a_max_mps2": 1.5,
-      "plan_time_ms": 3110.02
+      "plan_time_ms": 3560.72
     }
   ],
   "waypoints_enu": [

@@ -112,10 +112,12 @@ class PX4TrajectoryTrackerCore:
         *,
         frame_convention: str = "enu_to_ned",
         launch_origin_enu: Optional[Tuple[float, float, float]] = None,
+        lookahead_s: float = 0.25,
     ) -> None:
         self.router = router
         self.config = router.config
         self.frame_convention = frame_convention
+        self.lookahead_s = float(lookahead_s)
         if launch_origin_enu is None:
             sp = self.config.checkpoints.start_pad
             self.launch_origin_enu: Tuple[float, float, float] = (float(sp[0]), float(sp[1]), 0.0)
@@ -188,13 +190,14 @@ class PX4TrajectoryTrackerCore:
 
         profile = self.router.profile_for_stage(decision.stage)
         t_rel = max(0.0, now_s - self.router.spline_start_time_s)
+        t_eval = min(spline.duration, t_rel + self.lookahead_s)
         pos_enu = clamp_altitude_enu(
-            spline.evaluate_position(t_rel),
+            spline.evaluate_position(t_eval),
             profile.z_min_enu,
             profile.z_max_enu,
         )
-        vel_enu = spline.evaluate_velocity(t_rel)
-        yaw_enu = spline.evaluate_yaw(t_rel)
+        vel_enu = spline.evaluate_velocity(t_eval)
+        yaw_enu = spline.evaluate_yaw(t_eval)
 
         pos_ned = enu_to_ned_pos(
             pos_enu,
