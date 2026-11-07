@@ -61,7 +61,7 @@ Nothing on skybeta publishes `/estimator/healthy`, so the master sim doesn't eit
   there even when the blackout blinds odometry.
 - Camera intrinsics and mount are datasheet guesses (80 deg HFOV, 1024x640, 7.5 cm baseline, no pitch).
   Two other sources disagree with each other, a skybeta bench unit (5 cm down, 15 deg pitch) and
-  `hardware_slam/run_mapping.sh` (3 cm up, no pitch). Replace them with skybeta-11's own
+  `hardware_slam/run_mapping.sh` (3 cm up, no pitch). Replace them with skybeta-19's own
   `/oak/left/camera_info` and `base_link -> oak_left_camera_optical_frame` TF.
 - Cameras render at 5 Hz (`DH_CAMERA_HZ`) to keep the sim real-time on a laptop GPU. The stereo node
   only uses 5 Hz anyway.

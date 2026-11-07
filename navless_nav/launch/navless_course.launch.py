@@ -1,4 +1,4 @@
-"""The whole competition stack for skybeta-11, from one launch file.
+"""The whole competition stack for skybeta-19, from one launch file.
 
 This is what the stack's `competitor` window starts once the drone's drone.env has
 COMPETITOR_PKG=navless_nav and COMPETITOR_LAUNCH=navless_course.launch.py.

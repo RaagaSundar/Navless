@@ -18,7 +18,7 @@ Inputs: `/oak/left/image_raw`, `/oak/right/image_raw`, `/oak/left/camera_info`, 
 On the drone, `~/team_ws` is bind-mounted into the stack container at `/root/team_ws`. Copy the file there:
 
 ```bash
-scp depthcloud/stereo_cloud.py dronehacks@skybeta-11.local:~/team_ws/src/dronehacks
+scp depthcloud/stereo_cloud.py dronehacks@skybeta-19.local:~/team_ws/src/dronehacks
 ```
 
 Then, on the drone in `~/skybeta`, start the stack if `docker ps` doesn't show `skybeta-stack`:
@@ -63,7 +63,7 @@ Pass with `--ros-args -p name:=value`.
 This runs alongside `stereo_cloud.py`, which it doesn't modify. It matches each `/team/stereo/points` cloud to an .obj using point-to-plane ICP, starting from the previous pose, and outputs:
 
 - `/team/localize/pose` (`geometry_msgs/PoseStamped`, `frame_id: course`): the camera's pose in the .obj frame, Z up, metres
-- `http://<drone>:8082/`: a 3D viewer of the best estimate. It shows the model (ceiling hidden) and the live cloud placed in it (green matched the model, orange didn't). The camera is drawn as a dot with a field-of-view wedge, a heading arrow on the floor and a trail. A HUD shows the position in feet and metres, the heading, and what the latest frame actually **measured** versus **held** (x, y, height, heading). It's coloured green when everything is measured, yellow when partly held (with a dashed ring if horizontal position is held), and grey when stale (no accepted frame for over 2 s). There's also a collapsible form to reset the pose. If `skybeta-11.local` doesn't open in the browser, use the drone's IPv4 address (DHCP: check with `ip -4 -br addr show wlP1p1s0` on the drone), for example `http://192.168.68.88:8082/`.
+- `http://<drone>:8082/`: a 3D viewer of the best estimate. It shows the model (ceiling hidden) and the live cloud placed in it (green matched the model, orange didn't). The camera is drawn as a dot with a field-of-view wedge, a heading arrow on the floor and a trail. A HUD shows the position in feet and metres, the heading, and what the latest frame actually **measured** versus **held** (x, y, height, heading). It's coloured green when everything is measured, yellow when partly held (with a dashed ring if horizontal position is held), and grey when stale (no accepted frame for over 2 s). There's also a collapsible form to reset the pose. If `skybeta-19.local` doesn't open in the browser, use the drone's IPv4 address (DHCP: check with `ip -4 -br addr show wlP1p1s0` on the drone), as `http://<address>:8082/`.
 
 It needs a starting pose, and then it tracks frame to frame, so move slowly. It reports the camera's position, not the drone's centre.
 

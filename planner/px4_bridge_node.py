@@ -1086,7 +1086,7 @@ def run_ros2_node(argv=None) -> int:
 
     if not args.skybeta_mode:
         # Never subscribe to `/fmu/out/vehicle_local_position_v1` in `--skybeta-mode` because
-        # PX4's local frame on `skybeta-11` is rotated 90 deg relative to VIO odom
+        # PX4's local frame on `skybeta-19` is rotated 90 deg relative to VIO odom
         node.create_subscription(VehicleLocalPosition, "/fmu/out/vehicle_local_position_v1", on_local_pos, px4_qos)
         node.create_subscription(VehicleStatus, "/fmu/out/vehicle_status_v1", on_status, px4_qos)
     node.create_subscription(Bool, "/estimator/healthy", on_estimator_health, px4_qos)
