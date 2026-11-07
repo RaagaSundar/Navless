@@ -1,0 +1,4 @@
+{
+  "start_bearing_deg": 0.0,
+  "source": "existing split run_laptop.sh fixed spawn ENU quaternion z=w=sqrt(.5), nose north; launch0 used for mission only, EV retains arbitrary-heading FRD"
+}

@@ -1,0 +1,27 @@
+name: drone19-split-sim
+services:
+  laptop:
+    image: dronehacks-local:jazzy-harmonic
+    platform: linux/arm64
+    init: true
+    shm_size: 1gb
+    environment:
+      ROS_DOMAIN_ID: "219"
+      ROS_LOCALHOST_ONLY: "1"
+      GZ_PARTITION: drone19_split
+      PYTHONDONTWRITEBYTECODE: "1"
+      SPLIT_HEIGHT_PROFILE: "${SPLIT_HEIGHT_PROFILE:-range}"
+      SPLIT_APPEARANCE: "${SPLIT_APPEARANCE:-original}"
+      APPEARANCE_MANIFEST_SHA256: "${APPEARANCE_MANIFEST_SHA256:-}"
+      SPLIT_INERTIAL: "${SPLIT_INERTIAL:-0}"
+      SPLIT_CAMERA_RATE_HZ: "${SPLIT_CAMERA_RATE_HZ:-10}"
+    ports:
+      - "127.0.0.1:6081:6080"
+      - "127.0.0.1:17447:7447"
+      - "127.0.0.1:17448:7448"
+    volumes:
+      - ..:/workspace/Navless:ro
+      - .:/split:ro
+      - ./state:/root
+      - ${SPLIT_APPEARANCE_DIR:-./state/appearance}:/split-appearance:ro
+    stop_grace_period: 10s
