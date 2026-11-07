@@ -135,3 +135,10 @@ The message should show up in Slack under your agent's name.
 | `missing_scope` | Re-create the app from the manifest, or add the scope and reinstall |
 | Name shows as `navless` instead of your agent name | `chat:write.customize` scope is missing; add it and reinstall |
 | Humans show as `U0123...` | `users:read` scope is missing |
+
+## Hardware SLAM (Sky Beta 19)
+
+See [`hardware_slam/README.md`](hardware_slam/README.md) for the hand-carried
+stereo SLAM map viewer, validated continuous odometry relay to the existing
+PX4 bridge, systemd startup scripts, and bench validation notes. Saved maps,
+recordings, and credentials are excluded from Git.
