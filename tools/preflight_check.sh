@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Pre-flight check for skybeta-11. Read-only: it changes nothing, and prints the fix for each FAIL.
+# Pre-flight check for skybeta-19. Read-only: it changes nothing, and prints the fix for each FAIL.
 #
-#   ssh dronehacks@skybeta-11.local
+#   ssh dronehacks@skybeta-19.local      # then `hostname` must print skybeta-19
 #   bash ~/team_ws/src/Navless/tools/preflight_check.sh
 #
 # Run it on the Jetson host (not inside the container), on the ground, disarmed, with the stack up
