@@ -13,6 +13,7 @@ from WSL2 behind NAT, over Wi-Fi or USB (192.168.55.1). It gets one JSON object 
      "p": [x, y, z], "q": [x, y, z, w],         cuVSLAM odom pose, ENU (start frame)
      "vo_state": 1,                             0 unknown, 1 tracking, 2 lost
      "armed": false, "offboard": false, "nav": "POSCTL",
+     "px4_link": true, "landed": true, "local_enu": [x, y, z] | null,   flight_interface's PX4 view
      "setpoint": [x, y, z] | null,              last pose this team's node commanded
      "cam": {"p": [...], "q": [...]} | null,    base_link -> camera mount (static TF)
      "tof": {"left": m|null, "right": m|null, "age": s} | null,   side ToF (/tube/*/range)
@@ -66,6 +67,12 @@ def make_frame(t, age, pose, vo_state=None, state=None, setpoint=None, cam=None,
         'armed': bool(s.get('armed', False)),
         'offboard': bool(s.get('offboard_active', False)),
         'nav': s.get('nav_state_name'),
+        # flight_interface's view of PX4: its EKF position back in ENU, for the pre-flight
+        # "does PX4's height agree with VIO's" check (a PX4 height boot offset flies every
+        # setpoint that far low).
+        'px4_link': s.get('px4_link'),
+        'landed': s.get('landed'),
+        'local_enu': None if s.get('local_enu') is None else _r(s['local_enu']),
         'setpoint': None if setpoint is None else _r(setpoint),
         'cam': None if cam is None else {'p': _r(cam[0]), 'q': _r(cam[1], 5)},
     }, separators=(',', ':')) + '\n'
