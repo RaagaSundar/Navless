@@ -16,10 +16,17 @@ v = view_text(0.4, 0.2, 30.0)
 assert "+10.0 cm" in v
 row = next(l for l in v.splitlines() if "left wall [" in l)
 assert row.index("O") > row.index("|")
-# a bad side (prop at 4 cm, or no return) shows BAD and no offset
+# judged at the prop tips, which reach 16.25 cm past each sensor: 15 cm means the props touch (HIT),
+# 25 cm leaves them 8.75 cm (CLOSE), 20 cm 3.75 cm; a prop at 4 cm, or no return, gives no offset
+assert "CLOSE  props  +3.8 cm" in view_text(0.4, 0.2, 30.0)
+v = view_text(0.15, 0.6, 30.0)
+assert "HIT    props  -1.2 cm" in v and "n/a" in v
+assert "CLOSE  props  +8.8 cm" in view_text(0.25, 0.6, 30.0)
+assert "OK     props +43.8 cm" in view_text(0.6, 0.6, 30.0)
 v = view_text(0.04, 0.6, 30.0)
-assert "BAD" in v and "n/a" in v
-assert "BAD" in view_text(0.6, math.inf, 30.0)
+assert "HIT" in v and "n/a" in v
+v = view_text(0.6, math.inf, 30.0)
+assert "none" in v and "n/a" in v
 
 
 # A stand-in for the real VL53L1X library with its one quirk that matters here: the C core has ONE global

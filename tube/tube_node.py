@@ -8,11 +8,14 @@ Out: /tube/offset   geometry_msgs/PointStamped, frame base_link (FLU), 30 Hz
 Nothing is published unless both readings are fresh and believable: silence means "don't trust".
 Never publishes to /fmu/in/*.
 
-  python3 tube/tube_node.py --ros-args -p use_sim_time:=true -p min_range:=0.12
+  python3 tube/tube_node.py --ros-args -p use_sim_time:=true -p min_range:=0.18
 
 Knobs to set on the real drone:
-  min_range        readings closer than this are rejected. Raise it until spinning each prop
-                   slowly by hand never produces a published reading (prop check).
+  min_range        readings closer than this are rejected. The prop tips reach 0.1625 m past each
+                   sensor face (drone 0.475 m wide with props, sensors 0.075 m out), so a closer
+                   reading is the drone's own prop, or a wall the props already touch: no use for
+                   steering. 0.18 keeps a margin. Raise it if spinning each prop slowly by hand
+                   still produces a published reading (prop check).
   left_mount, right_mount   distance from the drone's centreline to each sensor face, metres.
   expected_width   tube inner width; readings with |L+R - width| > width_tol are dropped
                    (0 = check off). Catches a prop hit on one side, or the gap at the tube exit.
@@ -46,7 +49,7 @@ def main():
         def __init__(self):
             super().__init__("tube_offset")
             p = lambda n, v: self.declare_parameter(n, v).value
-            self.cfg = dict(min_range=p("min_range", 0.10), max_range=p("max_range", 2.0),
+            self.cfg = dict(min_range=p("min_range", 0.18), max_range=p("max_range", 2.0),
                             left_mount=p("left_mount", 0.0), right_mount=p("right_mount", 0.0),
                             expected_width=p("expected_width", 0.0), width_tol=p("width_tol", 0.15))
             self.last = {}
