@@ -132,10 +132,57 @@ def plan_dynamic_course_route(branch='window', start_enu=None, router=None):
     launch = (float(cp.start_pad[0]), float(cp.start_pad[1]))
     s_pt = tuple(float(v) for v in (start_enu or cp.start_pad))
     pad_goal, pad_r = router.landing_target_enu()
-    prof = router.profile_for_stage(CourseStage.STAGE_4_CHICANE)
     features = router.grid.discover_course_features(standoff_distance_m=router.config.window_inspect_distance_m)
+    gate_a = features.gate_a_exit_m if features.gate_a_exit_m is not None else cp.gate_a_exit
+    tunnel_exit = features.tunnel_exit_m if features.tunnel_exit_m is not None else cp.tunnel_exit
     win_center = features.window_center_m if features.window_center_m is not None else cp.window_aperture
 
+    waypoints = []
+    # If still in Stage 1 (Maze), replan around maze obstacles (e.g. shifted M3) to Gate A first, then through Tunnel
+    if s_pt[1] > 0.65 and s_pt[0] < 1.65:
+        maze_prof = router.profile_for_stage(CourseStage.STAGE_1_MAZE)
+        sp1, _ = router.optimizer.plan_spline(
+            s_pt,
+            gate_a,
+            maze_prof,
+            use_clearance_cost=True,
+            goal_radius_m=0.22,
+        )
+        if sp1 is None:
+            raise ValueError('3D A* + B-spline could not find a collision-free Stage 1 detour to Gate A')
+        for pt in sp1.sample_points(60):
+            waypoints.append(tuple(round(float(v), 4) for v in pt))
+        tun_prof = router.profile_for_stage(CourseStage.STAGE_2_TUNNEL)
+        sp2, _ = router.optimizer.plan_spline(
+            waypoints[-1],
+            tunnel_exit,
+            tun_prof,
+            use_clearance_cost=True,
+            goal_radius_m=0.20,
+        )
+        if sp2 is not None:
+            for pt in sp2.sample_points(35)[1:]:
+                waypoints.append(tuple(round(float(v), 4) for v in pt))
+        stage4_start = waypoints[-1]
+    elif s_pt[0] >= 1.65 and s_pt[1] > -0.75:
+        tun_prof = router.profile_for_stage(CourseStage.STAGE_2_TUNNEL)
+        sp2, _ = router.optimizer.plan_spline(
+            s_pt,
+            tunnel_exit,
+            tun_prof,
+            use_clearance_cost=True,
+            goal_radius_m=0.20,
+        )
+        if sp2 is not None:
+            for pt in sp2.sample_points(35):
+                waypoints.append(tuple(round(float(v), 4) for v in pt))
+            stage4_start = waypoints[-1]
+        else:
+            stage4_start = s_pt
+    else:
+        stage4_start = s_pt
+
+    prof = router.profile_for_stage(CourseStage.STAGE_4_CHICANE)
     # Try Window first if requested and clear; automatically generalize to Gate B if blocked!
     spline = None
     chosen = 'WINDOW'
@@ -144,8 +191,31 @@ def plan_dynamic_course_route(branch='window', start_enu=None, router=None):
         confidence_threshold=router.config.window_confidence_threshold,
     )
     if use_win and inspect_res.is_passable:
+        win_entry = (float(win_center[0]), float(win_center[1] - 0.50), float(win_center[2]))
+        win_exit = (float(win_center[0] - 0.15), float(win_center[1] + 0.55), float(win_center[2]))
+        sp_w1, _ = router.optimizer.plan_spline(
+            stage4_start,
+            win_entry,
+            prof,
+            use_clearance_cost=True,
+            goal_radius_m=0.18,
+        )
+        sp_w2, _ = router.optimizer.plan_spline(
+            win_exit,
+            pad_goal,
+            prof,
+            use_clearance_cost=True,
+            goal_radius_m=pad_r,
+        )
+        if sp_w1 is not None and sp_w2 is not None:
+            pts1 = [tuple(round(float(v), 4) for v in pt) for pt in sp_w1.sample_points(30)]
+            pts2 = [tuple(round(float(v), 4) for v in pt) for pt in sp_w2.sample_points(40)]
+            waypoints.extend(pts1[1:] if waypoints else pts1)
+            waypoints.append(tuple(round(float(v), 4) for v in win_center))
+            waypoints.extend(pts2)
+            return waypoints, launch, f'DYNAMIC_REPLAN_{chosen}'
         spline, _ = router.optimizer.plan_spline(
-            s_pt,
+            stage4_start,
             pad_goal,
             prof,
             use_clearance_cost=True,
@@ -154,7 +224,7 @@ def plan_dynamic_course_route(branch='window', start_enu=None, router=None):
     if spline is None:
         chosen = 'GATE_B'
         spline, _ = router.optimizer.plan_spline(
-            s_pt,
+            stage4_start,
             pad_goal,
             prof,
             use_clearance_cost=True,
@@ -163,9 +233,9 @@ def plan_dynamic_course_route(branch='window', start_enu=None, router=None):
         )
     if spline is None:
         raise ValueError('3D A* + B-spline could not find a collision-free path from current pose')
-    pts = spline.sample_points(80)
-    wps = [tuple(round(float(v), 4) for v in pt) for pt in pts]
-    return wps, launch, f'DYNAMIC_REPLAN_{chosen}'
+    pts = [tuple(round(float(v), 4) for v in pt) for pt in spline.sample_points(60)]
+    waypoints.extend(pts[1:] if waypoints else pts)
+    return waypoints, launch, f'DYNAMIC_REPLAN_{chosen}'
 
 
 def course_to_odom(p, launch_xy, start_bearing_deg, start_height_m=0.0):

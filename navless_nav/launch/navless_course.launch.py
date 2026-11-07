@@ -82,6 +82,8 @@ ARGUMENTS = [
     ('tof_tube_centering', 'true',
      'steer toward the side ToF tube centre (needs tof and tube; check the sensors first)'),
     ('stereo_tube_cloud_topic', '/team/stereo/points', 'qualified calibrated stereo cloud'),
+    ('replan_on_obstacles', 'true',
+     'replan around live stereo depth discrepancies on the as-built 3D occupancy map'),
 ]
 
 
@@ -96,7 +98,7 @@ def generate_launch_description():
                           for n in ('route_file', 'start_bearing_deg', 'cruise_speed_mps',
                                     'max_lead_m', 'max_lat_accel_mps2', 'max_turn_sagitta_m',
                                     'odometry_topic', 'blind_carry', 'net_margin_m', 'stereo_tube_centering',
-                                    'stereo_tube_cloud_topic', 'tof_tube_centering',
+                                    'stereo_tube_cloud_topic', 'tof_tube_centering', 'replan_on_obstacles',
                                     'use_sim_time')}.items(),
     )
     # VL53L1X: from the team image, or from ~/team_ws/pylibs (pip install --target) if it is there.

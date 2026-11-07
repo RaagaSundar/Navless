@@ -212,6 +212,7 @@ PARAMETERS = (
     ('tof_tube_max_shift_m', 0.15),
     ('tof_tube_rate_mps', 0.10),
     ('tof_tube_timeout_s', 0.3),
+    ('replan_on_obstacles', True),
 )
 
 
@@ -301,6 +302,7 @@ class CourseMission(Node):
         )
         # Always use the active 3D occupancy grid + EGO B-spline planner backed by the as-built course map.
         self.static_asbuilt_route = False
+        self.replan_on_obstacles = str(self.get_parameter('replan_on_obstacles').value).lower() in ('true', '1')
         self.planner_cfg, self.planner_grid, self.planner_router = create_live_course_planner()
         self.live_grid_updated = False
         self.last_replan_at = 0.0
@@ -378,7 +380,7 @@ class CourseMission(Node):
 
     def pointcloud_cb(self, msg):
         """Insert live stereo pointcloud obstacles into the 3D occupancy grid for online replanning."""
-        if self.static_asbuilt_route or self.position is None or self.frame is None:
+        if not self.replan_on_obstacles or self.static_asbuilt_route or self.position is None or self.frame is None:
             return
         from planner.px4_bridge_node import decode_ros_pointcloud2_optical
         cur_course = odom_to_course(
@@ -394,8 +396,8 @@ class CourseMission(Node):
 
     def maybe_replan_for_discrepancies(self, now):
         """Replan remaining route via 3D A* + B-spline if live stereo depth reveals a map discrepancy."""
-        if (self.static_asbuilt_route or not self.live_grid_updated or self.going_home
-                or self.frame is None or self.carrot is None
+        if (not self.replan_on_obstacles or self.static_asbuilt_route or not self.live_grid_updated
+                or self.going_home or self.frame is None or self.carrot is None
                 or (now - self.last_replan_at) < 0.5):
             return
         self.live_grid_updated = False
@@ -403,7 +405,7 @@ class CourseMission(Node):
         blocked = False
         for q in rem_odom:
             c_pt = odom_to_course(q, self.frame[0], self.frame[1], self.start_height)
-            if self.planner_grid.is_occupied(c_pt, inflated=True):
+            if self.planner_grid.is_discrepancy_occupied(c_pt, clearance_m=self.planner_cfg.obstacle_inflation_m):
                 blocked = True
                 break
         if not blocked:

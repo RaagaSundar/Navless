@@ -81,6 +81,8 @@ ARGUMENTS = [
     ('tof_tube_max_shift_m', '0.15', 'largest ToF correction away from the route, m'),
     ('tof_tube_rate_mps', '0.10', 'how fast the ToF correction may change, m/s'),
     ('tof_tube_timeout_s', '0.3', 'drop the ToF correction once /tube/offset is this old, s'),
+    ('replan_on_obstacles', 'true',
+     'replan around live stereo depth discrepancies on the as-built 3D occupancy map'),
 ]
 
 # The stack's flight-interface package. Its name is fixed by the image.
@@ -98,7 +100,8 @@ MISSION_PARAMS = ('odometry_topic',     # the same source as flight_interface's
                   'prearm_height_tol_m', 'prearm_settle_s',
                   'blind_carry', 'blind_carry_max_s', 'blind_zone_margin_m',
                   'stereo_tube_centering', 'stereo_tube_max_shift_m', 'stereo_tube_rate_mps', 'stereo_tube_hold_s',
-                  'tof_tube_centering', 'tof_tube_max_shift_m', 'tof_tube_rate_mps', 'tof_tube_timeout_s')
+                  'tof_tube_centering', 'tof_tube_max_shift_m', 'tof_tube_rate_mps', 'tof_tube_timeout_s',
+                  'replan_on_obstacles')
 
 
 def generate_launch_description():
