@@ -40,7 +40,9 @@ full-course simulation.
 PR packaging checks on main `6a12608`: the same unit suite passed (15 passed,
 1 skipped); shell/Python syntax, Compose configuration, repository source
 resolution, read-only mounting, ARM64 platform and loopback port bindings passed.
-A fresh SDF-only check did not finish before the shared Docker daemon became
-unresponsive during separately owned flight testing. Further Docker checks
-were stopped for coordinated VM recovery; repeat the runtime smoke checks after
-recovery. No new preview, source build or flight was started while packaging.
+The first packaging SDF check was interrupted when the shared Docker daemon
+became unresponsive. After coordinated VM recovery, the SDF check was repeated
+successfully against this PR checkout and returned `Valid.` with exit code 0.
+The check used a read-only repository mount, no network, a 0.5 CPU limit and a
+256 MiB memory limit. No new preview, source build or flight was started while
+packaging. The original runtime observations and their limits remain above.
