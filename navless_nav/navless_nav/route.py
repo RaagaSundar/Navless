@@ -12,6 +12,7 @@ cuVSLAM's odom frame starts at the power-up pose: origin on the launch mark,
 is a shift to the launch mark plus a rotation by the nose's bearing at power-up
 (degrees clockwise from course north, the convention the course file uses).
 """
+import bisect
 import json
 import math
 import os
@@ -79,27 +80,78 @@ def load_route(path):
         'route_type', '?')
 
 
+def _point_along(path, cum, s):
+    s = min(max(s, 0.0), cum[-1])
+    i = min(bisect.bisect_right(cum, s) - 1, len(path) - 2)
+    seg = cum[i + 1] - cum[i]
+    f = (s - cum[i]) / seg if seg > 0.0 else 0.0
+    return tuple(a + (b - a) * f for a, b in zip(path[i], path[i + 1]))
+
+
+def turn_radii(path, h=0.25):
+    """Horizontal radius of the path at each vertex, from points h m either side."""
+    if len(path) < 3:
+        return [math.inf] * len(path)
+    cum = [0.0]
+    for a, b in zip(path, path[1:]):
+        cum.append(cum[-1] + math.dist(a, b))
+    radii = []
+    for i, b in enumerate(path):
+        a, c = _point_along(path, cum, cum[i] - h), _point_along(path, cum, cum[i] + h)
+        cross = abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
+        sides = math.dist(a[:2], b[:2]) * math.dist(b[:2], c[:2]) * math.dist(a[:2], c[:2])
+        radii.append(sides / (2.0 * cross) if cross > 1e-9 else math.inf)
+    return radii
+
+
+def speed_profile(path, cruise, max_lat_accel=0.0, max_accel=0.5):
+    """Per-vertex speed: cruise, capped at sqrt(max_lat_accel * radius) in
+    bends, then ramped at max_accel so the carrot slows BEFORE a bend.
+
+    Why: with stock PX4 gains and position-only setpoints the drone overshoots
+    to the outside of bends. In Gazebo, 0.5 m/s gave 11-14 cm of overshoot at
+    the 0.5 m maze and chicane bends; 0.35 m/s gave under 5 cm. The planned
+    routes leave about 6 cm to the walls.
+    """
+    v = [float(cruise)] * len(path)
+    if max_lat_accel > 0.0:
+        v = [min(x, math.sqrt(max_lat_accel * r)) for x, r in zip(v, turn_radii(path))]
+    if max_accel > 0.0:
+        d = [math.dist(a, b) for a, b in zip(path, path[1:])]
+        for i in range(len(v) - 2, -1, -1):
+            v[i] = min(v[i], math.sqrt(v[i + 1] ** 2 + 2.0 * max_accel * d[i]))
+        for i in range(1, len(v)):
+            v[i] = min(v[i], math.sqrt(v[i - 1] ** 2 + 2.0 * max_accel * d[i - 1]))
+    return v
+
+
 class Carrot:
-    """A setpoint that slides along the path at `speed` m/s.
+    """A setpoint that slides along the path at up to `speed` m/s.
 
     It never runs more than `max_lead` metres ahead of the drone: if the drone
     lags (wind, a clamp, a bad estimate) the carrot waits for it. That keeps
     every pose setpoint a short step away, because PX4 flies a far-away pose
-    at MPC_XY_VEL_MAX (12 m/s on these airframes).
+    at MPC_XY_VEL_MAX (12 m/s on these airframes). With max_lat_accel > 0 it
+    also slows through bends (speed_profile).
     """
 
-    def __init__(self, path, speed, max_lead):
+    def __init__(self, path, speed, max_lead, max_lat_accel=0.0):
         if len(path) < 1:
             raise ValueError('empty path')
         self.path = [tuple(p) for p in path]
         self.speed, self.max_lead = float(speed), float(max_lead)
+        self.limits = speed_profile(self.path, self.speed, max_lat_accel)
         self.index = 0                  # last path vertex the carrot passed
         self.point = self.path[0]
+
+    def speed_here(self):
+        nxt = min(self.index + 1, len(self.path) - 1)
+        return min(self.limits[self.index], self.limits[nxt])
 
     def step(self, drone, dt):
         if math.dist(drone, self.point) > self.max_lead:
             return self.point
-        budget = self.speed * max(0.0, dt)
+        budget = self.speed_here() * max(0.0, dt)
         while budget > 0.0 and self.index < len(self.path) - 1:
             nxt = self.path[self.index + 1]
             d = math.dist(self.point, nxt)

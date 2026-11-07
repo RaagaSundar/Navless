@@ -77,9 +77,13 @@ PARAMETERS = (
     # origin above the floor).
     ('route_file', 'route_gate_b.json'),
     ('start_bearing_deg', 0.0),
-    ('start_height_m', 0.0),
+    # Pixhawk IMU on its feet: 0.07 m on the Gazebo stand-in, built from the
+    # airframe's dimensions. Measure it on the real drone.
+    ('start_height_m', 0.07),
     ('cruise_speed_mps', 0.5),
     ('max_lead_m', 0.6),
+    # Slow through bends: speed <= sqrt(this * bend radius). 0 = off.
+    ('max_lat_accel_mps2', 0.25),
     # Refuse to start the route from somewhere else (e.g. a re-arm after the
     # pilot moved the drone): its first point is the launch mark.
     ('max_start_offset_m', 0.6),
@@ -115,6 +119,7 @@ class CourseMission(Node):
         rate_hz = param('publish_rate_hz')
         self.cruise_speed = param('cruise_speed_mps')
         self.max_lead = param('max_lead_m')
+        self.max_lat_accel = param('max_lat_accel_mps2')
         self.max_start_offset = param('max_start_offset_m')
         self.stall_timeout = param('stall_timeout_s')
         self.net_margin = param('net_margin_m')
@@ -281,7 +286,10 @@ class CourseMission(Node):
             self.send(*self.position, fence=False)
             return
         x, y, _ = self.position
-        self.goto('TAKEOFF', (x, y, self.takeoff_altitude))
+        # Climb to the route's first point, so the route doesn't open with a
+        # height step (Gazebo: 7 cm once start_height_m is set).
+        z = self.route[0][2] if self.route else self.takeoff_altitude
+        self.goto('TAKEOFF', (x, y, z))
         self._state_takeoff()       # climb on this tick, not the next one
 
     def _state_takeoff(self):
@@ -307,7 +315,8 @@ class CourseMission(Node):
                 'Holding. Power up on the launch mark.')
             self.goto('HOLD', self.target)
             return
-        self.carrot = Carrot(self.route, self.cruise_speed, self.max_lead)
+        self.carrot = Carrot(self.route, self.cruise_speed, self.max_lead,
+                             self.max_lat_accel)
         self.last_tick = self.now_s()
         self.progress_at = (self.last_tick, 0, self.carrot.point)
         self.goto('ROUTE')
