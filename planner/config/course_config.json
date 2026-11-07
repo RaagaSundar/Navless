@@ -3,7 +3,7 @@
   "local_window_size_m": [6.0, 6.0, 2.0],
   "global_map_bounds_min_m": [-3.1, -3.1, 0.0],
   "global_map_bounds_max_m": [3.1, 3.1, 2.6],
-  "obstacle_inflation_m": 0.22,
+  "obstacle_inflation_m": 0.30,
   "acceptance_radius_m": 0.4,
   "window_inspect_distance_m": 1.0,
   "window_confidence_threshold": 0.8,
