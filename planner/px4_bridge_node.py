@@ -30,7 +30,7 @@ import math
 import signal
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -62,6 +62,10 @@ NAVIGATION_STATE_AUTO_LAND = 18
 VEHICLE_CMD_NAV_LAND = 21
 VEHICLE_CMD_DO_SET_MODE = 176
 VEHICLE_CMD_COMPONENT_ARM_DISARM = 400
+# Plain-PX4 landing: centre over the target (descending to the approach height) before NAV_LAND
+PX4_ALIGN_Z_M = 0.85
+PX4_ALIGN_TOL_M = 0.08
+PX4_ALIGN_TIMEOUT_S = 8.0
 
 
 @dataclass
@@ -232,6 +236,7 @@ class PX4TrajectoryTrackerCore:
         self.px4_last_cmd_s: float = -1e9
         self.px4_unhealthy_since_s: Optional[float] = None
         self.px4_takeoff_enu: Optional[Tuple[float, float, float]] = None
+        self.px4_align_target: Tuple[float, float, float] = (0.0, 0.0, PX4_ALIGN_Z_M)
         self.last_landed_time_s: Optional[float] = None
         # Operator stop (SIGINT/SIGTERM, `planner/real_flight_kill.sh`): land where we are, then finish
         self.stop_requested_s: Optional[float] = None
@@ -931,7 +936,6 @@ class PX4TrajectoryTrackerCore:
                 reason="waiting_for_odometry",
             )
 
-        launch_xy = (self.launch_origin_enu[0], self.launch_origin_enu[1])
         pos_enu, current_yaw_enu = self.current_course_pose_enu(now_s)
         pos_odom_cur = self._course_to_odom(pos_enu)
         offboard_active = self.telemetry.nav_state == NAVIGATION_STATE_OFFBOARD
@@ -1341,13 +1345,10 @@ class PX4TrajectoryTrackerCore:
                     return PX4MissionCommand(hold, (), state, "prestreaming_ground_hold")
                 self._px4_enter("ARMING", now_s)
             if armed and offboard:
-                if self.px4_leg == "course":
-                    self._px4_enter("TAKEOFF", now_s)
-                    return PX4MissionCommand(hold, (), "TAKEOFF", "armed_offboard")
-                self._px4_enter("ROUTE", now_s)
-                self.router.spline_start_time_s = now_s
-                self.router.step(now_s, pos_enu, force_replan=True)
-                return PX4MissionCommand(hold, (), "ROUTE", "armed_offboard_fly_home")
+                self._px4_enter("TAKEOFF", now_s)
+                return PX4MissionCommand(
+                    hold, (), "TAKEOFF", "armed_offboard" if self.px4_leg == "course" else "armed_offboard_fly_home"
+                )
             if now_s - self.px4_state_since_s > 8.0:
                 nxt = "LAND" if armed else "ABORT"
                 self._px4_enter(nxt, now_s)
@@ -1359,7 +1360,7 @@ class PX4TrajectoryTrackerCore:
             )
             return PX4MissionCommand(hold, cmds, "ARMING", "offboard_and_arm_requested")
 
-        if state in ("TAKEOFF", "ROUTE"):
+        if state in ("TAKEOFF", "ROUTE", "ALIGN"):
             if not armed:
                 self._px4_enter("ABORT", now_s)
                 return PX4MissionCommand(None, (), "ABORT", "disarmed_in_flight")
@@ -1382,8 +1383,13 @@ class PX4TrajectoryTrackerCore:
 
         if state == "TAKEOFF":
             assert self.px4_takeoff_enu is not None
-            takeoff_z = float(self.config.checkpoints.start_pad[2])
-            north_nudge = 0.0 if self.launch_origin_enu[1] > 1.00 else 0.20
+            if self.px4_leg == "course":
+                takeoff_z = float(self.config.checkpoints.start_pad[2])
+                north_nudge = 0.0 if self.launch_origin_enu[1] > 1.00 else 0.20
+            else:  # fly home: straight up over the pad to hop height before any lateral motion (the
+                # re-planned spline otherwise starts sideways while still low: lab run b1 hit the west net)
+                takeoff_z = float(self.router.home_target_enu()[2])
+                north_nudge = 0.0
             target = (self.px4_takeoff_enu[0], self.px4_takeoff_enu[1] + north_nudge, takeoff_z)
             if float(pos_enu[2]) >= takeoff_z - 0.15:
                 self._px4_enter("ROUTE", now_s)
@@ -1396,20 +1402,36 @@ class PX4TrajectoryTrackerCore:
 
         if state == "ROUTE":
             if self.px4_leg == "course":
-                pad_goal_enu, _ = self.router.landing_target_enu()
-                d_land = float(math.hypot(pos_enu[0] - pad_goal_enu[0], pos_enu[1] - pad_goal_enu[1]))
+                goal, _ = self.router.landing_target_enu()
+                d_land = float(math.hypot(pos_enu[0] - goal[0], pos_enu[1] - goal[1]))
                 at_goal = self.router.stage in (
                     CourseStage.STAGE_5_LANDING_PAD,
                     CourseStage.STAGE_6_FLY_HOME,
                     CourseStage.MISSION_COMPLETE,
                 ) and d_land <= 0.35
             else:
-                home = self.router.home_target_enu()
-                d_land = float(math.hypot(pos_enu[0] - home[0], pos_enu[1] - home[1]))
+                goal = self.router.home_target_enu()
+                d_land = float(math.hypot(pos_enu[0] - goal[0], pos_enu[1] - goal[1]))
                 at_goal = self.router.stage == CourseStage.MISSION_COMPLETE or (d_land <= 0.35 and float(pos_enu[1]) > 0.20)
-            if at_goal:
+            if at_goal:  # centre first: PX4 Land keeps whatever xy error it starts with (b1: 0.30 m -> 0.45 m off)
+                self.px4_align_target = (float(goal[0]), float(goal[1]), min(float(pos_enu[2]), PX4_ALIGN_Z_M))
+                self._px4_enter("ALIGN", now_s)
+                state = "ALIGN"
+
+        if state == "ALIGN":
+            gx, gy, gz = self.px4_align_target
+            err_xy = float(math.hypot(pos_enu[0] - gx, pos_enu[1] - gy))
+            speed = float(math.hypot(*tel.vel_ned))
+            centred = err_xy <= PX4_ALIGN_TOL_M and abs(float(pos_enu[2]) - gz) <= 0.10 and speed <= 0.12
+            if centred or now_s - self.px4_state_since_s > PX4_ALIGN_TIMEOUT_S:
                 self._px4_enter("LAND", now_s)
-                return PX4MissionCommand(None, self._px4_cmd(now_s, land_cmd), "LAND", f"over_{self.px4_leg}_landing_target")
+                how = f"centred {err_xy:.2f} m" if centred else f"align timeout, {err_xy:.2f} m off"
+                return PX4MissionCommand(None, self._px4_cmd(now_s, land_cmd), "LAND",
+                                         f"over_{self.px4_leg}_landing_target ({how})")
+            return PX4MissionCommand(self._px4_hold(now_s, (gx, gy, gz), self.commanded_yaw_enu_rad or yaw_enu),
+                                     (), "ALIGN", f"centring_over_{self.px4_leg}_target ({err_xy:.2f} m)")
+
+        if state == "ROUTE":
             sample, reason = self.sample_setpoint(now_s, external_window_confidence=external_window_confidence)
             if sample is None:  # no feasible spline: hold, and land if it lasts
                 if self.px4_unhealthy_since_s is None:
