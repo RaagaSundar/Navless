@@ -8,6 +8,7 @@ it, set the drone's drone.env to
   COMPETITOR_PKG=navless_nav
   COMPETITOR_LAUNCH=navless_course_slow.launch.py
 
+blind_carry (dark tube) is on, from navless_course.launch.py; these are the speeds it was proven at.
 Switch back to navless_course.launch.py once these flights look like the sim. Nothing on the drone
 needs editing, and there is nothing to remember to revert. In Gazebo these speeds flew the window route
 from arming to touchdown in about 43 s (the tuned launch: 32.6 s).
