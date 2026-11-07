@@ -12,8 +12,18 @@ from navless_nav.mirror_relay import FrameServer, make_frame, make_image_frame  
 def test_frame_carries_tof_and_node_with_no_return_as_null():
     f = json.loads(make_frame(1.0, 0.0, ((0, 0, 0), (0, 0, 0, 1)),
                               tof=(0.4123, float('inf'), 0.03), node='ROUTE'))
-    assert f['tof'] == {'left': 0.412, 'right': None, 'age': 0.03} and f['node'] == 'ROUTE'
+    assert f['tof'] == {'left': 0.412, 'right': None, 'age_left': 0.03, 'age_right': 0.03,
+                        'age': 0.03} and f['node'] == 'ROUTE'
     assert json.loads(make_frame(1.0, 0.0, ((0, 0, 0), (0, 0, 0, 1))))['tof'] is None
+
+
+def test_tof_age_is_per_side_so_a_dead_sensor_shows_stale():
+    # right stopped 4 s ago while left keeps reporting: the old single age said 0.02 s
+    f = json.loads(make_frame(1.0, 0.0, ((0, 0, 0), (0, 0, 0, 1)), tof=(0.45, 0.46, 0.02, 4.0)))
+    assert f['tof'] == {'left': 0.45, 'right': 0.46, 'age_left': 0.02, 'age_right': 4.0, 'age': 4.0}
+    # right never reported at all
+    f = json.loads(make_frame(1.0, 0.0, ((0, 0, 0), (0, 0, 0, 1)), tof=(0.45, None, 0.02, None)))
+    assert f['tof'] == {'left': 0.45, 'right': None, 'age_left': 0.02, 'age_right': None, 'age': 0.02}
 
 
 def test_frame_forwards_px4_view_for_the_height_check():

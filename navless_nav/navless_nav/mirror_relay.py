@@ -5,9 +5,12 @@ container with the team overlay sourced, with the drone on the bench or carried,
 
     ros2 run navless_nav mirror_relay                          # TCP 8775, 30 Hz
     ros2 run navless_nav mirror_relay --ros-args -p rate_hz:=20
+    ros2 run navless_nav mirror_relay --ros-args -p bind:=192.168.55.1   # USB tether only
 
 The laptop connects to <drone-ip>:8775. The drone never connects out, so this works
-from WSL2 behind NAT, over Wi-Fi or USB (192.168.55.1). It gets one JSON object per line:
+from WSL2 behind NAT, over Wi-Fi or USB (192.168.55.1). By default it listens on every
+interface, so anyone on the shared Wi-Fi can read it (read-only); bind it to the USB
+address when tethered. It gets one JSON object per line:
 
     {"t": 12.34, "age": 0.02,                   receive time, odometry age (s)
      "p": [x, y, z], "q": [x, y, z, w],         cuVSLAM odom pose, ENU (start frame)
@@ -16,7 +19,9 @@ from WSL2 behind NAT, over Wi-Fi or USB (192.168.55.1). It gets one JSON object 
      "px4_link": true, "landed": true, "local_enu": [x, y, z] | null,   flight_interface's PX4 view
      "setpoint": [x, y, z] | null,              last pose this team's node commanded
      "cam": {"p": [...], "q": [...]} | null,    base_link -> camera mount (static TF)
-     "tof": {"left": m|null, "right": m|null, "age": s} | null,   side ToF (/tube/*/range)
+     "tof": {"left": m|null, "right": m|null,   side ToF (/tube/*/range); null = no return
+             "age_left": s|null, "age_right": s|null,   per side, so one dead sensor shows
+             "age": s} | null,                          as stale; age = the older side
      "node": "ROUTE" | null}                    mission state, when the sender knows it
 
 and, at img_hz (default 5; 0 = off), a separate line with the real left camera:
@@ -44,6 +49,23 @@ def _range(m):
     return None if m is None or not math.isfinite(m) else round(float(m), 3)
 
 
+def _age(a):
+    return None if a is None else round(float(a), 3)
+
+
+def _tof(tof):
+    """tof: (left_m, right_m, age_s) or (left_m, right_m, left_age_s, right_age_s);
+    a side that never reported has age None."""
+    if tof is None:
+        return None
+    left, right, *ages = tof
+    age_l, age_r = (ages[0], ages[0]) if len(ages) == 1 else ages
+    known = [a for a in (age_l, age_r) if a is not None]
+    return {'left': _range(left), 'right': _range(right),
+            'age_left': _age(age_l), 'age_right': _age(age_r),
+            'age': _age(max(known)) if known else None}
+
+
 def make_image_frame(t, jpeg, width, height):
     """A camera thumbnail line (see the module docstring)."""
     return json.dumps({'img': base64.b64encode(jpeg).decode('ascii'), 'w': int(width),
@@ -53,12 +75,11 @@ def make_image_frame(t, jpeg, width, height):
 def make_frame(t, age, pose, vo_state=None, state=None, setpoint=None, cam=None,
                tof=None, node=None):
     """One newline-terminated JSON frame (see the module docstring).
-    tof: (left_m, right_m, age_s) with inf/None for no return."""
+    tof: (left_m, right_m, left_age_s, right_age_s), inf/None for no return (see _tof)."""
     p, q = pose
     s = state or {}
     return json.dumps({
-        'tof': None if tof is None else {'left': _range(tof[0]), 'right': _range(tof[1]),
-                                         'age': None if tof[2] is None else round(float(tof[2]), 3)},
+        'tof': _tof(tof),
         'node': node,
         't': round(float(t), 3),
         'age': None if age is None else round(float(age), 3),
@@ -135,6 +156,7 @@ def main(args=None):
     import rclpy
     from geometry_msgs.msg import PoseStamped
     from nav_msgs.msg import Odometry
+    from rcl_interfaces.msg import ParameterDescriptor
     from rclpy.node import Node
     from rclpy.qos import (DurabilityPolicy, QoSProfile, ReliabilityPolicy,
                            qos_profile_sensor_data)
@@ -148,17 +170,21 @@ def main(args=None):
     class MirrorRelay(Node):
         def __init__(self):
             super().__init__('navless_mirror_relay')
-            self.declare_parameter('port', 8775)   # 8765 is the organisers' status agent
-            self.declare_parameter('rate_hz', 30.0)
-            self.declare_parameter('img_hz', 5.0)
+            # dynamic_typing, as in course_mission: `img_hz:=2` or `rate_hz:=20` arrive as
+            # ints, and a typed double parameter would kill the relay at startup.
+            any_type = ParameterDescriptor(dynamic_typing=True)
+            self.declare_parameter('port', 8775, any_type)   # 8765 is the organisers' status agent
+            self.declare_parameter('rate_hz', 30.0, any_type)
+            self.declare_parameter('img_hz', 5.0, any_type)
             self.declare_parameter('img_topic', '/oak/left/image_mono')
+            self.declare_parameter('bind', '0.0.0.0')
             port = int(self.get_parameter('port').value)
             rate = float(self.get_parameter('rate_hz').value)
             self.img_period = 1.0 / max(float(self.get_parameter('img_hz').value), 1e-9)
             self.pose = self.pose_at = self.vo_state = self.setpoint = self.cam = None
             self.state = {}
             self.tof = {'left': None, 'right': None}
-            self.tof_at = None
+            self.tof_at = {'left': None, 'right': None}
             self.img_at = -1e9
             self.create_subscription(Range, '/tube/left/range',
                                      lambda m: self.tof_cb('left', m), qos_profile_sensor_data)
@@ -176,11 +202,12 @@ def main(args=None):
             static = QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                                 reliability=ReliabilityPolicy.RELIABLE)
             self.create_subscription(TFMessage, '/tf_static', self.tf_cb, static)
-            self.server = FrameServer(port, on_connect=lambda a: self.get_logger().info(
+            bind = str(self.get_parameter('bind').value)
+            self.server = FrameServer(port, host=bind, on_connect=lambda a: self.get_logger().info(
                 f'mirror client connected from {a[0]}:{a[1]}'))
             self.create_timer(1.0 / rate, self.tick)
             self.get_logger().info(
-                f'mirror relay on TCP {self.server.port} at {rate:.0f} Hz '
+                f'mirror relay on TCP {bind}:{self.server.port} at {rate:.0f} Hz '
                 '(read-only: publishes nothing)')
 
         def now(self):
@@ -206,7 +233,7 @@ def main(args=None):
 
         def tof_cb(self, side, msg):
             self.tof[side] = float(msg.range)
-            self.tof_at = self.now()
+            self.tof_at[side] = self.now()
 
         def image_cb(self, msg):
             now = self.now()
@@ -242,8 +269,10 @@ def main(args=None):
                 return
             now = self.now()
             tof = None
-            if self.tof_at is not None:
-                tof = (self.tof['left'], self.tof['right'], now - self.tof_at)
+            if any(t is not None for t in self.tof_at.values()):
+                tof = (self.tof['left'], self.tof['right'],
+                       *(None if self.tof_at[s] is None else now - self.tof_at[s]
+                         for s in ('left', 'right')))
             self.server.send(make_frame(now, now - self.pose_at, self.pose,
                                         self.vo_state, self.state,
                                         self.setpoint, self.cam, tof))

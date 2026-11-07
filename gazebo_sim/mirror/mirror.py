@@ -53,6 +53,21 @@ except Exception:                       # noqa: BLE001
 # navless_course.launch.py's tube_node settings, so the page shows what the drone would publish.
 TUBE_GATE = dict(min_range=0.15, max_range=1.3, left_mount=0.075, right_mount=0.075,
                  expected_width=1.45, width_tol=0.15)
+HEIGHT_AIM_M = 0.05     # PX4 vs VIO height on the ground: green below this...
+HEIGHT_LIMIT_M = 0.15   # ...red from here (navless_nav's prearm_height_tol_m, PR #14)
+TOF_STALE_S = 0.5       # the driver publishes each side at ~30 Hz
+
+
+def fresh_tof(tof):
+    """The relay's ToF dict with a side that stopped reporting shown as no reading."""
+    if not tof:
+        return tof
+    out = dict(tof)
+    for side in ("left", "right"):
+        age = tof.get(f"age_{side}", tof.get("age"))
+        if age is None or age > TOF_STALE_S:
+            out[side] = None
+    return out
 
 
 def tube_view(tof):
@@ -364,16 +379,25 @@ def preflight_checks(fd, real_cam):
         out.append(("PX4 height = VIO height", None, "no PX4 local position yet"))
     else:
         dz = le[2] - p[2]
-        out.append(("PX4 height = VIO height", abs(dz) < 0.05,
-                    f"PX4 z - VIO z = {dz:+.3f} m (must be within 5 cm; if not, restart the stack on the ground)"))
+        ok = True if abs(dz) < HEIGHT_AIM_M else None if abs(dz) < HEIGHT_LIMIT_M else False
+        out.append(("PX4 height = VIO height", ok,
+                    f"PX4 z - VIO z = {dz:+.3f} m (aim for under {HEIGHT_AIM_M * 100:.0f} cm; at "
+                    f"{HEIGHT_LIMIT_M * 100:.0f} cm or more don't arm: restart the stack on the ground)"))
         dxy = math.hypot(le[0] - p[0], le[1] - p[1])
         out.append(("PX4 x/y = VIO x/y", dxy < 0.15 if dxy < 1.0 else False, f"{dxy:.3f} m apart"))
     tof = fd.get("tof")
     for side in ("left", "right"):
-        r = None if tof is None else tof.get(side)
-        out.append((f"ToF {side}", None if tof is None else (r is not None and 0.04 < r < 1.3),
-                    "no /tube ranges (driver not running or sensor not answering)" if tof is None
-                    else ("no return" if r is None else f"{r * 100:.1f} cm")))
+        if tof is None:
+            out.append((f"ToF {side}", None, "no /tube ranges (driver not running or sensor not answering)"))
+            continue
+        r, age = tof.get(side), tof.get(f"age_{side}", tof.get("age"))
+        if age is None:
+            out.append((f"ToF {side}", False, "this side has never reported"))
+        elif age > TOF_STALE_S:
+            out.append((f"ToF {side}", False, f"stale: last reading {age:.1f} s ago (sensor stopped)"))
+        else:
+            out.append((f"ToF {side}", r is not None and 0.04 < r < 1.3,
+                        "no return" if r is None else f"{r * 100:.1f} cm"))
     out.append(("camera mount TF", fd.get("cam") is not None,
                 "from the drone" if fd.get("cam") else "not received (dashboard uses a fallback mount)"))
     out.append(("camera thumbnails", True if real_cam else None,
@@ -558,7 +582,10 @@ def main():
                     status[key]["connected"] = c.latest()[2]
             status["real_cam"] = bool(drone is not None and drone.img_at and now - drone.img_at < 3)
             if fd is not None and fd.get("tof"):
-                status["tof_real"], status["tof_real_note"] = fd["tof"], f"live from the drone ({fd['tof'].get('age')} s old)"
+                t = fd["tof"]
+                status["tof_real"] = fresh_tof(t)
+                status["tof_real_note"] = "live from the drone (" + ", ".join(
+                    f"{s} {t.get(f'age_{s}', t.get('age'))} s old" for s in ("left", "right")) + ")"
             elif fd is not None:
                 status["tof_real"], status["tof_real_note"] = None, "no /tube/*/range from the drone (sensors not answering)"
             elif drone is not None:
