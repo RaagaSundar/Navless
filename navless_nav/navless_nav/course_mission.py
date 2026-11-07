@@ -129,8 +129,9 @@ PARAMETERS = (
     # Bonus return leg after the pad landing. Off by default. When on, the
     # pilot's next arming climbs to home_altitude_m (above the floor; the
     # walls are 1.727 m), flies straight over the wall to the launch mark and
-    # lands there. At 2.2 m the feet clear the wall by ~0.38 m (~0.23 m if
-    # PX4 flies prearm_height_tol_m, 0.15 m, low). The ceiling is
+    # lands there. At 2.2 m the feet clear the wall by ~0.38 m (~0.18 m if
+    # PX4 flies 0.20 m low, the most the pre-arm check holds a pass for:
+    # prearm_height_tol_m 0.15 + PREARM_HYSTERESIS_M 0.05). The ceiling is
     # navless.launch.py's max_altitude_m 2.5 m above the odom origin (2.57 m
     # above the floor; flight_interface's own default is 3.0): the 2.13 m
     # odom setpoint stays 0.37 m under it. Lower that clamp and this too.
@@ -485,7 +486,9 @@ class CourseMission(Node):
             return True
         need = self.target[2] - self.home_climb_tol
         return (self.position[2] >= need
-                or (self.px4_z is not None and self.px4_z >= need))
+                or (self.px4_z is not None
+                    and self.now_s() - self.px4_z_at <= PREARM_PX4_TIMEOUT_S
+                    and self.px4_z >= need))
 
     def start_route(self):
         if not self.route:
