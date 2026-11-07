@@ -1,12 +1,12 @@
-"""skybeta flight_interface + the Navless course node.
+"""flight_interface + the Navless course node.
 
-What the stack's `competitor` window runs once /etc/skybeta/drone.env has
+What the stack's `competitor` window runs once the drone's drone.env has
 COMPETITOR_PKG=navless_nav and COMPETITOR_LAUNCH=navless.launch.py.
 
-flight_interface is started exactly as competitor_example's launch file does,
-with auto_offboard_on_arm:=true (the judged takeover). The envelope is only
-ever tightened from skybeta's defaults (3.0 m ceiling, 1.5 m/s): the course
-tops out at 2.3 m on the over-wall fly-home leg.
+flight_interface is started with auto_offboard_on_arm:=true (the judged
+takeover). The envelope is only ever tightened from the interface's defaults
+(3.0 m ceiling, 1.5 m/s): the course tops out at 2.3 m on the over-wall
+fly-home leg.
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -40,6 +40,9 @@ ARGUMENTS = [
     ('competitor', 'true', 'also start the course node'),
 ]
 
+# The stack's flight-interface package. Its name is fixed by the image.
+FLIGHT_INTERFACE_PKG = 'skybeta_flight_interface'
+
 MISSION_PARAMS = ('takeoff_altitude_m', 'arrival_radius_m', 'takeoff_timeout_s',
                   'route_file', 'start_bearing_deg', 'start_height_m',
                   'cruise_speed_mps', 'max_lead_m', 'net_margin_m',
@@ -53,7 +56,7 @@ def generate_launch_description():
     ]
 
     flight_interface = Node(
-        package='skybeta_flight_interface',
+        package=FLIGHT_INTERFACE_PKG,
         executable='flight_interface',
         name='flight_interface',
         output='screen',

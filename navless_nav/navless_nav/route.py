@@ -41,8 +41,8 @@ def clamp_to_net(q, launch_xy, start_bearing_deg, margin_m,
                  half_m=NET_HALF_M):
     """(odom point pulled inside the net by `margin_m`, whether it moved).
 
-    flight_interface has no horizontal geofence (removed in skybeta 0.3.0),
-    so this is the only thing between a bad setpoint and the netting.
+    flight_interface clamps altitude only, never x/y, so this is the only
+    thing between a bad setpoint and the netting.
     """
     c = odom_to_course(q, launch_xy, start_bearing_deg)
     lim = half_m - margin_m
