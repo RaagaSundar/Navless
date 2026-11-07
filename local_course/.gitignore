@@ -1,0 +1,7 @@
+state/
+evidence/
+__pycache__/
+*.pyc
+*.ulg
+*.mcap
+*.db3
