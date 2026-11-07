@@ -10,10 +10,12 @@ SIM="--ros-args -p use_sim_time:=true"
 
 # "command|topic it must publish before we fly". Fill in as owners confirm entry points.
 # Never add planner/px4_bridge_node.py here: it also streams setpoints.
-HELPERS=(
-  # "python3 ../depthcloud/node.py $SIM|/depth/points"        # Shining  (TBD)
-  # "python3 ../tube/tube_node.py $SIM|/tube/lateral_offset"  # Raaga    (TBD)
-)
+HELPERS=()
+# Shining: stereo depth/cloud. mission.py doesn't consume it, and it costs ~80% of a core at 5 Hz,
+# so it runs at 3 Hz and DEPTH=0 skips it (do that on the real drone). It reads /oak/* topics;
+# on the sim, append remaps for the live stereo topic names, e.g. -r /oak/left/image_raw:=<live>.
+[ "${DEPTH:-1}" = 1 ] && HELPERS+=("python3 depthcloud/stereo_cloud.py $SIM -p rate_hz:=3.0|/team/stereo/points")
+# Raaga: tube sensor (TBD) -> HELPERS+=("python3 <tube node> $SIM|<topic>")
 
 pids=()
 cleanup() { for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done; wait 2>/dev/null || true; }
