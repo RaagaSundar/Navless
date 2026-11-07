@@ -40,6 +40,9 @@ ARGUMENTS = [
      'route to fly (repo-relative): the centreline route keeps >= 16.6 cm to every wall'),
     ('start_bearing_deg', '0.0', 'nose bearing on the launch mark at power-up (0 = north)'),
     ('cruise_speed_mps', '0.5', 'route speed on straights, m/s'),
+    ('odometry_topic', '/visual_slam/tracking/odometry',
+     'odometry for flight_interface and course_mission: the topic that feeds the PX4 vision '
+     "fusion (/mapping/validated_odometry if PX4 is fed through Koji's gate)"),
     ('tof', 'true', 'run the side ToF driver'),
     ('tube', 'true', 'run tube_node (needs tof)'),
     ('tof_min_range_m', '0.15', 'tube_node: reject closer readings (raise until a hand-spun prop never shows)'),
@@ -56,7 +59,8 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(os.path.join(
             get_package_share_directory('navless_nav'), 'launch', 'navless.launch.py')),
         launch_arguments={n: LaunchConfiguration(n)
-                          for n in ('route_file', 'start_bearing_deg', 'cruise_speed_mps')}.items(),
+                          for n in ('route_file', 'start_bearing_deg', 'cruise_speed_mps',
+                                    'odometry_topic')}.items(),
     )
     # VL53L1X: from the team image, or from ~/team_ws/pylibs (pip install --target) if it is there.
     pylibs = '/root/team_ws/pylibs'
