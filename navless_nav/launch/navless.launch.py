@@ -35,12 +35,15 @@ ARGUMENTS = [
     ('cruise_speed_mps', '0.5', 'carrot speed along the route, m/s'),
     ('max_lead_m', '0.6', 'how far the carrot may run ahead of the drone, m'),
     ('net_margin_m', '0.4', 'keep setpoints this far inside the net, m'),
+    ('land_at_end', 'true', 'land on the route end (the pad) and disarm'),
+    ('land_speed_mps', '0.3', 'descent rate onto the pad, m/s'),
     ('competitor', 'true', 'also start the course node'),
 ]
 
 MISSION_PARAMS = ('takeoff_altitude_m', 'arrival_radius_m', 'takeoff_timeout_s',
                   'route_file', 'start_bearing_deg', 'start_height_m',
-                  'cruise_speed_mps', 'max_lead_m', 'net_margin_m')
+                  'cruise_speed_mps', 'max_lead_m', 'net_margin_m',
+                  'land_at_end', 'land_speed_mps')
 
 
 def generate_launch_description():

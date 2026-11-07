@@ -22,6 +22,14 @@ States (10 Hz timer):
                        carrot (navless_nav/route.py). The carrot freezes
                        while cuVSLAM reports lost tracking or odometry is
                        stale, and resumes when it is back.
+    LAND               route done: descend onto its end point (the landing
+                       pad) with twist setpoints until PX4 detects the
+                       touchdown and disarms (COM_DISARM_LAND). The twist
+                       never stops before that: an expired twist makes
+                       flight_interface fly back to the last pose, 0.85 m
+                       up.
+    DONE               landed. Publishes nothing, so a later arming cannot
+                       hand the vehicle to us again.
     HOLD               hover at the last target.
     PAUSED             the pilot took over. Nothing advances; once the
                        vehicle is disarmed we go back to waiting.
@@ -35,7 +43,7 @@ import math
 import rclpy
 from rclpy.node import Node
 
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TwistStamped
 from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import ParameterDescriptor
 from std_msgs.msg import String
@@ -50,7 +58,7 @@ except ImportError:   # off the drone: fall back to odometry staleness only
 
 VO_LOST = 2           # VisualSlamStatus.vo_state: 0 unknown, 1 tracking, 2 lost
 
-IDLE_STATES = ('WAIT_FOR_OFFBOARD', 'PAUSED')
+IDLE_STATES = ('WAIT_FOR_OFFBOARD', 'PAUSED', 'DONE')
 
 PARAMETERS = (
     ('takeoff_altitude_m', 0.85),
@@ -72,6 +80,10 @@ PARAMETERS = (
     # Keep-out from the net (drone is 0.475 m wide with props).
     ('net_margin_m', 0.4),
     ('odom_timeout_s', 0.5),
+    # Landing on the route's last point (scored: 7 points for the pad).
+    ('land_at_end', True),
+    ('land_speed_mps', 0.3),
+    ('land_xy_max_mps', 0.3),     # centring on the pad while descending
 )
 
 
@@ -100,6 +112,10 @@ class CourseMission(Node):
         self.stall_timeout = param('stall_timeout_s')
         self.net_margin = param('net_margin_m')
         self.odom_timeout = param('odom_timeout_s')
+        self.land_at_end = str(self.get_parameter('land_at_end').value
+                               ).lower() in ('true', '1')
+        self.land_speed = param('land_speed_mps')
+        self.land_xy_max = param('land_xy_max_mps')
         self.frame = None           # (launch mark xy, start bearing) once known
         self.route = self.load_route(
             str(self.get_parameter('route_file').value),
@@ -110,6 +126,8 @@ class CourseMission(Node):
 
         self.setpoint_pub = self.create_publisher(
             PoseStamped, '/skybeta/setpoint/pose', 10)
+        self.twist_pub = self.create_publisher(
+            TwistStamped, '/skybeta/setpoint/twist', 10)
         self.create_subscription(
             Odometry, '/visual_slam/tracking/odometry', self.odometry_cb, 10)
         self.create_subscription(String, '/skybeta/state', self.state_cb, 10)
@@ -126,6 +144,7 @@ class CourseMission(Node):
         self.vio_was_ok = True
         self.offboard_active = False
         self.armed = False
+        self.landed = False
         self.log_once = set()
 
         self.create_timer(1.0 / rate_hz, self.tick)
@@ -174,6 +193,7 @@ class CourseMission(Node):
             return
         self.offboard_active = bool(state.get('offboard_active', False))
         self.armed = bool(state.get('armed', False))
+        self.landed = bool(state.get('landed', False))
         if state.get('clamped'):
             self.info_once(
                 'clamped:' + ','.join(state['clamped']),
@@ -199,6 +219,17 @@ class CourseMission(Node):
         msg.pose.position.z = float(z)
         msg.pose.orientation.w = 0.0
         self.setpoint_pub.publish(msg)
+
+    def send_twist(self, vx, vy, vz):
+        """ENU world velocity in odom; expires after 1 s unless refreshed."""
+        msg = TwistStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'odom'
+        msg.twist.linear.x = float(vx)
+        msg.twist.linear.y = float(vy)
+        msg.twist.linear.z = float(vz)
+        msg.twist.angular.z = 0.0
+        self.twist_pub.publish(msg)
 
     # -- helpers ---------------------------------------------------------
     def now_s(self):
@@ -226,6 +257,12 @@ class CourseMission(Node):
                 'is commanded until cuVSLAM is tracking.')
             return
         if self.state not in IDLE_STATES and not self.offboard_active:
+            if self.state == 'LAND' and self.landed:
+                self.get_logger().info(
+                    'touched down and disarmed: mission done. This node '
+                    'will not take the vehicle again.')
+                self.goto('DONE')
+                return
             self.get_logger().warn(
                 f'Offboard lost in {self.state}: the pilot has control. '
                 'Paused until the vehicle is disarmed.')
@@ -288,8 +325,13 @@ class CourseMission(Node):
                  else self.carrot.point)
         self.send(*point)
         if vio_ok and self.carrot.done(self.position, self.arrival_radius):
-            self.get_logger().info('route complete; holding at its end.')
-            self.goto('HOLD', point)
+            if self.land_at_end:
+                self.get_logger().info('route complete; landing on its end.')
+                self.goto('LAND', point)
+                self._state_land()      # no tick without a setpoint
+            else:
+                self.get_logger().info('route complete; holding at its end.')
+                self.goto('HOLD', point)
             return
         if (self.carrot.index, point) != self.progress_at[1:]:
             self.progress_at = (now, self.carrot.index, point)
@@ -300,6 +342,19 @@ class CourseMission(Node):
                 f'({math.dist(self.position, point):.2f} m off); holding. '
                 'Check `clamped` in /skybeta/state and VIO.')
             self.goto('HOLD', self.position)
+
+    def _state_land(self):
+        # Straight down at land_speed, nudged back over the pad. Keep pushing
+        # down after touchdown: PX4's land detector needs it, and it disarms
+        # COM_DISARM_LAND (2 s) later, which ends Offboard -> DONE in tick().
+        ex = self.target[0] - self.position[0]
+        ey = self.target[1] - self.position[1]
+        norm = math.hypot(ex, ey)
+        scale = min(1.0, self.land_xy_max / norm) if norm > 0.0 else 0.0
+        self.send_twist(ex * scale, ey * scale, -self.land_speed)
+
+    def _state_done(self):
+        pass
 
     def _state_hold(self):
         self.send(*self.target)
