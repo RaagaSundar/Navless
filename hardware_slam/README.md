@@ -7,7 +7,7 @@ cameras only; IMU fusion remains disabled as planned.
 
 Double-click **Open SLAM.command** if the SSH tunnel needs reopening. It asks
 for the Jetson's existing password when required; credentials are not stored.
-The laptop and Jetson must be on a network that can reach skybeta-19.local.
+The laptop and Jetson must be on a network that can reach skybeta-11.local.
 
 ## Make a map
 
