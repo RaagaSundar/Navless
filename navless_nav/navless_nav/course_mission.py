@@ -128,6 +128,11 @@ PARAMETERS = (
     ('start_height_m', 0.07),
     ('cruise_speed_mps', 0.5),
     ('max_lead_m', 0.6),
+    # Tight turns (the wall-end arcs round C1, C2b and A1 on the Gate B
+    # route): chasing a carrot `lead` ahead round an arc of radius R, the
+    # drone cuts inside by ~lead^2 / (2 R). With this > 0 the lead shrinks
+    # there so the cut stays under it, m (Carrot.lead_limit). 0 = off.
+    ('max_turn_sagitta_m', 0.0),
     # Slow through bends: speed <= sqrt(this * bend radius). 0 = off.
     ('max_lat_accel_mps2', 0.25),
     # Refuse to start the route from somewhere else (e.g. a re-arm after the
@@ -203,6 +208,7 @@ class CourseMission(Node):
         rate_hz = param('publish_rate_hz')
         self.cruise_speed = param('cruise_speed_mps')
         self.max_lead = param('max_lead_m')
+        self.max_sagitta = param('max_turn_sagitta_m')
         self.max_lat_accel = param('max_lat_accel_mps2')
         self.max_start_offset = param('max_start_offset_m')
         self.stall_timeout = param('stall_timeout_s')
@@ -532,7 +538,7 @@ class CourseMission(Node):
             self.goto('HOLD', self.target)
             return
         carrot = Carrot(self.route, self.cruise_speed, self.max_lead,
-                        self.max_lat_accel)
+                        self.max_lat_accel, self.max_sagitta)
         carrot.advance(self.lead_m())       # never pull back behind the lean
         # Measured from where the route starts after the lean, so the lean
         # does not use up max_start_offset_m.
