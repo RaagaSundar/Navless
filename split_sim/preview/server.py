@@ -5,6 +5,7 @@ import json
 import math
 import time
 import re
+import test_index
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,6 +17,9 @@ RUNS = ROOT / 'local_course/state/runs'
 NVIDIA_RUNS = ROOT / 'local_course/state/nvidia-runs'
 FLYX_RUNS = ROOT / 'local_course/state/flyx-runs'
 COURSE = ROOT / 'gazebo_sim/course'
+WALL_TESTS = ROOT / 'local_course/state/wall-rotation'
+WALL_STEREO = WALL_TESTS / '20261107T224200Z-experimental-m3-tangent-pair'
+WALL_FIXTURE = WALL_TESTS / '20261107T222450Z-m3-north-minus18-passive-v1'
 EXTENSIONS = {'.json', '.jsonl', '.log', '.txt', '.yaml', '.png', '.jpg', '.csv', '.mp4'}
 LIMIT = 16 * 1024 * 1024
 FLIGHT_CACHE = {}
@@ -104,6 +108,20 @@ def nvidia_live_phase(run, flight, now=None):
             pass
     return None
 
+def wall_bench_available():
+    required=[WALL_STEREO/name for name in ('experiment.json','paired-camera.json','paired-camera.mp4','approach-route.json','actual-left-paired-preview.png')]
+    required.append(WALL_FIXTURE/'fault-fixture.json')
+    try:
+        if not all(p.is_file() and not p.is_symlink() and p.stat().st_size>0 and p.resolve().is_relative_to(WALL_TESTS.resolve()) for p in required):
+            return False
+        sidecar=WALL_STEREO/'paired-camera.json'
+        if sidecar.stat().st_size>128*1024:
+            return False
+        metadata=json.loads(sidecar.read_text())
+        return metadata.get('status')=='complete' and isinstance(metadata.get('frame_count'),int) and metadata['frame_count']>0
+    except (OSError,ValueError):
+        return False
+
 def catalog():
     rows = []
     sources = [(RUNS, 'Mac SIM', ''), (NVIDIA_RUNS, 'NVIDIA SIM', 'nvidia:'), (FLYX_RUNS, 'FlyX SIM', 'flyx:')]
@@ -153,6 +171,12 @@ def catalog():
                          course_pass=course_pass, kind=flight_kind, activity=activity, in_progress=bool(activity) and state.startswith(('in progress', 'preflight / in progress', 'flight / awaiting')), 
                          review=read_json(run / 'review.json'), has_track=track.exists(), track_file='flight/track.json',
                          files=[str(p.relative_to(run)) for p in files]))
+    if wall_bench_available():
+        rows.insert(0, dict(id='bench:m3-wall-rotation', run_id=WALL_STEREO.name,
+                            display_name='Unexpected wall · M3 rotated 18°', platform_label='Mac Gazebo',
+                            experiment=True, status='paired stereo test complete', kind='camera bench',
+                            observed_flight=False, course_pass=False, in_progress=False,
+                            grade=None, has_track=False, files=[]))
     return rows
 
 class Handler(BaseHTTPRequestHandler):
@@ -160,10 +184,34 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(urlsplit(self.path).path)
         if path == '/api/runs':
             return self.send(json.dumps(catalog()).encode(), 'application/json')
+        if path == '/api/tests':
+            return self.send(json.dumps(test_index.inventory(catalog())).encode(), 'application/json')
+        if path.startswith('/test-evidence/'):
+            parts = path[len('/test-evidence/'):].split('/')
+            target = test_index.resolve_file(parts[0], '/'.join(parts[1:])) if len(parts) > 1 else None
+            if target is None:
+                return self.send_error(404)
+            if target.stat().st_size > LIMIT:
+                return self.send_error(413, 'Evidence exceeds 16 MiB viewing limit')
+            mime = 'image/png' if target.suffix == '.png' else 'image/jpeg' if target.suffix in {'.jpg','.jpeg'} else 'application/json' if target.suffix == '.json' else 'text/plain; charset=utf-8'
+            return self.send(target.read_bytes(), mime)
         fixed = {'/': HERE / 'index.html', '/app.js': HERE / 'app.js',
+                 '/tests': HERE / 'tests.html', '/tests/': HERE / 'tests.html',
+                 '/tests.js': HERE / 'tests.js', '/all_tests_picker.js': HERE / 'all_tests_picker.js',
                  '/api/course': COURSE / 'course_v3.json',
                  '/api/ideal': COURSE / 'route_centreline_window.json'}
         target = fixed.get(path)
+        wall_files = {
+            '/wall-bench.js': HERE / 'wall-bench.js',
+            '/wall-test/fixture.json': WALL_FIXTURE / 'fault-fixture.json',
+            '/wall-test/route.json': WALL_STEREO / 'approach-route.json',
+            '/wall-test/cameras.png': WALL_STEREO / 'actual-left-paired-preview.png',
+            '/wall-test/cameras.mp4': WALL_STEREO / 'paired-camera.mp4',
+            '/wall-test/reference.jsonl': WALL_STEREO / 'changed/20261107T224309Z-m3-tangent-changed-passive/reference.jsonl',
+            '/wall-test/results.json': ROOT / 'local_course/evidence/obstacle-v1/tangent-nominal-residual-commanded-v1.json',
+        }
+        if path in wall_files:
+            target = wall_files[path]
         if path.startswith('/evidence/'):
             parts = path[len('/evidence/'):].split('/')
             if len(parts) < 2 or any(p in ('', '.', '..') for p in parts):
@@ -257,7 +305,14 @@ if __name__ == '__main__':
     parser.add_argument('--nvidia-runs', type=Path, default=NVIDIA_RUNS)
     parser.add_argument('--flyx-runs', type=Path, default=FLYX_RUNS)
     parser.add_argument('--course', type=Path, default=COURSE, help='Directory containing course_v3.json and route_centreline_window.json')
+    parser.add_argument('--test-evidence-root', type=Path, default=ROOT, help='Workspace root for explicit saved-test allowlist')
+    parser.add_argument('--wall-tests', type=Path, default=WALL_TESTS, help='Archived wall-test fixture root; optional, not generated')
     args = parser.parse_args()
     RUNS, NVIDIA_RUNS, FLYX_RUNS, COURSE = (p.resolve() for p in (args.runs, args.nvidia_runs, args.flyx_runs, args.course))
+    WALL_TESTS=args.wall_tests.resolve()
+    WALL_STEREO=WALL_TESTS/'20261107T224200Z-experimental-m3-tangent-pair'
+    WALL_FIXTURE=WALL_TESTS/'20261107T222450Z-m3-north-minus18-passive-v1'
+    test_index.ROOT=args.test_evidence_root.resolve()
+    test_index.RUN_ROOTS={'mac':RUNS,'nvidia':NVIDIA_RUNS,'flyx':FLYX_RUNS}
     print(f'Run viewer: http://127.0.0.1:{args.port}', flush=True)
     ThreadingHTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
