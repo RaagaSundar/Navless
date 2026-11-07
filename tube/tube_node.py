@@ -18,7 +18,9 @@ Knobs to set on the real drone:
                    (0 = check off). Catches a prop hit on one side, or the gap at the tube exit.
 """
 
-STALE_S = 0.1  # 3 frames at 30 Hz
+# tof_driver.py updates both sides every ~0.105 s (100 ms measurements): over two of its frames,
+# so one slow I2C read does not silence a good pair.
+STALE_S = 0.25
 
 
 def tube_offset(left, right, min_range, max_range, left_mount=0.0, right_mount=0.0,

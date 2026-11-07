@@ -61,7 +61,9 @@ def _import_course_mission():
     stubs = {
         'rclpy': types.ModuleType('rclpy'),
         'rclpy.node': types.SimpleNamespace(Node=Node),
-        'geometry_msgs.msg': types.SimpleNamespace(PoseStamped=Msg, TwistStamped=Msg),
+        'rclpy.qos': types.SimpleNamespace(qos_profile_sensor_data=None),
+        'geometry_msgs.msg': types.SimpleNamespace(PointStamped=Msg, PoseStamped=Msg,
+                                                   TwistStamped=Msg),
         'nav_msgs.msg': types.SimpleNamespace(Odometry=Msg),
         'std_msgs.msg': types.SimpleNamespace(String=Msg),
         'rcl_interfaces.msg': types.SimpleNamespace(ParameterDescriptor=lambda **kw: kw),

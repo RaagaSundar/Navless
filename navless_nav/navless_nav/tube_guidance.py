@@ -3,11 +3,17 @@ import math
 
 
 class TubeGuidance:
-    def __init__(self, max_shift=0.20, rate=0.10, timeout=0.30, max_travel=1.5):
+    def __init__(self, max_shift=0.20, rate=0.10, timeout=0.30, max_travel=1.5, clamp=False):
         if not all(math.isfinite(v) and v > 0 for v in (max_shift, rate, timeout)):
             raise ValueError('tube guidance limits must be finite and positive')
         self.max_shift, self.rate, self.timeout = max_shift, rate, timeout
         self.max_travel = max_travel
+        # clamp: a centre measured further than max_shift from the route still
+        # pulls the target max_shift towards it, instead of being dropped. For
+        # the side ToF pair, which tube_node only publishes when it spans the
+        # tube's width: a route that far off the real tube is when the pull
+        # matters most, and max_shift still bounds what a misreading can do.
+        self.clamp = clamp
         self.clear()
 
     def clear(self):
@@ -48,9 +54,10 @@ class TubeGuidance:
         along = sum((nominal[i] - center[i]) * (math.cos(prior_yaw), math.sin(prior_yaw))[i]
                     for i in (0, 1))
         shift += math.tan(angle) * along
-        if abs(angle) > math.radians(15) or abs(shift) > self.max_shift:
+        if abs(angle) > math.radians(15) or (abs(shift) > self.max_shift and not self.clamp):
             self.clear()
             return tuple(nominal)
+        shift = max(-self.max_shift, min(self.max_shift, shift))
         dt = 0.0 if self.last_time is None else min(now - self.last_time, 0.2)
         self.last_time = now
         self.shift += max(-self.rate * dt, min(self.rate * dt, shift - self.shift))
