@@ -21,13 +21,15 @@ cm = h.course_mission
 TUBE_MOUTH_Y = 1.2192        # course frame: the tube's north mouth
 
 
-def step(node, px4, pos, vo_state=1, dt=0.1):
-    """One tick: odometry (frozen at its last value while lost), state, and the point-mass drone."""
+def step(node, px4, pos, vo_state=1, dt=0.1, frozen=None):
+    """One tick: odometry, state, and the point-mass drone. While lost
+    (vo_state 2) odometry stops, or with `frozen` keeps repeating that pose."""
     node.status_cb(types.SimpleNamespace(vo_state=vo_state))
-    if vo_state != 2:
+    if vo_state != 2 or frozen is not None:
+        p = pos if vo_state != 2 else frozen
         node.odometry_cb(types.SimpleNamespace(pose=types.SimpleNamespace(
             pose=types.SimpleNamespace(position=types.SimpleNamespace(
-                x=pos[0], y=pos[1], z=pos[2])))))
+                x=p[0], y=p[1], z=p[2])))))
     px4['local_enu'] = list(pos)          # PX4's own estimate (perfect here)
     node.state_cb(types.SimpleNamespace(data=json.dumps(px4)))
     h.SENT.clear()
@@ -98,6 +100,40 @@ def test_blind_carry_can_go_faster_through_the_tube():
                                  blind_carry_lead_m=1.2)
     moved = lose_vio(node, px4, pos, 1.0)
     assert 0.85 < moved <= 1.0 + 1e-9                  # vs ~0.5 m at the route's speed
+
+
+def last_pose(node):
+    poses = [m for topic, m in h.SENT if topic == cm.POSE_TOPIC]
+    m = poses[-1]
+    return (m.pose.position.x, m.pose.position.y, m.pose.position.z)
+
+
+def frozen_loss(node, px4, pos, seconds):
+    loss = tuple(pos)
+    for _ in range(int(round(seconds / 0.1))):
+        step(node, px4, pos, vo_state=2, frozen=loss)
+    return loss
+
+
+def test_frozen_odometry_holds_where_vio_was_lost():
+    # Gazebo 'freeze': cuVSLAM repeating its last pose (and PX4 fusing it)
+    # with the carrot ahead made PX4 push on into the south net.
+    node, px4, pos = fly_to_tube()
+    carrot = node.carrot.advance(0.3)                      # carrot 0.3 m ahead
+    loss = frozen_loss(node, px4, pos, 1.0)
+    assert math.dist(last_pose(node), loss) < 1e-9
+    assert math.dist(last_pose(node), carrot) > 0.25      # not the carrot ahead
+    step(node, px4, pos)                                   # VIO back
+    assert node.state == 'ROUTE'
+
+
+def test_blind_carry_does_not_run_on_frozen_odometry():
+    node, px4, pos = fly_to_tube(blind_carry=True)
+    s0 = node.carrot.point
+    loss = frozen_loss(node, px4, pos, 2.0)
+    # the freeze shows after a message >= 0.1 s into the loss: <= 2 ticks of carry
+    assert math.dist(node.carrot.point, s0) < 0.11
+    assert math.dist(last_pose(node), loss) < 1e-9
 
 
 def test_blind_carry_never_runs_outside_the_tube_zone():
