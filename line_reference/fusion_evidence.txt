@@ -1,0 +1,37 @@
+SLAM + line fusion evidence — 2026-11-07T09:43:34.543687-08:00
+Editor: Koji Shukawa
+Python 3.12.11; NumPy 2.3.2; macOS-26.7.2-arm64-arm-64bit
+Offline only. No ROS, aircraft connection, moving simulation, flight or deployment.
+Baseline before fusion edits: 9 original geometry tests passed.
+
+Final commands (run from Navless repo root):
+$ uv run --no-project --with numpy python -m unittest discover -s line_reference -p 'test_*.py' -v
+Ran 21 tests in 0.038s — OK (12 fusion + 9 original geometry).
+$ uv run --no-project --with pytest python -m pytest navless_nav/test/test_route.py -q
+20 passed in 0.09s.
+$ git diff --check
+Passed; no whitespace errors.
+No test failures during this extension. Original missing-pytest environment failure remains in evidence.txt.
+
+$ uv run --no-project --with numpy python line_reference/demo_fusion.py
+Seed 7; 100 SYNTHETIC samples; independent sensor noise assumed in this demo.
+90 fused, 10 slam_only (deliberate line dropout).
+Raw lateral RMSE: 0.06867575239383682 m
+Fused lateral RMSE: 0.033885437755370805 m
+Raw yaw RMSE: 0.05956717779376697 rad
+Fused yaw RMSE: 0.027626854441825163 rad
+No real-world performance inference is established by these numbers.
+
+Settings: CI SLAM weight .75; max SLAM/image age .15 s; status age .25 s;
+time skew .03 s; max residual .35 m/30 deg; max correction .15 m/10 deg;
+innovation threshold 9.21 using unknown-correlation upper bound 2*(H P H' + R).
+Map association, total line covariance and input sensor validity are explicit caller responsibilities.
+Demo noise/model parameters are preserved in demo_fusion.py.
+
+SHA256 of tested sources:
+3c9092f24ab63d7f1a5d6b9f5f57a73ef421299c1b512fef41b893a63964ed7d  reference.py
+d08ffab50612ec05934b21bbc24bdb8af93e458be89b2c6ac464bee1481693a5  fusion.py
+25fe099c72da754bba21fbc2129dc90d9363cede4c11af65fb542cc6144f8df4  test_reference.py
+c945fe59311c16484add2646e06623ba6bf6afd38fbb2c13e0c53eb3686e22dd  test_fusion.py
+cf7d1bc4f6b8aa888f823ef3b1262e3f2aa6a3b3fc3e5d4284dd526f8ca4a173  demo_fusion.py
+99f43573522565d7c480efd1f954892948033915df6a4e685327e995d3396eb6  requirements.txt

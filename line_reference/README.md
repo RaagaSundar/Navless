@@ -1,5 +1,10 @@
 # Floor-line reference investigation — Koji, 2026-11-07
 
+**SLAM fusion extension:** `fusion.py` now combines a fresh validated SLAM
+prior with an explicitly associated mapped-line observation, offline. See
+[FUSION.md](FUSION.md) for the inputs, covariance intersection, gates and replay.
+This adds no live sensor subscriber or flight integration.
+
 The maze floor line can supply a local lateral offset and an undirected heading
 reference. It cannot supply position along a straight line: sliding along the
 same line leaves those measurements unchanged. For stationary hover, retain
@@ -85,12 +90,14 @@ No aircraft connection or recording was attempted in this investigation.
 Run from the repository root:
 
 ```bash
-python3 -m unittest discover -s line_reference -p 'test_*.py' -v
+uv run --no-project --with numpy python -m unittest discover -s line_reference -p 'test_*.py' -v
 ```
 
-Nine synthetic tests cover camera projection, mount translation, tilt,
+The original nine synthetic geometry tests cover camera projection, mount translation, tilt,
 lateral sign, heading, endpoint reversal, along-line unobservability,
 stale/future timestamps, invalid calibration, horizon rejection and ambiguous
 geometry. Synthetic points establish geometry only; there are no real images,
 detector accuracy measurements, moving simulator tests or flight results.
 See `evidence.txt` for exact commands, settings, hashes and results.
+Fusion checks and the synthetic replay have separate evidence in
+`fusion_evidence.txt`; they do not replace the original evidence.
