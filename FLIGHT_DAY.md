@@ -47,6 +47,27 @@ degree off moves the far end of the route about 9 cm sideways. In the sim, −2 
 3. To take over at any time, change the flight mode: PX4 leaves Offboard and `navless_nav` pauses.
 4. It lands on the pad by itself and disarms (`COM_DISARM_LAND`).
 
+## 4b. Flying the planner (`px4_bridge_node`) instead of `navless_nav`
+
+Only if the team decides to. Sections 1–3 still apply (run the preflight check first). Then, on the host:
+
+```bash
+bash ~/team_ws/src/Navless/planner/real_flight_start.sh     # refuses if armed; add --stop-on-pad etc.
+docker exec skybeta-stack tail -f /tmp/px4_bridge_flight.log
+```
+
+It replaces the stack's `competitor` window (`navless_nav`) with the bridge in `--skybeta-mode`, so only
+one node commands `/skybeta/setpoint/*`. Fly as in section 4: Altitude, arm, Position.
+
+To stop it: `bash ~/team_ws/src/Navless/planner/real_flight_kill.sh`.
+- **Flying:** it descends where it is until PX4 disarms, then exits.
+- **On the ground or after a pilot takeover:** it exits at once.
+- `--now` stops publishing immediately, so the pilot must take over.
+- To get `navless_nav` back, on the ground only: `docker rm -f skybeta-stack`.
+
+Caveats: flight_interface ignores pose yaw, so the cameras keep the launch heading. Only plain-PX4 runs
+in the FlyX lab have flown the bridge so far.
+
 ## 5. Open decisions (humans)
 
 | Decision | Sim evidence (master sim / Raaga's harness) | What settles it |

@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -232,6 +233,9 @@ class PX4TrajectoryTrackerCore:
         self.px4_unhealthy_since_s: Optional[float] = None
         self.px4_takeoff_enu: Optional[Tuple[float, float, float]] = None
         self.last_landed_time_s: Optional[float] = None
+        # Operator stop (SIGINT/SIGTERM, `planner/real_flight_kill.sh`): land where we are, then finish
+        self.stop_requested_s: Optional[float] = None
+        self.stop_hold_xy_enu: Optional[Tuple[float, float]] = None
 
     def update_px4_skybeta_height(self, now_s: float, px4_z_enu: float) -> None:
         """Update PX4's `local_enu` z height from `/skybeta/state` for pre-arm height agreement."""
@@ -471,6 +475,27 @@ class PX4TrajectoryTrackerCore:
         """Undo the pre-arm zero-tare for an outgoing setpoint: PX4 flies in its own (raw) local frame."""
         ox, oy, oz = self.nav_zero_offset_ned
         return (float(position_ned[0]) + ox, float(position_ned[1]) + oy, float(position_ned[2]) + oz)
+
+    def _course_to_odom(self, pos_enu) -> Tuple[float, float, float]:
+        """Course ENU -> `/skybeta/setpoint/pose` odom, undoing the pre-arm zero-tare like `to_px4_frame`:
+        flight_interface flies raw cuVSLAM odom, not the tared frame the tracker works in."""
+        tare_enu = ned_to_enu_vel(self.nav_zero_offset_ned, convention=self.frame_convention)
+        raw_enu = (float(pos_enu[0]) + tare_enu[0], float(pos_enu[1]) + tare_enu[1], float(pos_enu[2]) + tare_enu[2])
+        return course_to_odom_pos(
+            raw_enu, (self.launch_origin_enu[0], self.launch_origin_enu[1]), self.start_bearing_deg, self.start_height_m
+        )
+
+    def request_stop(self, now_s: float) -> None:
+        """Operator stop: in the air, land where we are (skybeta: descend; plain PX4: NAV_LAND), then finish
+        without re-arming; on the ground, finish now. Idempotent."""
+        if self.stop_requested_s is None:
+            self.stop_requested_s = float(now_s)
+
+    def stop_finished(self) -> bool:
+        """True once a requested stop has nothing left to fly."""
+        return self.stop_requested_s is not None and (
+            self.skybeta_state == "DONE" or self.px4_state in ("DONE", "ABORT")
+        )
 
     def update_landed(self, now_s: float, landed: bool) -> None:
         """PX4 `vehicle_land_detected` (slow: ~0.8 Hz in the FlyX lab, so freshness allows 2.5 s)."""
@@ -906,9 +931,30 @@ class PX4TrajectoryTrackerCore:
 
         launch_xy = (self.launch_origin_enu[0], self.launch_origin_enu[1])
         pos_enu, current_yaw_enu = self.current_course_pose_enu(now_s)
-        pos_odom_cur = course_to_odom_pos(pos_enu, launch_xy, self.start_bearing_deg, self.start_height_m)
+        pos_odom_cur = self._course_to_odom(pos_enu)
         offboard_active = self.telemetry.nav_state == NAVIGATION_STATE_OFFBOARD
         armed = self.telemetry.arming_state == ARMING_STATE_ARMED
+
+        # Operator stop: while we own the vehicle (armed + Offboard), descend in place until PX4 disarms
+        # (COM_DISARM_LAND). Stopping at touchdown instead could hand flight_interface an old pose setpoint
+        # to climb back to. Not ours (disarmed, or the pilot took over): finish now.
+        if self.stop_requested_s is not None and self.skybeta_state != "DONE":
+            if not (armed and offboard_active):
+                self.skybeta_state = "DONE"
+                return SkybetaMissionCommand(
+                    mode="none", skybeta_state="DONE", stage=self.router.stage.value, reason="operator_stop"
+                )
+            if self.stop_hold_xy_enu is None:
+                self.stop_hold_xy_enu = (float(pos_enu[0]), float(pos_enu[1]))
+            self.skybeta_state = "STOP_LAND"
+            vel_odom, sub_rsn = self._compute_flare_twist_odom(pos_enu, self.stop_hold_xy_enu)
+            return SkybetaMissionCommand(
+                mode="twist",
+                vel_odom=vel_odom,
+                skybeta_state="STOP_LAND",
+                stage=self.router.stage.value,
+                reason=f"operator_stop_landing_{sub_rsn}",
+            )
 
         if self.skybeta_state == "DONE":
             return SkybetaMissionCommand(
@@ -981,7 +1027,7 @@ class PX4TrajectoryTrackerCore:
             self.router.spline_start_time_s = now_s
             prearm_ok, prearm_reason = self.check_prearm_navigation_ready(now_s)
             pos_enu, current_yaw_enu = self.current_course_pose_enu(now_s)
-            pos_odom_cur = course_to_odom_pos(pos_enu, launch_xy, self.start_bearing_deg, self.start_height_m)
+            pos_odom_cur = self._course_to_odom(pos_enu)
             if not offboard_active:
                 if not prearm_ok:
                     return SkybetaMissionCommand(
@@ -1035,7 +1081,7 @@ class PX4TrajectoryTrackerCore:
                 self.skybeta_state = "ROUTE"
                 self.router.spline_start_time_s = now_s
             else:
-                target_odom = course_to_odom_pos(target_enu, launch_xy, self.start_bearing_deg, self.start_height_m)
+                target_odom = self._course_to_odom(target_enu)
                 yaw_quat = enu_yaw_to_odom_quat(self._rate_limit_yaw_enu(now_s, current_yaw_enu), self.start_bearing_deg)
                 return SkybetaMissionCommand(
                     mode="pose",
@@ -1070,7 +1116,7 @@ class PX4TrajectoryTrackerCore:
                         convention=self.frame_convention,
                         origin_enu=self.launch_origin_enu,
                     )
-                    sp_odom = course_to_odom_pos(sp_enu, launch_xy, self.start_bearing_deg, self.start_height_m)
+                    sp_odom = self._course_to_odom(sp_enu)
                     return SkybetaMissionCommand(
                         mode="pose",
                         pos_odom=sp_odom,
@@ -1090,7 +1136,7 @@ class PX4TrajectoryTrackerCore:
                         )
                     # VIO lost or temporary hold: freeze at last safe setpoint
                     hold_enu = self.last_safe_course_pos_enu or (float(pos_enu[0]), float(pos_enu[1]), float(pos_enu[2]))
-                    hold_odom = course_to_odom_pos(hold_enu, launch_xy, self.start_bearing_deg, self.start_height_m)
+                    hold_odom = self._course_to_odom(hold_enu)
                     yaw_quat = enu_yaw_to_odom_quat(self.commanded_yaw_enu_rad or current_yaw_enu, self.start_bearing_deg)
                     return SkybetaMissionCommand(
                         mode="pose",
@@ -1144,7 +1190,7 @@ class PX4TrajectoryTrackerCore:
                         convention=self.frame_convention,
                         origin_enu=self.launch_origin_enu,
                     )
-                    sp_odom = course_to_odom_pos(sp_enu, launch_xy, self.start_bearing_deg, self.start_height_m)
+                    sp_odom = self._course_to_odom(sp_enu)
                     return SkybetaMissionCommand(
                         mode="pose",
                         pos_odom=sp_odom,
@@ -1155,7 +1201,7 @@ class PX4TrajectoryTrackerCore:
                     )
                 else:
                     hold_enu = self.last_safe_course_pos_enu or (float(pos_enu[0]), float(pos_enu[1]), float(pos_enu[2]))
-                    hold_odom = course_to_odom_pos(hold_enu, launch_xy, self.start_bearing_deg, self.start_height_m)
+                    hold_odom = self._course_to_odom(hold_enu)
                     yaw_quat = enu_yaw_to_odom_quat(self.commanded_yaw_enu_rad or current_yaw_enu, self.start_bearing_deg)
                     return SkybetaMissionCommand(
                         mode="pose",
@@ -1235,6 +1281,12 @@ class PX4TrajectoryTrackerCore:
         state = self.px4_state
         if state in ("DONE", "ABORT"):
             return PX4MissionCommand(None, (), state, "finished")
+        if self.stop_requested_s is not None and state != "LAND":  # operator stop
+            if tel.arming_state != ARMING_STATE_ARMED:
+                self._px4_enter("ABORT", now_s)
+                return PX4MissionCommand(None, (), "ABORT", "operator_stop_on_ground")
+            self._px4_enter("LAND", now_s)
+            state = "LAND"
         if tel.last_local_pos_time_s is None or tel.last_status_time_s is None:
             return PX4MissionCommand(None, (), state, "waiting_for_px4_telemetry")
 
@@ -1379,7 +1431,7 @@ class PX4TrajectoryTrackerCore:
                     self._px4_enter("ABORT", now_s)
                     return PX4MissionCommand(None, (), "ABORT", "disarmed_without_ground_confirmation")
                 return PX4MissionCommand(None, (), state, "disarmed_waiting_for_land_detected")
-            if self.px4_leg == "course" and self.config.enable_fly_home:
+            if self.px4_leg == "course" and self.config.enable_fly_home and self.stop_requested_s is None:
                 self.px4_leg = "home"
                 self.router.primary_landed = True
                 self.router.stage = CourseStage.STAGE_6_FLY_HOME
@@ -1631,7 +1683,24 @@ def run_ros2_node(argv=None) -> int:
         VehicleStatus,
     )
 
-    rclpy.init()
+    # Signals are ours, not rclpy's: its handler shuts the context down, after which nothing (no landing
+    # setpoint, no NAV_LAND) can be published. First SIGINT/SIGTERM = controlled stop (land, then exit);
+    # a second one = stop publishing now (KeyboardInterrupt below).
+    try:
+        from rclpy.signals import SignalHandlerOptions
+
+        rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+    except (ImportError, TypeError):
+        rclpy.init()
+    stop_signals: List[int] = []
+
+    def _on_stop_signal(signum, _frame) -> None:
+        stop_signals.append(int(signum))
+        if len(stop_signals) >= 2:
+            raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, _on_stop_signal)
+    signal.signal(signal.SIGTERM, _on_stop_signal)
     node = Node("ego_px4_planner_bridge")
     node.set_parameters([Parameter("use_sim_time", value=bool(args.sim_time))])
 
@@ -1921,10 +1990,28 @@ def run_ros2_node(argv=None) -> int:
         t_now = now_sec()
         if t_now <= 0.0:
             return
+        if stop_signals and tracker.stop_requested_s is None:
+            tracker.request_stop(t_now)
+            node.get_logger().warning("Stop requested: landing where we are if flying, then exiting.")
+        if tracker.stop_requested_s is not None and not args.approve_flight:
+            raise SystemExit(0)  # never published a setpoint: nothing to land
         if args.skybeta_mode:
             if not args.approve_flight:
                 return
             cmd = tracker.step_skybeta_mission(t_now)
+            # Log state/stage changes and holds; ROUTE's tracking reasons change at 30 Hz, so not those
+            quiet = cmd.skybeta_state == "ROUTE" and not cmd.reason.startswith("vio_or_planner_hold")
+            key = (cmd.skybeta_state, cmd.stage, "" if quiet else cmd.reason.split(" (")[0])
+            if key != last_logged[0]:
+                last_logged[0] = key
+                here, _ = tracker.current_course_pose_enu(t_now)
+                node.get_logger().info(
+                    f"[{cmd.skybeta_state}] stage={cmd.stage} {cmd.reason} "
+                    f"at course ({here[0]:.2f}, {here[1]:.2f}, {here[2]:.2f})"
+                )
+            if tracker.stop_finished():
+                node.get_logger().info("Stopped: disarmed or pilot in control. Exiting.")
+                raise SystemExit(0)
             if cmd.mode == "pose":
                 pose_msg = PoseStamped()
                 pose_msg.header.stamp = node.get_clock().now().to_msg()
@@ -1968,6 +2055,12 @@ def run_ros2_node(argv=None) -> int:
                 publish_px4_setpoint(mcmd.setpoint)
             return
 
+        if tracker.stop_requested_s is not None:  # --pilot-arms: PX4 Land owns it; exit once disarmed
+            if tracker.telemetry.arming_state == ARMING_STATE_ARMED:
+                _send_nav_land(t_now, "operator_stop")
+                return
+            node.get_logger().info("Stopped: disarmed. Exiting.")
+            raise SystemExit(0)
         sample, status_reason = tracker.sample_setpoint(t_now)
         if sample is None:
             if status_reason == "mission_complete_disarmed":
@@ -2025,11 +2118,16 @@ def run_ros2_node(argv=None) -> int:
             rclpy.spin(node)
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else 0
-    except KeyboardInterrupt:  # Ctrl-C mid-flight means land, not "stop streaming into a failsafe"
-        if cmd_pub is not None and tracker.telemetry.arming_state == ARMING_STATE_ARMED:
-            for _ in range(5):
-                _send_vehicle_cmd(now_sec(), VEHICLE_CMD_NAV_LAND)
-            node.get_logger().warning("Ctrl-C: VEHICLE_CMD_NAV_LAND sent.")
+    except KeyboardInterrupt:  # second stop signal: stop publishing now
+        if tracker.telemetry.arming_state == ARMING_STATE_ARMED:
+            if cmd_pub is not None:
+                for _ in range(5):
+                    _send_vehicle_cmd(now_sec(), VEHICLE_CMD_NAV_LAND)
+                node.get_logger().warning("Second stop signal: VEHICLE_CMD_NAV_LAND sent, exiting.")
+            else:
+                node.get_logger().warning(
+                    "Second stop signal while armed: exiting. flight_interface holds the last setpoint; pilot takes over."
+                )
         return 130
     finally:
         node.destroy_timer(timer)
@@ -2037,7 +2135,7 @@ def run_ros2_node(argv=None) -> int:
         rclpy.try_shutdown()
     if exit_code_holder[0] is not None:
         return exit_code_holder[0]
-    return 1 if px4_mission and tracker.px4_state == "ABORT" else 0
+    return 1 if px4_mission and tracker.px4_state == "ABORT" and tracker.stop_requested_s is None else 0
 
 
 if __name__ == "__main__":
