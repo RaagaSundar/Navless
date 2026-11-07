@@ -208,5 +208,7 @@
   "original_sources_manifest_sha256": "3db735f123cb65ef711669c0f052f7bb62cca2dddd557e63d4913de794aa7796",
   "historical_appearance_sha256": "19bfd2dfb0d4e4673d6fabfdbd0cb5005a08733937a117b35ad1085b5059ca8f",
   "portable_appearance_note": "regenerated schema2 metadata differs; compare visual asset bytes independently",
-  "core_source_equivalence": "37 members byte-identical to PR46/current main; config differs only descriptive scope and route_source"
+  "core_source_equivalence": "37 members byte-identical to PR46/current main; config differs only descriptive scope and route_source",
+  "experiment_name": "Forward window \u00b7 high transit (envelope fail)",
+  "immutable_run_id": "20261107T215942Z-split-astar-flight"
 }

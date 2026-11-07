@@ -32,5 +32,7 @@
     "sources.sha256": "3db735f123cb65ef711669c0f052f7bb62cca2dddd557e63d4913de794aa7796",
     "simulated-vehicle.sdf": "a5d6131addc341245d145647efbc332f0e264a14ee38e775c20cf0c211aca852"
   },
-  "scope": "Recorded simulation evidence summary; truth only independent scoring/diagnosis, no hardware qualification"
+  "scope": "Recorded simulation evidence summary; truth only independent scoring/diagnosis, no hardware qualification",
+  "experiment_name": "Forward window \u00b7 high transit (envelope fail)",
+  "immutable_run_id": "20261107T215942Z-split-astar-flight"
 }

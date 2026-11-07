@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 HERE=Path(__file__).resolve().parent
-PROFILE=HERE/'profiles/known-window-transit/profile.json'
+PROFILE=HERE/'profiles/passed-centered-window/profile.json'
 
 
 def digest(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -29,7 +29,7 @@ def verify(runtime=HERE/'course_runtime', appearance=None, camera=None, profile_
     for name,wanted in expected.items():
         path=contained(Path(runtime),name)
         if digest(path)!=actual[name]:raise ValueError('local runtime differs from its own manifest: '+name)
-        if name=='window-forward-camera-candidate.json':
+        if name=='window-forward-camera-candidate.json' and profile['config_metadata_only_exceptions']:
             config=json.loads(path.read_text())
             for key in profile['config_metadata_only_exceptions']:config.pop(key,None)
             semantic=hashlib.sha256(json.dumps(config,sort_keys=True,separators=(',',':')).encode()).hexdigest()
@@ -41,14 +41,15 @@ def verify(runtime=HERE/'course_runtime', appearance=None, camera=None, profile_
     if camera and digest(camera)!=profile['camera_sha256']:raise ValueError('camera/vehicle bytes differ')
     return {'profile':profile['profile'],'runtime_matches':True,'appearance_checked':bool(appearance),
             'camera_checked':bool(camera),'environment':profile['environment'],
-            'recorded_graded_passed':False,'qualification':'Known physical transit profile; sole graded vertical-envelope failure retained. Not approval to arm.'}
+            'recorded_graded_passed':profile.get('graded_passed',False),'qualification':'One recorded simulation outcome; source equality is not approval to arm or hardware qualification.'}
 
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--profile-json',type=Path,default=PROFILE)
     parser.add_argument('--runtime',type=Path,default=HERE/'course_runtime')
     parser.add_argument('--appearance',type=Path)
     parser.add_argument('--camera',type=Path)
     args=parser.parse_args()
-    try:print(json.dumps(verify(args.runtime,args.appearance,args.camera),indent=2))
+    try:print(json.dumps(verify(args.runtime,args.appearance,args.camera,args.profile_json),indent=2))
     except (OSError,ValueError,KeyError) as error:parser.exit(1,str(error)+'\n')

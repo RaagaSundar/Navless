@@ -46,6 +46,26 @@ def ned_to_odom(xyz, bearing_deg=0.0):
     return list(ned_to_launch_odom(xyz, bearing_deg))
 
 
+def route_land_ready(mission, phase, nav_state, armed, offboard, failsafe, landed):
+    """Route completion is evaluated by the same fused Carrot as the route controller."""
+    return (phase == 'ACTIVE' and mission.state == 'LAND' and nav_state == 'ready'
+            and armed and offboard and not failsafe and not landed
+            and mission.carrot.done(mission.position, mission.arrival_radius))
+
+
+def landing_outcome(elapsed, ack, armed, landed, offboard, auto_land):
+    """After the single land request the companion observes PX4 without commanding."""
+    if not armed and landed:
+        return 'PX4-owned landing complete: landed and disarmed', 0
+    if ack is not None and ack != 0:
+        return f'PX4 rejected route-end land command: ACK {ack}', 1
+    if offboard and elapsed > 1.0:
+        return 'PX4 did not enter autonomous landing within 1 second', 1
+    if armed and not offboard and not auto_land:
+        return 'authority changed after route-end land request', 1
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     flight_mode = parser.add_mutually_exclusive_group()
@@ -130,8 +150,10 @@ def main():
             self.integrity_stamp = None
             self.phase, self.ready_at, self.request_at = 'WAIT', None, None
             self.mode_attempts, self.mode_last_at, self.mode_ack = 0, None, None
+            self.land_requested_at = self.land_ack = None
             self.start_wall, self.start_sim = time.monotonic(), None
             self.last_report = 0.0
+            self.datum_report_at = -math.inf
             self.recorder = RecorderReadiness(args.run_id)
             self.last_stream_at = None
             self.observation_reported = False
@@ -230,6 +252,9 @@ def main():
 
         def ack(self, msg):
             self.get_logger().info(f'PX4 command ACK command={msg.command} result={msg.result}')
+            if (msg.command == VehicleCommand.VEHICLE_CMD_NAV_LAND and self.land_requested_at is not None
+                    and msg.timestamp >= self.land_requested_at*1e6):
+                self.land_ack = int(msg.result)
             if msg.command == VehicleCommand.VEHICLE_CMD_DO_SET_MODE:
                 self.mode_ack = int(msg.result)
 
@@ -308,6 +333,14 @@ def main():
             p, status, land = self.msg['pos'], self.msg['status'], self.msg['land']
             armed = status.arming_state == VehicleStatus.ARMING_STATE_ARMED
             offboard = status.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD
+            if self.land_requested_at is not None:
+                # The only flight command was sent with fresh route-end evidence.
+                # Remain a passive observer through the actual PX4 transition.
+                outcome=landing_outcome(now-self.land_requested_at,self.land_ack,armed,land.landed,
+                    offboard,status.nav_state==VehicleStatus.NAVIGATION_STATE_AUTO_LAND)
+                if outcome:
+                    self.stop(*outcome)
+                return
             aligned=self.pose_history.at(self.source.get('odom')) if self.control_bearing is None else None
             frame_state, frame_reason=self.split_frame.observe(now,self.source.get('odom'),
                 self.odom_quaternion,p,self.msg.get('fusion'),armed,land.landed,
@@ -464,12 +497,19 @@ def main():
                     if self.phase == 'MODE_CHECK':
                         self.stop('independent recording evidence expired during mode check')
                     return
-                if self.ready_at is None and self.phase == 'WAIT':
-                    self.get_logger().info(f'independent recorder ready; starting PX4 stream sim={now:.3f}')
             if self.launch_datum.offset is None:
                 if not self.launch_datum.freeze(now):
-                    self.ready_at = self.healthy_wall = None
+                    self.ready_at = None
+                    if now-self.datum_report_at>=1.0:
+                        window=self.launch_datum.window
+                        axes=zip(*(offset for _,offset in window))
+                        spans=tuple(round(max(axis)-min(axis),5) for axis in axes)
+                        span_time=window[-1][0]-window[0][0] if window else 0.
+                        self.get_logger().info(f'awaiting stable landed translation sim={now:.3f} samples={len(window)} duration={span_time:.3f} spans_ned_m={spans}')
+                        self.datum_report_at=now
                     return
+                if flight_requested and self.phase=='WAIT':
+                    self.get_logger().info(f'independent recorder ready; starting PX4 stream sim={now:.3f}')
                 # The pending setpoint predates registration and has not been streamed.
                 if self.kind == 'position':
                     self.sp = self.launch_datum.to_px4(self.sp)
@@ -519,6 +559,11 @@ def main():
                 elif now-self.request_at > 3.0:
                     self.stop('Offboard/arm request timed out')
                     return
+            if route_land_ready(mission,self.phase,self.nav_state,armed,offboard,status.failsafe,land.landed):
+                self.land_requested_at = now
+                self.get_logger().info('route endpoint verified on fused navigation: requesting PX4 autonomous landing')
+                self.command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
+                return
             if self.start_sim is not None and now-self.start_sim > args.duration:
                 self.command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
                 self.stop('mission duration exceeded: requested land and stopped stream')

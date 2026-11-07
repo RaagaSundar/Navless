@@ -1,0 +1,12 @@
+{
+  "outcome": "Course passed",
+  "worked": [
+    "flight/track.json: recorded 12602 samples.",
+    "flight/track.json: armed airborne motion was recorded.",
+    "flight/track.json: final sample was landed and disarmed.",
+    "flight/track.json: contact sensors verified; no contacts recorded.",
+    "flight/grade.json: independent course grade passed."
+  ],
+  "failed": [],
+  "next": []
+}
