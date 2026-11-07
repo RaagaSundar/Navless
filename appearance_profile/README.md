@@ -163,3 +163,67 @@ Pillow (`ModuleNotFoundError: PIL`); tests then used the installed Pillow Python
 Final generator/integration checks, syntax and source audit are recorded in the
 PR. No build, simulator restart, recording lifecycle or flight/hardware action
 was performed.
+
+## Optional open-strand outer net
+
+`net.py` builds a **new** profile `synthetic-neutral-open-net-v2` from the
+portable neutral parent above. It reads the five public organizer CAD net
+proxy groups (north/south/east/west/roof) and reuses their bounds/center planes.
+Those solid thin proxies contain no measured weave. The generated visual has
+opaque dark six-sided cylindrical strands with genuinely empty holes, rather
+than a transparent sheet or opaque wall.
+
+```bash
+python appearance_profile/net.py --source /path/to/new-appearance \
+  --output /path/to/new-open-net \
+  --organizer-zip /path/to/dronehacks-course-v3-obj.zip \
+  --pitch-m 0.0508 --strand-diameter-m 0.00127
+python -m unittest appearance_profile.test_generate \
+  appearance_profile.test_integration appearance_profile.test_net -v
+```
+
+The ZIP must contain `dronehacks-course-v3.obj`, its `.mtl` and `README.txt`.
+The historical public source ZIP SHA-256 was
+`52498970486fdb72ff6460d9b6297fdc128eabc089c7a25a7df6cf445990167c`.
+It is not bundled; inspect its source/units and compare its digest before use.
+Tests construct a small labeled synthetic proxy archive instead of depending on
+a local ZIP or publishing a binary fixture. They verify algorithm invariants,
+not the identity of an organizer download.
+
+Nominal 50.8 mm pitch and 1.27 mm strand diameter are **assumptions, not
+measurements**. Pitch adjusts slightly to fit CAD extents; the historical model
+had 970 strands, 11,640 vertices and 19,400 triangles, with about 95.06%
+geometric open area. Straight taut orthogonal strands, no sag/knots/support
+poles, disabled shadows and subpixel aliasing are explicit approximations.
+The dark color follows the reviewed CAD material. Scan imagery does not
+establish weave, global metric registration or strand dimensions.
+
+The generator requires the reviewed three-pane baseline visual and validates
+its parent manifest/file hashes. It refuses existing/overlapping output and
+source symlinks. All collision XML stays byte-identical; all non-net course
+content, parent texture pixels, world, sky, lighting and cameras remain
+unchanged. The physical net remains the inherited **solid safety envelope**
+(20 mm boxes), not holes a drone can fly through. Its larger outer spans and
+visual-center offsets remain inherited model simplifications. Only optical
+net appearance changes, including the previously absent south/roof visuals.
+This public appearance model is neither a flight pass nor hardware validation.
+
+Pin the **new** `appearance.json` digest and select the new world/model root
+using the same renderer-verification recipe above; keep the qualified camera.
+Both neutral and open-net schema 2 profiles use `verify.py`. Archive the exact
+parent/new sidecars, public source hash, assumptions and verifier result.
+Existing local path-bearing profiles remain untouched and are not silently
+converted into this new portable artifact.
+
+Net provenance: frozen 2026-11-07 team source SHA-256
+`net_visual_profile.py`: `0c8b41642dd3906f82f364e70a1bcceee9707353885915b807eee97c034e88d0`;
+tests: `de09aa253c382546b97508bb0b133e076d1638869345557e65f6b215c8bb7e1b`.
+These match the team's frozen source manifest. Earlier separate passive
+software-renderer checks observed holes and expected projected strand spacing;
+the extra depth camera there was an **oracle diagnostic**, not stereo-estimated
+depth or an onboard sensor. Startup-to-first-frame costs from those one-shot
+checks are not steady/live throughput. No such renderer/depth benchmark or
+flight was run for this packaging. Ten generator/integration tests pass;
+checks include ray miss through cell centers, ray hits on actual strands,
+outward closed-cylinder winding, determinism, parent tamper rejection and
+end-to-end open-net renderer verification.
