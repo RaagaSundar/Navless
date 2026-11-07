@@ -39,10 +39,11 @@ TUBE_WIDTH_M = '1.45'
 
 ARGUMENTS = [
     # The window route on the as-built course (tools/export_route.py --course course/course_asbuilt.json
-    # --tube-exit-drop-in 42 --pad-from-south-in 26 --maze-top-north-m 0.04): planned >= 8.6 cm to
-    # every wall (M1's north end; M3 11.1, net 9.8, A1 19.6, window 21.0); flown on the stub drone at
-    # both speed settings >= 8.4 cm. The plan's route (route_centreline_window.json) passes 3.6 cm
-    # from a real wall. The as-built walls are a scan best guess, not tape-measured yet.
+    # --tube-exit-drop-in 42 --pad-from-south-in 26 --maze-top-north-m 0.04 --window-via-in 136 44):
+    # planned >= 8.6 cm to every wall (M1's north end; M3 11.1, net 9.8, A1 19.6, window 21.0); flown
+    # on the stub drone at both speed settings >= 8.4 cm. The via point keeps the downward rangefinder
+    # (PX4's height reference) 28 cm off boulder 3, which would read 0.4 m short. The plan's route
+    # (route_centreline_window.json) passes 3.6 cm from a real wall. Shining confirmed the as-built walls.
     ('route_file', 'gazebo_sim/course/route_centreline_window_asbuilt.json',
      'route to fly (repo-relative): the window route on the as-built course map'),
     # On the as-built course the gaps between M1's and M3's north ends and the north net are only
