@@ -30,7 +30,11 @@ States (10 Hz timer):
                        flight_interface fly back to the last pose, 0.85 m
                        up.
     DONE               landed. Publishes nothing, so a later arming cannot
-                       hand the vehicle to us again.
+                       hand the vehicle to us again. With fly_home, the
+                       pad touchdown goes back to WAIT_FOR_OFFBOARD instead,
+                       with the route swapped for the home leg (climb to
+                       home_altitude_m, straight to the launch mark); the
+                       pilot re-arms, and the touchdown there is DONE.
     HOLD               hover at the last target.
     PAUSED             the pilot took over. Nothing advances; once the
                        vehicle is disarmed we go back to waiting.
@@ -96,6 +100,12 @@ PARAMETERS = (
     ('land_at_end', True),
     ('land_speed_mps', 0.3),
     ('land_xy_max_mps', 0.3),     # centring on the pad while descending
+    # Bonus return leg after the pad landing. Off by default. When on, the
+    # pilot's next arming climbs to home_altitude_m (above the floor; the
+    # walls are 1.727 m, flight_interface's ceiling 2.5 m), flies straight
+    # over the wall to the launch mark and lands there.
+    ('fly_home', False),
+    ('home_altitude_m', 2.03),
 )
 
 
@@ -129,7 +139,12 @@ class CourseMission(Node):
                                ).lower() in ('true', '1')
         self.land_speed = param('land_speed_mps')
         self.land_xy_max = param('land_xy_max_mps')
-        self.frame = None           # (launch mark xy, start bearing) once known
+        self.fly_home = str(self.get_parameter('fly_home').value
+                            ).lower() in ('true', '1')
+        # Odom z of the hop: odom starts start_height_m above the floor.
+        self.home_z = param('home_altitude_m') - param('start_height_m')
+        self.going_home = False
+        self.frame = None          # (launch mark xy, start bearing) once known
         self.route = self.load_route(
             str(self.get_parameter('route_file').value),
             param('start_bearing_deg'), param('start_height_m'))
@@ -270,6 +285,21 @@ class CourseMission(Node):
                 'is commanded until cuVSLAM is tracking.')
             return
         if self.state not in IDLE_STATES and not self.offboard_active:
+            if self.state == 'LAND' and self.landed and (
+                    self.fly_home and not self.going_home):
+                # Home leg: straight up, then over the wall to the launch
+                # mark, which is the odom origin. The route start check
+                # (max_start_offset_m) keeps it from flying from anywhere
+                # but this touchdown.
+                x, y, _ = self.position
+                self.route = [(x, y, self.home_z), (0.0, 0.0, self.home_z)]
+                self.going_home = True
+                self.get_logger().info(
+                    'touched down on the pad and disarmed. fly_home: the '
+                    'next arming flies back to the launch mark at '
+                    f'{self.home_z:.2f} m (odom). Leave it disarmed to stop.')
+                self.goto('WAIT_FOR_OFFBOARD')
+                return
             if self.state == 'LAND' and self.landed:
                 self.get_logger().info(
                     'touched down and disarmed: mission done. This node '
