@@ -93,7 +93,8 @@ gravity reference. Start level; this setup has not been qualified for flight.
 - The example competitor/flight interface is stopped while this mapping mode
   runs. No arming, offboard heartbeat, flight setpoint or mode requests are sent.
 - Viewer HTTP binds only to Jetson loopback and reaches the Mac over SSH.
-  ROS DDS stays on domain 19 with the existing localhost transport.
+  ROS DDS stays on the drone's ROS_DOMAIN_ID from drone.env (19 on skybeta-19, by the stack's
+  convention; don't change it) with the existing localhost transport.
 - Check service: `systemctl status handheld-slam.service` on the Jetson.
 - Restart only the team nodes: `sudo systemctl restart handheld-slam.service`.
   This preserves the current tracker/map and serial agent.
