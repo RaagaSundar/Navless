@@ -1,4 +1,4 @@
-# Hand-carried stereo SLAM — Sky Beta 19
+# Hand-carried stereo SLAM — Sky Beta 11
 
 Open <http://127.0.0.1:8765/> on this Mac. The map, live camera, trajectory,
 tracking health and PX4 fusion status are displayed together. The viewer uses
@@ -38,7 +38,7 @@ gravity reference. Start level; this setup has not been qualified for flight.
 - The example competitor/flight interface is stopped while this mapping mode
   runs. No arming, offboard heartbeat, flight setpoint or mode requests are sent.
 - Viewer HTTP binds only to Jetson loopback and reaches the Mac over SSH.
-  ROS DDS stays on domain 19 with the existing localhost transport.
+  ROS DDS stays on domain 11 with the existing localhost transport.
 - Check service: `systemctl status handheld-slam.service` on the Jetson.
 - Restart only the team nodes: `sudo systemctl restart handheld-slam.service`.
   This preserves the current tracker/map and serial agent.
