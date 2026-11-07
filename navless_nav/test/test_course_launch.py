@@ -7,7 +7,7 @@ import ast
 import os
 
 LAUNCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'launch', 'navless_course.launch.py')
-SPEED = ('cruise_speed_mps', 'max_lead_m', 'max_lat_accel_mps2')
+SPEED = ('cruise_speed_mps', 'max_lead_m', 'max_lat_accel_mps2', 'max_turn_sagitta_m')
 
 
 def _declared_and_forwarded():
