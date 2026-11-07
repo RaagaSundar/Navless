@@ -64,6 +64,7 @@ FI_NS = '/skybeta'
 STATE_TOPIC = FI_NS + '/state'
 POSE_TOPIC = FI_NS + '/setpoint/pose'
 TWIST_TOPIC = FI_NS + '/setpoint/twist'
+ODOM_TOPIC = '/visual_slam/tracking/odometry'
 
 IDLE_STATES = ('WAIT_FOR_OFFBOARD', 'PAUSED', 'DONE')
 
@@ -141,7 +142,7 @@ class CourseMission(Node):
         self.twist_pub = self.create_publisher(
             TwistStamped, TWIST_TOPIC, 10)
         self.create_subscription(
-            Odometry, '/visual_slam/tracking/odometry', self.odometry_cb, 10)
+            Odometry, ODOM_TOPIC, self.odometry_cb, 10)
         self.create_subscription(String, STATE_TOPIC, self.state_cb, 10)
         if VisualSlamStatus is not None:
             self.create_subscription(
