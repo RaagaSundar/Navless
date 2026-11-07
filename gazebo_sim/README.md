@@ -52,7 +52,7 @@ way the drone does:
   `DH_TUBE_RECOVER_DELAY=s` brings tracking back late. `DH_TUBE_RESET_JUMP=dx,dy,dz` (odom metres) or `resume`
   (restart from the last tracked pose, as if the drone had not moved while blind) jumps the pose on recovery.
   `fly_navless.py` reads the same variables and blinds the node's odometry identically (`vo_state` 2), so export
-  them once for both. Logic and checks: `dh/tube.py`.
+  them once for both. Logic: `dh/tube.py`; checks: `dh/test_tube_blackout.py`.
 - **Height:** a downward laser rangefinder, 2.7 cm left of and 3.4 cm below the body origin, 0.02–4 m. It is
   ray-cast against the course, so it sees boulders, cradles and the floor. It's the height reference while low
   and slow (`EKF2_HGT_REF` 2, `EKF2_RNG_CTRL` 1), with the barometer behind it.
