@@ -11,8 +11,8 @@ Two sources, either or both:
   python3 gazebo_sim/mirror/mirror.py --drone 192.168.68.88                    # real drone only
   python3 gazebo_sim/mirror/mirror.py --run 127.0.0.1:8776 --drone 192.168.68.88   # sim run + real sensors
   python3 gazebo_sim/mirror/mirror.py --run 127.0.0.1:8776                     # sim run only
-  python3 gazebo_sim/mirror/mirror.py --drone 192.168.55.1 --record tube_carry.jsonl   # tube hand-carry test,
-  python3 gazebo_sim/mirror/tube_test.py tube_carry.jsonl                              # then its report
+  python3 gazebo_sim/mirror/mirror.py --drone 192.168.55.1 --record vio_loss.jsonl   # VIO-loss test, off the
+  python3 gazebo_sim/mirror/tube_test.py vio_loss.jsonl                              # course; then its report
   then open http://localhost:8090   (--gui also opens the Gazebo window)
 
 Nothing here can command anything: both sources are read-only streams.
@@ -315,7 +315,7 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;margin:0;font-varian
 <section class="card"><h2>Mission &amp; sensors</h2><div class="node" id="node">-</div>
 <div class="tof" id="tof"></div><dl id="info"></dl></section>
 <section class="card" style="grid-column:1/-1"><h2>Pre-flight checks (real drone)</h2><div id="pre" class="pre"></div></section>
-<section class="card" style="grid-column:1/-1"><h2>Tube test (real drone): carry it through the tube, props off</h2>
+<section class="card" style="grid-column:1/-1"><h2>Tube test (real drone): VIO loss, off the course (covered lenses or a dark box), props off</h2>
 <canvas id="strip" width="720" height="16"></canvas><dl id="tubetest" style="margin-top:8px"></dl>
 <div class="key"><span><b style="background:#3ecf8e"></b>tracking</span><span><b style="background:#f2555a"></b>lost, odometry stopped</span><span><b style="background:#f0a83c"></b>lost, odometry frozen</span><span><b style="background:#a78bfa"></b>lost, odometry moving</span><span>last 60 s</span>
 <button id="treset" style="margin-left:auto">Reset tube test</button></div></section>
@@ -481,7 +481,7 @@ def main():
     node = Node()
     camera = CameraFeed(node, color=a.color)
     run = RelayClient("sim run", *host_port(a.run, 8776)) if a.run else None
-    tube = TubeTest()                 # the tube hand-carry test, fed every drone frame
+    tube = TubeTest()                 # the VIO-loss test (tube_test.py), fed every drone frame
     tube_lock = threading.Lock()
     record = open(a.record, "a") if a.record else None
 

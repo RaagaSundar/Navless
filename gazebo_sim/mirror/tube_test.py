@@ -1,5 +1,7 @@
-"""Tube hand-carry test: what cuVSLAM and its odometry do inside the dark tube.
+"""VIO-loss test: what cuVSLAM and its odometry do when tracking is lost, as it may be in the dark tube.
 
+The rules don't allow walking through any part of the course, so run it off the course: cover the lenses
+for a few seconds, or carry the drone through a dark box on the bench, or replay frames recorded in flight.
 Reads the frames navless_nav's mirror_relay sends: live in mirror.py's "Tube test" panel, or afterwards
 from a file made with `mirror.py --record`. It answers what decides blind_carry (PR #18) and whether PX4
 should be fed through Koji's gate:
@@ -9,7 +11,7 @@ should be fed through Koji's gate:
   - the largest pose jump during it or just after (one step over 8 cm), usually on the way out;
   - Koji's gate (/mapping/gate_status): what it accepted and rejected over the recording.
 
-  python3 gazebo_sim/mirror/tube_test.py tube_carry.jsonl
+  python3 gazebo_sim/mirror/tube_test.py vio_loss.jsonl
 """
 import json
 import sys

@@ -74,7 +74,7 @@ JUMP_M = 0.08   # one odometry step longer than this is a jump (carried at walki
 
 
 class OdomWatch:
-    """What the odometry topic itself does, for the tube hand-carry test: messages so far, how long the
+    """What the odometry topic itself does, for the VIO-loss test (tube_test.py): messages so far, how long the
     pose has stood exactly still (a frozen pose repeats bit for bit; a carried drone's VIO never does),
     and the last jump, one step longer than JUMP_M (cuVSLAM re-initialising on the way out)."""
 
