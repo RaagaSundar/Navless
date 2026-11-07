@@ -54,6 +54,27 @@ class IntegrationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.check(source, overlay)
 
+    def test_open_net_profile_uses_same_renderer_verifier(self):
+        from appearance_profile import net, test_net
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            source=test_generate.SyntheticProfileTests().fixture(root/'base')
+            model=Path(__file__).resolve().parents[1]/'gazebo_sim/models/dh_course/model.sdf'
+            (source/'models/dh_course/model.sdf').write_bytes(model.read_bytes())
+            world=source/'world.sdf'
+            world.write_text(world.read_text().replace('name="test"','name="dronehacks"').replace(
+                '</world>','<include><uri>model://dh_course</uri></include></world>'))
+            parent=root/'parent'
+            generate(source,parent,pixels_per_m=128,world_source=world)
+            archive=test_net.archive_fixture(root/'proxy.zip')
+            overlay=root/'open'
+            net.generate(parent,overlay,archive)
+            report=self.check(source,overlay)
+            self.assertEqual(report['appearance_profile'],'synthetic-neutral-open-net-v2')
+            self.assertNotIn(str(root),json.dumps(report))
+            (overlay/'models/dh_course/meshes/net_open_strands.obj').write_text('tampered')
+            with self.assertRaises(ValueError):self.check(source,overlay)
+
     def test_static_world_is_optical_only_and_sources_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
