@@ -386,23 +386,32 @@ class GlobalCourseRouter:
             hop_z = barrier.safe_hop_z_m
             home_wp = self.home_target_enu(hop_z_m=hop_z)
             climb_wp = (float(pos[0]), float(pos[1]), hop_z)
+            dist_xy_home = float(np.linalg.norm(pos[:2] - np.asarray(home_wp[:2], dtype=np.float64)))
+            fly_home_mids = [barrier.apex_waypoint_m] if dist_xy_home > 0.75 else None
 
             spline, elapsed_ms = self.optimizer.plan_spline(
                 climb_wp,
                 home_wp,
                 profile,
-                intermediate_waypoints=[barrier.apex_waypoint_m],
+                intermediate_waypoints=fly_home_mids,
                 use_clearance_cost=False,
+                goal_radius_m=self.config.acceptance_radius_m,
             )
             if spline is not None:
                 z_start = max(0.05, float(pos[2]))
-                ctrl_with_climb = np.vstack([
-                    np.array([float(pos[0]), float(pos[1]), z_start], dtype=np.float64),
-                    np.array([float(pos[0]), float(pos[1]), 0.5 * (z_start + hop_z)], dtype=np.float64),
-                    np.array([float(pos[0]), float(pos[1]), hop_z], dtype=np.float64),
-                    spline.control_points,
-                ])
-                spline = UniformBspline(ctrl_with_climb, spline.dt).reallocate_time(profile.v_max, profile.a_max)
+                if z_start < hop_z - 0.25:
+                    p_bottom = np.array([float(pos[0]), float(pos[1]), z_start], dtype=np.float64)
+                    p_mid = np.array([float(pos[0]), float(pos[1]), 0.5 * (z_start + hop_z)], dtype=np.float64)
+                    ctrl_with_climb = np.vstack([
+                        p_bottom,
+                        p_bottom,
+                        p_bottom,
+                        p_mid,
+                        spline.control_points[2:],
+                    ])
+                    spline = UniformBspline(ctrl_with_climb, spline.dt).reallocate_time(profile.v_max, profile.a_max)
+            elif self.active_spline is not None:
+                spline = self.active_spline
             self.active_spline = spline
             return PlannerDecision(
                 stage=self.stage,
@@ -419,8 +428,15 @@ class GlobalCourseRouter:
         mids: Optional[List[Tuple[float, float, float]]] = None
         use_clearance = True
         goal_rad = 0.0
+        avoid_list: Optional[List[Tuple[Tuple[float, float, float], float]]] = None
         if self.grid.detected_concentric_pad is not None or self.stage == CourseStage.STAGE_5_LANDING_PAD:
             _, goal_rad = self.landing_target_enu()
+        if self.selected_branch == "GATE_B" and float(pos[0]) > -0.45:
+            features = self.grid.discover_course_features(
+                standoff_distance_m=self.config.window_inspect_distance_m,
+            )
+            win_c = features.window_center_m or self.config.checkpoints.window_aperture
+            avoid_list = [(win_c, 0.55)]
         if self.stage == CourseStage.STAGE_3_TUNNEL and self.grid.detected_concentric_pad is None:
             features = self.grid.discover_course_features(
                 standoff_distance_m=self.config.window_inspect_distance_m,
@@ -437,8 +453,11 @@ class GlobalCourseRouter:
             profile,
             intermediate_waypoints=mids,
             use_clearance_cost=use_clearance,
+            avoid_spheres=avoid_list,
             goal_radius_m=goal_rad,
         )
+        if spline is None and self.active_spline is not None:
+            spline = self.active_spline
         self.active_spline = spline
         reason = "collision_avoidance_replan" if spline_blocked else ("stage_transition" if stage_changed else "periodic_1hz_replan")
         return PlannerDecision(

@@ -62,12 +62,14 @@ def astar_search_3d(
 
     if not grid.in_bounds_voxel(start_vox) or not grid.in_bounds_voxel(goal_vox):
         return None
-    if grid.inflated_grid[goal_vox] and goal_radius_m <= 0.0:
+    if grid.raw_grid[goal_vox] and goal_radius_m <= 0.0:
         return None
 
     iz_min = max(0, int(math.floor((z_min_m - grid.bounds_min[2]) / grid.resolution)))
     iz_max = min(grid.shape[2] - 1, int(math.floor((z_max_m - grid.bounds_min[2]) / grid.resolution)))
     goal_r_vox = max(0.0, goal_radius_m / grid.resolution)
+    if grid.inflated_grid[goal_vox] and goal_r_vox <= 0.0:
+        goal_r_vox = 3.5
 
     # Pre-convert avoid_spheres to voxel space for fast checking
     avoid_vox_spheres: List[Tuple[int, int, int, float]] = []
@@ -321,6 +323,7 @@ class EgoBsplineOptimizer:
 
         Returns (spline_or_None, elapsed_ms).
         """
+        soft_cost = self.grid.build_soft_clearance_cost() if use_clearance_cost else None
         t0 = time.perf_counter()
 
         chain = [ clamp_altitude_enu(start_m, profile.z_min_enu, profile.z_max_enu) ]
@@ -328,8 +331,6 @@ class EgoBsplineOptimizer:
             for wp in intermediate_waypoints:
                 chain.append(clamp_altitude_enu(wp, profile.z_min_enu, profile.z_max_enu))
         chain.append(clamp_altitude_enu(goal_m, profile.z_min_enu, profile.z_max_enu))
-
-        soft_cost = self.grid.build_soft_clearance_cost() if use_clearance_cost else None
 
         guiding_segments: List[np.ndarray] = []
         for i in range(len(chain) - 1):
