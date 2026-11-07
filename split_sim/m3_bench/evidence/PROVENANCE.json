@@ -1,0 +1,48 @@
+{
+  "source_date": "2026-11-07",
+  "public_base": "main897c227; merged49 exact39-member control core",
+  "separate_prs": {
+    "57": "as-built MAVLink gate and sideToF tools, unrelated",
+    "54/56": "viewer only, not copied"
+  },
+  "source_sha256": {
+    "wall_rotation_fixture.py": "3239af817a53da20f93bd46106787b75e24fb0a37ae12b10ac097562a1380a2d",
+    "m3_fullworld.py": "d1cc5bf42b8640a7e523c8d24b8c85abab666849b53097991e8229f131e9eee0",
+    "m3_actual_clearance.py": "e6e18545d16fe8b07f34632f7cdca752ac89c43a6923dc8273894e2315df87d6",
+    "m3_nominal_archive.py": "669ba0854baa95838428856578e11517e5125c7d2c8d9e95d55824348c13b112",
+    "m3_capture_staging/evaluate_m3_capture.py": "cb3c4f8190f9e57e0305a06d10406be4280001cb76732c65e3d4828599254ee1",
+    "m3_capture_staging/screen_m3_capture.py": "dac55f6ca19c6637e0e4fba02c90d5caf8fb4c586b2024aa1f769bbb1ec2f24f"
+  },
+  "portability_changes": [
+    "scene receipts use relative contained members and explicit baseline inputs",
+    "renderer/range select same pinned physical model in explicit compose override",
+    "host replay imports tracked geometry relative to repository",
+    "finite evaluator returns failure status when declared goals are unmet",
+    "frozen wrapper/route/contract bytes retained; no source/authority gate weakened"
+  ],
+  "tested_reproduction": {
+    "actual_changed_model_sha256": "32d5e02c421e806f257e18828771bfaa72f35053e7b349875e3fef533a6f08a7",
+    "actual_changed_visual_sha256": "272f872bca6d8d0aff0566c8c8d11b4fdfa942518616f2bfd0affbdf85479b6e",
+    "nominal_model_sha256": "a692cb719b3b248f27e0339d61039d7e18dce140800ef6a2079ba7ce348cd6f2",
+    "static_prefix_margin_both_m": 0.10509750453070821,
+    "retained_actual_replay_goals": "both true; same numerical outcome/braking metrics as sealed reports"
+  },
+  "packaged_source_sha256": {
+    "physical_clearance.py": "e6e18545d16fe8b07f34632f7cdca752ac89c43a6923dc8273894e2315df87d6",
+    "mission_m3_capture.py": "4ab34d70c0079f03c301a97af0a3444dccb802f0e8a28ae7ebc748e26c96cb7b",
+    "scene.py": "07488ce228bab40e50e2f61a7d12c68d5eaf38aee5a77e0430053a449ce74355",
+    "screen_m3_capture.py": "d152b3ffeef88501837cdffe00451f5374f0d48e651b0b6a353471685ffb19dc",
+    "evaluate_m3_capture.py": "81afd0bf89c27a53b2904bc9e52b87a63013eb03ab6d03bb8f7ca024d22e7d56",
+    "test_scene.py": "6a9756ee28fb1aba6bbdf51979bde03b9deaf25650a284bc916bf970ea31c3cb",
+    "test_m3_capture.py": "27c1efa4bcfbaa31257e4931eec1a73f6e9e64d0e562a8dba368951e173d0cd9"
+  },
+  "tests": {
+    "new_offline_tests": 6,
+    "existing_runtime_passed": 23,
+    "existing_runtime_optional_skip": 1,
+    "existing_install_profile_tests": 6,
+    "compose_parse": "passed; no containers started",
+    "actual_retained_replays": "231918 and232429 same finite goals/reasons/clearance/endpoint/braking metrics",
+    "runtime_requalification": "new portable integration has not been launched; historical flights not claimed repeated"
+  }
+}

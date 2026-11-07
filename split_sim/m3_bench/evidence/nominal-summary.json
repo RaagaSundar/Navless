@@ -1,0 +1,62 @@
+{
+  "capture_met_declared_goals": true,
+  "reasons": [],
+  "goal": "actual bounded moving M3 sensor capture and observed stopping/normal-land outcome; NOT avoidance/fullcourse",
+  "actual_course_clearance_sphere_m": 0.10639990582044184,
+  "actual_nonground_contacts": [],
+  "actual_horizontal_travel_extent_m": 1.942729157278036,
+  "actual_final_endpoint_xy_error_m": 0.02459612188404939,
+  "actual_auto_land_seen": true,
+  "actual_landed_disarmed_seen": true,
+  "shadow_detector": {
+    "state": "unavailable",
+    "receipt_events": 0,
+    "used_for_control": false
+  },
+  "actual_braking_observation": {
+    "available": true,
+    "source": "actual post-nav-guard fused PX4 samples; not truth",
+    "source_samples": 57,
+    "initial_measured_speed_mps": 0.14724313069675807,
+    "max_source_gap_s": 0.07600000000000051,
+    "settled_below_03_for_half_second": true,
+    "measured_time_to_settled_s": 2.808,
+    "measured_max_forward_excursion_until_settled_m": 0.05791415296636463,
+    "measured_max_3d_excursion_until_settled_m": 0.0614006741183252,
+    "informative_nonstationary_stop": true,
+    "model_qualification": "single observed transient only; not a guaranteed braking/deceleration bound"
+  },
+  "schema_version": 1,
+  "experiment_name": "Nominal M3 \u00b7 bounded stereo capture",
+  "immutable_run_id": "20261107T232429Z-split-astar-flight",
+  "baseline_id": "20261107T221438Z-split-astar-flight",
+  "comparison_baseline_id": "20261107T231918Z-split-astar-flight",
+  "variant": "nominal",
+  "what_changed": {
+    "world": "M3 returns to original pose",
+    "onboard_prior": "unchanged original geometry",
+    "control": "same exact wrapper,233-point prefix,0.20/0.08 target caps,measured stop and endpoint hold",
+    "confounds": "fresh initialization/noise/trajectory; not identical sensor measurements or a controlled avoidance study"
+  },
+  "core_source_closure": "39 executed base files already on main49;8 unused return helpers in historical47-member archive deliberately omitted",
+  "ordinary_full_course_grade_passed": false,
+  "replay_checked": true,
+  "scope": "Bounded moving capture goals only, not obstacle avoidance/full course/hardware qualification",
+  "genuine_stereo_archive": {
+    "integrity": "ok",
+    "matched_pairs": 2627,
+    "first_stamp_ns": 1376000000,
+    "last_stamp_ns": 85408000000,
+    "sha256": "c73b327d0c004b59f3180491686e1cd81f7fa43b64ade6321a04e5555fc20c1e"
+  },
+  "evidence_sha256": {
+    "m3-capture-result.json": "5d369475ee17c20566089ca3a993ecc49561bf8608fcecd071e42ac46ba117d3",
+    "flight/grade.json": "58fdc6b578645658fe9be16d0993d48df7f8c13f2dd832b2e75c7226cc38d727",
+    "flown-runtime.tgz": "7109c8db163b32f89119395acc4a9c776e6fe3472b1d17d9b8ad3ea55556ee4a",
+    "sources.sha256": "ad68ed2e3f5fefdb168e7798224a46c1cf9341e33d9df4f81839ce5536851f4f",
+    "m3-capture/mission_m3_capture.py": "4ab34d70c0079f03c301a97af0a3444dccb802f0e8a28ae7ebc748e26c96cb7b",
+    "m3-capture/m3-capture-contract.json": "4c196fc2d1c2a3b49a76e86edbd722f57cd5755a832fa89948280bd9621693a9",
+    "flight/planned-route.json": "fd09b658339f7e2286c2cf2ba4397a2e9de438f4a19fd9eba83d0db741e95a05",
+    "renderer-source.json": "111632161e639d0fecaf1508dcab1a73e3edfc3aa383d91cefe56f2f9c6e78a3"
+  }
+}

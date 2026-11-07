@@ -1,0 +1,17 @@
+{
+  "passed": false,
+  "reasons": [
+    "missing ordered checkpoint: maze_m2",
+    "missing ordered window crossing",
+    "full aircraft not contained inside outer landing pad ring"
+  ],
+  "checkpoints_sim_s": {
+    "corridor_done": 41.05326375615341
+  },
+  "pad_distance_cm": 230.43,
+  "min_clearance_cm": 12.48,
+  "samples": 6590,
+  "contacts": [],
+  "aircraft_envelope_radius_m": 0.3,
+  "scope": "conservative full-aircraft simulation grading; truth solely for independent scoring"
+}
