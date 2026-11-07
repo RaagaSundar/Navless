@@ -362,9 +362,8 @@ class TestROS2AndGazeboSimulation(unittest.TestCase):
 
             gz_proc = subprocess.Popen(
                 ["gz", "sim", "-s", "-r", str(sdf_path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
             bridge_proc = subprocess.Popen(
                 [
@@ -375,17 +374,40 @@ class TestROS2AndGazeboSimulation(unittest.TestCase):
                     "/model/sky_beta_drone/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist",
                     "/model/sky_beta_drone/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry",
                 ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
 
             rclpy.init()
             try:
                 node = Node("gz_closed_loop_planner_tester")
                 cmd_pub = node.create_publisher(Twist, "/model/sky_beta_drone/cmd_vel", 10)
+                depth_pub = node.create_publisher(Image, "/camera/depth/image_raw", 10)
                 gz_odom_poses: List[Tuple[float, float, float]] = []
+                gz_depth_frames = [0]
+                depth_cam = RaycastOakDDepthCamera(seed=55)
                 rng = np.random.default_rng(7)
+                vio_drift = np.zeros(3, dtype=np.float64)
+
+                def on_gz_depth(msg: Image) -> None:
+                    if not gz_odom_poses:
+                        return
+                    depth_m = decode_ros_depth_image(msg)
+                    pos_enu = ned_to_enu_pos(
+                        tracker.telemetry.pos_ned,
+                        convention="enu_to_ned",
+                        origin_enu=tracker.launch_origin_enu,
+                    )
+                    grid.update_from_depth_image(
+                        depth_m,
+                        depth_cam.fx,
+                        depth_cam.fy,
+                        depth_cam.cx,
+                        depth_cam.cy,
+                        pos_enu,
+                        0.5 * math.pi,
+                    )
+                    gz_depth_frames[0] += 1
 
                 def on_gz_odom(msg: Odometry) -> None:
                     # True Gazebo rigid-body position in course ENU frame
@@ -394,11 +416,12 @@ class TestROS2AndGazeboSimulation(unittest.TestCase):
                     gz_z = float(msg.pose.pose.position.z)
                     gz_odom_poses.append((gx, gy, gz_z))
 
-                    # Add VIO measurement noise before feeding into PX4 tracker
+                    # Add bounded random-walk VIO drift + Gaussian noise before feeding into PX4 tracker
+                    vio_drift[:] = np.clip(vio_drift + rng.normal(0.0, 0.002, size=3), -0.03, 0.03)
                     noisy_enu = (
-                        gx + float(rng.normal(0.0, 0.012)),
-                        gy + float(rng.normal(0.0, 0.012)),
-                        gz_z + float(rng.normal(0.0, 0.008)),
+                        gx + float(vio_drift[0] + rng.normal(0.0, 0.012)),
+                        gy + float(vio_drift[1] + rng.normal(0.0, 0.012)),
+                        gz_z + float(vio_drift[2] + rng.normal(0.0, 0.008)),
                     )
                     ned = enu_to_ned_pos(noisy_enu, convention="enu_to_ned", origin_enu=tracker.launch_origin_enu)
                     now_s = time.monotonic()
@@ -406,13 +429,26 @@ class TestROS2AndGazeboSimulation(unittest.TestCase):
                     tracker.update_vehicle_status(now_s, ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD)
                     tracker.update_estimator_health(True)
 
+                    # Publish raycasted noisy 16UC1 depth image from true Gazebo pose
+                    if len(gz_odom_poses) % 2 == 1:
+                        img = Image()
+                        img.height = depth_cam.height
+                        img.width = depth_cam.width
+                        img.encoding = "16UC1"
+                        img.is_bigendian = 0
+                        img.step = depth_cam.width * 2
+                        img.data = depth_cam.render_16uc1_mm(grid, np.array([gx, gy, gz_z]), 0.5 * math.pi)
+                        depth_pub.publish(img)
+
                 node.create_subscription(Odometry, "/model/sky_beta_drone/odometry", on_gz_odom, 10)
+                node.create_subscription(Image, "/camera/depth/image_raw", on_gz_depth, 10)
                 executor = SingleThreadedExecutor()
                 executor.add_node(node)
 
                 t_start = time.monotonic()
                 while (time.monotonic() - t_start) < 12.0:
-                    executor.spin_once(timeout_sec=0.05)
+                    for _ in range(3):
+                        executor.spin_once(timeout_sec=0.02)
                     if gz_odom_poses:
                         now_s = time.monotonic()
                         sample, _ = tracker.sample_setpoint(now_s)
@@ -429,23 +465,26 @@ class TestROS2AndGazeboSimulation(unittest.TestCase):
                             tw.linear.y = float(vel_cmd[1])
                             tw.linear.z = float(vel_cmd[2])
                             cmd_pub.publish(tw)
-                            if float(np.linalg.norm(cur - np.asarray(cfg.checkpoints.start_pad))) > 0.35:
+                            if float(np.linalg.norm(cur - np.asarray(cfg.checkpoints.start_pad))) > 0.35 and gz_depth_frames[0] >= 1:
                                 break
 
                 self.assertGreater(len(gz_odom_poses), 5, "Did not receive Odometry from Gazebo over ros_gz_bridge")
                 disp = float(np.linalg.norm(np.asarray(gz_odom_poses[-1]) - np.asarray(gz_odom_poses[0])))
                 print(
-                    f"[Gazebo Live Physics Bridge] Odometry msgs: {len(gz_odom_poses)}, "
+                    f"[Gazebo Live Physics + Noisy VIO + Depth Bridge] Odometry msgs: {len(gz_odom_poses)}, "
+                    f"Depth frames decoded: {gz_depth_frames[0]}, "
                     f"Start ENU: {np.round(gz_odom_poses[0], 3).tolist()} -> "
                     f"Moved ENU: {np.round(gz_odom_poses[-1], 3).tolist()} (disp={disp:.3f}m)"
                 )
                 self.assertGreater(disp, 0.20, "Gazebo rigid-body drone did not move in response to planner cmd_vel")
             finally:
                 rclpy.shutdown()
-                bridge_proc.terminate()
-                gz_proc.terminate()
-                bridge_proc.wait(timeout=5)
-                gz_proc.wait(timeout=5)
+                for p in (bridge_proc, gz_proc):
+                    p.terminate()
+                    try:
+                        p.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        p.kill()
 
     def test_02_ros2_full_course_with_physics_vio_drift_and_unmapped_boulder(self) -> None:
         """Full 6-stage ROS 2 flight with 2nd-order physics, VIO drift/noise, and an unmapped boulder."""
