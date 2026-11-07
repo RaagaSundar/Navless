@@ -177,6 +177,25 @@ def test_fly_home_hop_leaves_only_at_hop_height():
     assert node.home_z == 2.2 - 0.07
 
 
+def test_fly_home_hop_leaves_when_px4_says_it_is_at_hop_height():
+    # SITL: PX4 settled 7 cm under the 2.2 m hop by truth/odom, with its own
+    # estimate on the setpoint. That counts as climbed; it would never get
+    # closer by odom.
+    node, px4, pad = run(fly_home=True, takeoff_timeout_s=8.0)
+    t0 = T[0]
+    fly(node, px4, pad, lambda: T[0] - t0 >= 2.5, max_s=5.0)
+    pos = list(pad)
+    arm(px4)
+    cap = node.home_z - 0.07
+    t0 = T[0]
+    while node.state in ('WAIT_FOR_OFFBOARD', 'TAKEOFF') and T[0] - t0 < 10.0:
+        Z_BIAS[0] = 0.07 if pos[2] >= cap - 1e-9 else 0.0
+        fly(node, px4, pos, lambda: True, max_s=1.0)
+        pos[2] = min(pos[2], cap)
+    Z_BIAS[0] = 0.0
+    assert node.state == 'ROUTE'
+
+
 def test_fly_home_hop_that_never_reaches_height_holds_over_the_pad():
     # e.g. a ceiling clamp below the hop: takeoff_timeout_s -> HOLD, and the
     # leg over the wall never starts.

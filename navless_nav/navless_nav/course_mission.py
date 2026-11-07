@@ -136,9 +136,10 @@ PARAMETERS = (
     # odom setpoint stays 0.37 m under it. Lower that clamp and this too.
     ('fly_home', False),
     ('home_altitude_m', 2.2),
-    # The hop's horizontal leg starts only once odom z is this close to the
-    # hop height (not at arrival_radius_m): starting early crossed Barrier 1
-    # at 1.91-1.99 m in SITL with home_altitude_m 2.03.
+    # The hop's horizontal leg starts only once odom z, or PX4's own height,
+    # is this close to the hop height (not at arrival_radius_m): starting
+    # early crossed Barrier 1 at 1.91-1.99 m in SITL with home_altitude_m
+    # 2.03. See climbed().
     ('home_climb_tol_m', 0.05),
     # The home leg lands only within this of the launch mark (not
     # arrival_radius_m): Barrier 1 is right behind the mark, and descending
@@ -476,9 +477,15 @@ class CourseMission(Node):
 
     def climbed(self):
         """On the fly_home hop, the climb must be (nearly) complete before
-        the leg over Barrier 1 starts; elsewhere arrival_radius_m is enough."""
-        return (not self.going_home
-                or self.position[2] >= self.target[2] - self.home_climb_tol)
+        the leg over Barrier 1 starts; elsewhere arrival_radius_m is enough.
+        Complete by odom, or by PX4's own height: PX4 holds where its
+        estimate says the setpoint is, which can sit a few cm off odom (7 cm
+        short at 2.2 m in SITL), so waiting longer would never get there."""
+        if not self.going_home:
+            return True
+        need = self.target[2] - self.home_climb_tol
+        return (self.position[2] >= need
+                or (self.px4_z is not None and self.px4_z >= need))
 
     def start_route(self):
         if not self.route:
