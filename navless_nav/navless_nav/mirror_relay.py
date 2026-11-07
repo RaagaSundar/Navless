@@ -3,10 +3,10 @@
 Read-only: subscribes, never publishes, never touches /fmu/*. Run it inside the stack
 container with the team overlay sourced, with the drone on the bench or carried, props off:
 
-    ros2 run navless_nav mirror_relay                          # TCP 8765, 30 Hz
+    ros2 run navless_nav mirror_relay                          # TCP 8775, 30 Hz
     ros2 run navless_nav mirror_relay --ros-args -p rate_hz:=20
 
-The laptop connects to <drone-ip>:8765. The drone never connects out, so this works
+The laptop connects to <drone-ip>:8775. The drone never connects out, so this works
 from WSL2 behind NAT, over Wi-Fi or USB (192.168.55.1). It gets one JSON object per line:
 
     {"t": 12.34, "age": 0.02,                   receive time, odometry age (s)
@@ -113,7 +113,7 @@ def main(args=None):
     class MirrorRelay(Node):
         def __init__(self):
             super().__init__('navless_mirror_relay')
-            self.declare_parameter('port', 8765)
+            self.declare_parameter('port', 8775)   # 8765 is the organisers' status agent
             self.declare_parameter('rate_hz', 30.0)
             port = int(self.get_parameter('port').value)
             rate = float(self.get_parameter('rate_hz').value)
