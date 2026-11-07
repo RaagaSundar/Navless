@@ -11,9 +11,12 @@ The packaged controller is the exact 32-file source manifest retained from run
 continuously active conditional range/terrain fusion, despite healthy EV/baro
 height. This package does not claim a course pass.** `PROVENANCE.json` records its
 archive identity. The corrected conditional-range guard and ROS range transport are tracked in
-[height follow-up #43](https://github.com/RaagaSundar/Navless/pull/43). It is
-stacked on this harness. Apply its final reviewed source and run its doctor/tests
-before selecting `ev-terrain`; this baseline deliberately retains the failure. The default `range` profile
+[height integration follow-up #46](https://github.com/RaagaSundar/Navless/pull/46),
+stacked on this harness. It is a draft pending the final measured Range-based
+guard; do not treat its current state as flight-qualified. The earlier
+[#43](https://github.com/RaagaSundar/Navless/pull/43) merged utility/tests only,
+not complete runner integration. Apply #46 only after its final source and tests
+are reviewed; this baseline deliberately retains the failure. The default `range` profile
 remains available. Do not weaken readiness gates to make setup appear successful.
 
 ## What is available in GitHub
