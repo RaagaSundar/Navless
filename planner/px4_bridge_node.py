@@ -136,7 +136,8 @@ class PX4TrajectoryTrackerCore:
         lookahead_s: float = 0.25,
         start_bearing_deg: float = 0.0,
         start_height_m: float = 0.0,
-        max_yaw_rate_rad_s: float = 0.90,
+        max_yaw_rate_rad_s: float = 1.40,
+        max_lead_m: float = 0.55,
         touch_and_go_fly_home: bool = True,
     ) -> None:
         self.router = router
@@ -146,6 +147,7 @@ class PX4TrajectoryTrackerCore:
         self.start_bearing_deg = float(start_bearing_deg)
         self.start_height_m = float(start_height_m)
         self.max_yaw_rate_rad_s = float(max_yaw_rate_rad_s)
+        self.max_lead_m = float(max_lead_m)
         self.touch_and_go_fly_home = bool(touch_and_go_fly_home)
         if launch_origin_enu is None:
             sp = self.config.checkpoints.start_pad
@@ -159,6 +161,8 @@ class PX4TrajectoryTrackerCore:
         self.last_localize_time_s: Optional[float] = None
         self.localized_pos_enu: Optional[Tuple[float, float, float]] = None
         self.localized_yaw_enu_rad: float = 0.0
+        self.localize_status: str = "tracking"
+        self.localize_measured_xy: Tuple[float, float] = (1.0, 1.0)
         self.commanded_yaw_enu_rad: Optional[float] = None
         self.last_yaw_update_time_s: Optional[float] = None
         # `/skybeta` flight_interface state machine
@@ -166,6 +170,18 @@ class PX4TrajectoryTrackerCore:
         self.landed_flag: bool = False
         self.pad_touchdown_since_s: Optional[float] = None
         self.last_safe_course_pos_enu: Optional[Tuple[float, float, float]] = None
+
+    def update_localize_status(
+        self,
+        status: str,
+        *,
+        measured_x: float = 1.0,
+        measured_y: float = 1.0,
+    ) -> None:
+        """Update status and measurement confidence from `/team/localize/status`."""
+        if status:
+            self.localize_status = str(status).strip().lower()
+        self.localize_measured_xy = (float(measured_x), float(measured_y))
 
     def update_localized_course_pose(
         self,
@@ -175,9 +191,9 @@ class PX4TrajectoryTrackerCore:
         z_course_m: float,
         yaw_enu_rad: float = 0.0,
     ) -> None:
-        """Update course-frame pose from `/team/localize/pose` (`depthcloud/cloud_localize.py`).
+        """Update course-frame pose from `/team/localize/base_pose` or `/team/localize/pose` (`depthcloud/cloud_localize.py`).
 
-        Smooths step corrections (limiting per-update jump to 8 cm and 5 deg) so setpoints never jump.
+        Smooths step corrections (limiting per-update jump to 8 cm) so setpoints never jump.
         """
         if not (math.isfinite(x_course_m) and math.isfinite(y_course_m) and math.isfinite(z_course_m)):
             return
@@ -195,11 +211,17 @@ class PX4TrajectoryTrackerCore:
         self.last_localize_time_s = float(now_s)
 
     def current_course_pose_enu(self, now_s: float) -> Tuple[np.ndarray, float]:
-        """Return `(pos_enu, yaw_enu)` in the course frame, preferring `/team/localize/pose` when fresh."""
+        """Return `(pos_enu, yaw_enu)` in the course frame, preferring `/team/localize/base_pose` when fresh and measured."""
+        status_ok = self.localize_status == "tracking" or (
+            self.localize_status == "weak"
+            and self.localize_measured_xy[0] >= 0.7
+            and self.localize_measured_xy[1] >= 0.7
+        )
         if (
             self.localized_pos_enu is not None
             and self.last_localize_time_s is not None
             and (now_s - self.last_localize_time_s) <= 1.5
+            and status_ok
         ):
             return np.asarray(self.localized_pos_enu, dtype=np.float64), float(self.localized_yaw_enu_rad)
         pos_enu = ned_to_enu_pos(
@@ -318,18 +340,30 @@ class PX4TrajectoryTrackerCore:
             profile.z_max_enu,
             xy_limit_m=xy_fence,
         )
+        # Cap carrot lead distance so a lagging drone never sees a setpoint > max_lead_m ahead
+        if self.max_lead_m > 0.0 and decision.stage != CourseStage.STAGE_6_FLY_HOME:
+            lead_vec = pos_enu - drone_pos_enu
+            lead_dist = float(np.linalg.norm(lead_vec))
+            if lead_dist > self.max_lead_m:
+                pos_enu = clamp_altitude_enu(
+                    drone_pos_enu + (self.max_lead_m / lead_dist) * lead_vec,
+                    z_min_clamp,
+                    profile.z_max_enu,
+                    xy_limit_m=xy_fence,
+                )
         vel_enu = spline.evaluate_velocity(t_eval)
         raw_yaw_enu = spline.evaluate_yaw(t_eval, fallback_yaw=current_yaw_enu)
         yaw_enu = self._rate_limit_yaw_enu(now_s, raw_yaw_enu)
 
         # If inside STAGE_3_TUNNEL and fresh `/tube/offset` is available, blend lateral centering nudge
+        # using actual body/odom yaw (`current_yaw_enu`) since ToF ranges are measured in body frame
         if (
             decision.stage == CourseStage.STAGE_3_TUNNEL
             and self.last_tube_offset_time_s is not None
             and (now_s - self.last_tube_offset_time_s) <= 0.15
         ):
-            left_x = -math.sin(yaw_enu)
-            left_y = math.cos(yaw_enu)
+            left_x = -math.sin(current_yaw_enu)
+            left_y = math.cos(current_yaw_enu)
             nudge = float(np.clip(0.5 * self.tube_offset_left_m, -0.15, 0.15))
             pos_enu = clamp_altitude_enu(
                 np.array(
@@ -876,7 +910,11 @@ def run_ros2_node(argv=None) -> int:
     def on_tube_offset(msg: PointStamped) -> None:
         tracker.update_tube_offset(now_sec(), float(msg.point.y), float(msg.point.z))
 
-    def on_localize_pose(msg: PoseStamped) -> None:
+    last_base_pose_rx_s: List[float] = [-1e9]
+    last_validated_odom_rx_s: List[float] = [-1e9]
+    last_vslam_status_rx_s: List[float] = [-1e9]
+
+    def _apply_localize_msg(msg: PoseStamped) -> None:
         p = msg.pose.position
         q = msg.pose.orientation
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
@@ -884,7 +922,29 @@ def run_ros2_node(argv=None) -> int:
         yaw_enu = math.atan2(siny_cosp, cosy_cosp)
         tracker.update_localized_course_pose(now_sec(), float(p.x), float(p.y), float(p.z), yaw_enu)
 
-    def on_visual_slam_odom(msg: Odometry) -> None:
+    def on_localize_base_pose(msg: PoseStamped) -> None:
+        last_base_pose_rx_s[0] = now_sec()
+        _apply_localize_msg(msg)
+
+    def on_localize_pose(msg: PoseStamped) -> None:
+        # Prefer `/team/localize/base_pose` (drone base_link center) when active
+        if (now_sec() - last_base_pose_rx_s[0]) <= 1.5:
+            return
+        _apply_localize_msg(msg)
+
+    def on_localize_status(msg: String) -> None:
+        try:
+            st = json.loads(msg.data)
+            meas = st.get("measured") or {}
+            tracker.update_localize_status(
+                str(st.get("status", "tracking")),
+                measured_x=float(meas.get("x", 1.0)),
+                measured_y=float(meas.get("y", 1.0)),
+            )
+        except (ValueError, TypeError):
+            pass
+
+    def _apply_odom_msg(msg: Odometry, *, from_validated_gate: bool) -> None:
         p = msg.pose.pose.position
         v = msg.twist.twist.linear
         q = msg.pose.pose.orientation
@@ -914,7 +974,25 @@ def run_ros2_node(argv=None) -> int:
             True,
             True,
         )
-        tracker.update_estimator_health(True)
+        # Take estimator health from Koji's gate or `/visual_slam/status` (`vo_state == 1`),
+        # falling back to healthy only when `/visual_slam/status` is absent (e.g. SITL)
+        if from_validated_gate or (now_sec() - last_vslam_status_rx_s[0]) > 2.0:
+            tracker.update_estimator_health(True)
+
+    def on_validated_odom(msg: Odometry) -> None:
+        last_validated_odom_rx_s[0] = now_sec()
+        _apply_odom_msg(msg, from_validated_gate=True)
+
+    def on_visual_slam_odom(msg: Odometry) -> None:
+        # Prefer Koji's fail-closed `/mapping/validated_odometry` gate when active
+        if (now_sec() - last_validated_odom_rx_s[0]) <= 1.0:
+            return
+        _apply_odom_msg(msg, from_validated_gate=False)
+
+    def on_vslam_status(msg: object) -> None:
+        last_vslam_status_rx_s[0] = now_sec()
+        vo_state = int(getattr(msg, "vo_state", 1))
+        tracker.update_estimator_health(vo_state == 1)
 
     def on_skybeta_state(msg: String) -> None:
         try:
@@ -926,8 +1004,11 @@ def run_ros2_node(argv=None) -> int:
         except ValueError:
             pass
 
-    node.create_subscription(VehicleLocalPosition, "/fmu/out/vehicle_local_position_v1", on_local_pos, px4_qos)
-    node.create_subscription(VehicleStatus, "/fmu/out/vehicle_status_v1", on_status, px4_qos)
+    if not args.skybeta_mode:
+        # Never subscribe to `/fmu/out/vehicle_local_position_v1` in `--skybeta-mode` because
+        # PX4's local frame on `skybeta-11` is rotated 90 deg relative to VIO odom
+        node.create_subscription(VehicleLocalPosition, "/fmu/out/vehicle_local_position_v1", on_local_pos, px4_qos)
+        node.create_subscription(VehicleStatus, "/fmu/out/vehicle_status_v1", on_status, px4_qos)
     node.create_subscription(Bool, "/estimator/healthy", on_estimator_health, px4_qos)
     node.create_subscription(CameraInfo, "/camera/depth/camera_info", on_camera_info, px4_qos)
     node.create_subscription(CameraInfo, "/oak/left/camera_info", on_camera_info, px4_qos)
@@ -935,12 +1016,25 @@ def run_ros2_node(argv=None) -> int:
     node.create_subscription(Image, "/team/stereo/depth", on_depth, px4_qos)
     node.create_subscription(PointCloud2, "/team/stereo/points", on_pointcloud, px4_qos)
     node.create_subscription(PointStamped, "/tube/offset", on_tube_offset, px4_qos)
+    node.create_subscription(PoseStamped, "/team/localize/base_pose", on_localize_base_pose, 10)
     node.create_subscription(PoseStamped, "/team/localize/pose", on_localize_pose, 10)
+    node.create_subscription(String, "/team/localize/status", on_localize_status, 10)
+    node.create_subscription(Odometry, "/mapping/validated_odometry", on_validated_odom, 10)
     node.create_subscription(Odometry, "/visual_slam/tracking/odometry", on_visual_slam_odom, 10)
     node.create_subscription(String, "/skybeta/state", on_skybeta_state, 10)
+    try:
+        from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
 
-    offboard_pub = node.create_publisher(OffboardControlMode, "/fmu/in/offboard_control_mode", 10)
-    setpoint_pub = node.create_publisher(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", 10)
+        node.create_subscription(VisualSlamStatus, "/visual_slam/status", on_vslam_status, 10)
+    except ImportError:
+        pass
+
+    offboard_pub = (
+        None if args.skybeta_mode else node.create_publisher(OffboardControlMode, "/fmu/in/offboard_control_mode", 10)
+    )
+    setpoint_pub = (
+        None if args.skybeta_mode else node.create_publisher(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", 10)
+    )
     skybeta_pose_pub = node.create_publisher(PoseStamped, "/skybeta/setpoint/pose", 10)
     skybeta_twist_pub = node.create_publisher(TwistStamped, "/skybeta/setpoint/twist", 10)
 
