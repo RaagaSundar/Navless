@@ -81,9 +81,34 @@ python3 /root/team_ws/src/dronehacks/cloud_localize.py --ros-args -p obj:=/root/
 
 Start it with `docker exec -d ...` or in its own shell: a background `&` inside a plain `docker exec` is killed when that exec ends.
 
-**Odometry fusion:** each frame, the camera's motion since the previous frame comes from the stack's Isaac ROS Visual SLAM (TF `odom` → cloud frame). It's applied first as a prediction, then ICP corrects it against the course. When nothing matches (looking through the net), the estimate keeps moving on odometry, with status `odometry` shown in blue. Turn it off with `use_odometry:=false`.
+**Odometry fusion:** each frame, the camera's motion since the previous frame comes from the stack's Isaac ROS Visual SLAM. It's applied first as a prediction, then ICP corrects it against the course. When nothing matches (looking through the net), the estimate keeps moving on odometry, with status `odometry` shown in blue. Turn it off with `use_odometry:=false`.
 
-Simulated flights of `route_gate_b.json` (`--simflight dronehacks-course-v3.obj route=route_gate_b.json speed=0.3 yaw=travel`), with pessimistic odometry drift (3% scale, 0.3°/s heading):
+- **Source:** Koji's fail-closed gate, `/mapping/validated_odometry` (`hardware_slam/odom_gate.py`). Only samples that passed its checks are used: tracking OK, at most 250 ms old, right frames, finite, valid covariance. If that topic is silent for more than 2 s, it falls back to raw TF `odom` → camera, but only while `/visual_slam/status` reports tracking.
+- **Gaps:** after untrusted frames, the next trusted one bridges the gap, because VSLAM's frame is continuous. Gaps over 3 s restart the chain.
+- **Resets:** a step faster than 3 m/s (or 360°/s) is treated as a VSLAM reset and rejected, and the last good step is repeated in its place, so a mid-turn reset doesn't freeze the heading.
+
+**Outputs for consumers:**
+
+| Topic | Type | Contents |
+|---|---|---|
+| `/team/localize/pose` | `PoseStamped`, `frame_id: course` | the left camera's pose; orientation = camera forward/left/up |
+| `/team/localize/base_pose` | `PoseStamped`, `frame_id: course` | `base_link` (drone centre), via the static TF `base_link` → camera; use this one for planning |
+| `/team/localize/status` | `std_msgs/String` (JSON) | `status` (`tracking` / `weak` / `odometry` / `holding` / `lost` / ...), `measured` (fraction of x / y / height / heading the frame measured), `age` (s since the last course match), `odom_source`, `odom_rejects` |
+
+The two pose topics are published only while status is `tracking`, `weak` or `odometry`. Check `status` and `measured` before trusting a pose: `odometry` means no course match right now.
+
+ICP uses Tukey weighting with an annealed cut-off (`max(6 cm, 0.5 × search radius)`), so coarse passes can still correct 10–15° heading errors.
+
+**Window route** (`route_centreline_window.json`, simulated, 2 seeds each):
+
+| Drone heading | Normal VSLAM | VSLAM with 15% dropouts + 2 resets |
+|---|---|---|
+| nose north | median ~9 cm, up to ~1 m | median 19 cm up to 4 m |
+| facing direction of travel | median 3–4 cm, max 9–11 cm | median 8–10 cm, max 23–37 cm |
+
+Nose north, the camera stares through the north net for about 24 s along the north edge, then flies backwards through the tube. The error peaks there, until the window wall snaps it back.
+
+Earlier simulated flights of `route_gate_b.json` (`--simflight dronehacks-course-v3.obj route=route_gate_b.json speed=0.3 yaw=travel`), with pessimistic odometry drift (3% scale, 0.3°/s heading), before annealing:
 
 | | Position median / max / end | Heading median / max |
 |---|---|---|
@@ -97,8 +122,12 @@ Facing the direction of travel keeps the camera on the course; with a fixed head
 To watch a simulated flight live, add `view=8083`. It runs in real time, loops the route, and serves the same viewer, with the true pose drawn in white. Run it inside the stack container from `~/team_ws/src/dronehacks`:
 
 ```bash
-python3 cloud_localize.py --simflight dronehacks-course-v3.obj route=route_gate_b.json speed=0.3 yaw=travel view=8083
+python3 cloud_localize.py --simflight dronehacks-course-v3.obj route=route_centreline_window.json speed=0.3 yaw=travel view=8083
 ```
+
+Other options: `yaw=fixed|travel`, `seed=`, `odom_drop=0.15` (untrusted VSLAM frames), `odom_resets=60,140` (fake VSLAM reset jumps), `max_speed=1000` (turns the reset check off, for comparison), `odom_only=1` (baseline), and `icp.anneal=`.
+
+**CPU:** run `stereo_cloud.py` at 3 Hz (`-p rate_hz:=3.0`); the localizer uses only 3 clouds per second. At 5 Hz, together with Koji's mapping viewer, the Jetson overloaded, and Koji's odometry gate, which also feeds PX4, saw sample age of about 245 ms and rejected most samples. At 3 Hz it was back to about 57 ms.
 
 **What the simulations do NOT show:** the camera data in them is generated from the .obj, with made-up noise and clutter. They test the matching and fusion logic, not real stereo depth, the real net, real lighting, or the real VSLAM's drift. See the team Slack post for the full list.
 
