@@ -89,7 +89,7 @@ class PlannerConfig:
     tracker_rate_hz: float = 30.0  # 30-50 Hz PX4 TrajectorySetpoint streaming
     short_term_planner: str = "nmpc"  # "nmpc" (Receding-Horizon 3D MPCC/NMPC) or "ego" (EGO B-spline)
     fast_mode: bool = False
-    fast_mode_multiplier: float = 1.65
+    fast_mode_multiplier: float = 2.25
     enable_fly_home: bool = True
 
     # Stage kinematic profiles (Step 3) — tuned to 0.60 m/s for reliable 15 Hz cuVSLAM tracking around corners

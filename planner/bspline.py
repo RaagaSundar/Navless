@@ -356,7 +356,7 @@ class EgoBsplineOptimizer:
         resampled = self._resample_polyline(full_guiding, self.spacing)
 
         # Initial knot span based on target cruise speed
-        dt_init = max(0.12, self.spacing / max(0.75 * profile.v_max, 0.20))
+        dt_init = max(0.08, self.spacing / max(0.95 * profile.v_max, 0.20))
         spline = UniformBspline.from_waypoints(resampled, dt_init)
         ctrl = spline.control_points
 

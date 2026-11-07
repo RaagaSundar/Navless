@@ -35,7 +35,11 @@ from tests.test_ros2_gazebo_sim import QuadrotorPhysicsAndVIOSim, RaycastOakDDep
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-OBJ_PATH = REPO_ROOT / "dronehacks-course-v3.obj"
+OBJ_PATH = (
+    REPO_ROOT / "dronehacks-course-v3.obj"
+    if (REPO_ROOT / "dronehacks-course-v3.obj").exists()
+    else REPO_ROOT.parent / "dronehacks-course-v3.obj"
+)
 
 
 _BASE_GRID: OccupancyGrid3D | None = None
@@ -771,11 +775,17 @@ def main(port: int = 8090) -> None:
     import threading
 
     def _warm() -> None:
-        for bw in (False, True):
-            key = f"True_True_{bw}"
-            if key not in SimViewerHandler._cache:
-                ep = run_simulation_episode(fast_mode=True, spawn_unmapped_boulder=True, block_window=bw)
-                SimViewerHandler._cache[key] = json.dumps(ep).encode("utf-8")
+        for pm in ("nmpc", "ego"):
+            for bw in (False, True):
+                key = f"{pm}_True_True_{bw}"
+                if key not in SimViewerHandler._cache:
+                    ep = run_simulation_episode(
+                        fast_mode=True,
+                        spawn_unmapped_boulder=True,
+                        block_window=bw,
+                        planner_mode=pm,
+                    )
+                    SimViewerHandler._cache[key] = json.dumps(ep).encode("utf-8")
 
     threading.Thread(target=_warm, daemon=True).start()
     server = HTTPServer(("0.0.0.0", port), SimViewerHandler)

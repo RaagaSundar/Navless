@@ -69,8 +69,8 @@ class NonlinearMPCPlanner:
         w_jerk: float = 0.18,
         w_obs: float = 42.0,
         safe_clearance_m: float = 0.62,
-        curvature_slowdown_gain: float = 1.35,
-        max_iterations: int = 14,
+        curvature_slowdown_gain: float = 0.65,
+        max_iterations: int = 8,
     ) -> None:
         self.grid = grid
         self.N = int(max(4, horizon_steps))
@@ -279,6 +279,7 @@ class NonlinearMPCPlanner:
 
         # 4. Preconditioned Quasi-Newton / Nesterov optimization with Anisotropic MPCC + Obstacle Barrier
         u_prev = u_mat.copy()
+        cached_obs_grad = np.zeros((self.N, 3), dtype=np.float64)
         for it in range(self.max_iterations):
             beta = 0.28 if it > 0 else 0.0
             u_eval = u_mat + beta * (u_mat - u_prev)
@@ -303,13 +304,16 @@ class NonlinearMPCPlanner:
 
             # Multi-voxel obstacle repulsion barrier gradient across the horizon (skip during vertical fly-home climb)
             if z_min_override is None or z_min_override >= 0.20:
-                for k in range(self.N):
-                    obs_cost, obs_grad = self.grid.obstacle_repulsion_gradient(
-                        p_roll[k],
-                        self.safe_clearance,
-                    )
-                    if obs_cost > 1e-6:
-                        grad_p[k] += self.w_obs * obs_grad
+                if it % 3 == 0:
+                    cached_obs_grad.fill(0.0)
+                    for k in range(self.N):
+                        obs_cost, obs_grad = self.grid.obstacle_repulsion_gradient(
+                            p_roll[k],
+                            self.safe_clearance,
+                        )
+                        if obs_cost > 1e-6:
+                            cached_obs_grad[k] = self.w_obs * obs_grad
+                grad_p += cached_obs_grad
 
             # Velocity tracking + speed limit gradient
             grad_v = self.w_vel * (v_roll - v_ref)
@@ -491,7 +495,7 @@ class NonlinearMPCPlanner:
                     if not self.grid.is_occupied(cand[i - 1], inflated=True):
                         pts[i] = cand[i - 1]
 
-        dt_init = max(0.12, spacing / max(0.75 * profile.v_max, 0.20))
+        dt_init = max(0.08, spacing / max(0.95 * profile.v_max, 0.20))
         spline = UniformBspline.from_waypoints(pts, dt_init).reallocate_time(profile.v_max, profile.a_max)
         if not self.is_spline_collision_free(spline):
             dense_guiding = self._resample_polyline(full_guiding, max(0.18, 0.5 * spacing))

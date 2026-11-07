@@ -718,8 +718,10 @@ class PX4TrajectoryTrackerCore:
         ang2 = abs(math.atan2(math.sin(yaw_fwd2 - yaw_fwd1), math.cos(yaw_fwd2 - yaw_fwd1)))
         turn_angle = max(ang1, ang2)
         turn_ratio = min(1.0, max(0.0, (turn_angle - 0.20) / 0.70))
-        turn_factor = 1.0 - 0.50 * turn_ratio
-        effective_lead_m = self.max_lead_m * turn_factor if self.max_lead_m > 0.0 else 0.0
+        turn_slow = 0.28 if self.config.fast_mode else 0.50
+        turn_factor = 1.0 - turn_slow * turn_ratio
+        base_lead_m = self.max_lead_m * (1.75 if self.config.fast_mode else 1.0)
+        effective_lead_m = base_lead_m * turn_factor if base_lead_m > 0.0 else 0.0
 
         p_prev = clamp_altitude_enu(
             spline.evaluate_position(t_prev),
