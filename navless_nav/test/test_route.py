@@ -86,6 +86,13 @@ def _arc(radius, n=40):
     return pts
 
 
+def test_carrot_advance_slides_along_the_path_and_stops_at_its_end():
+    c = Carrot([(0, 0, 0), (1, 0, 0), (1, 1, 0)], speed=0.1, max_lead=0.01)
+    assert close(c.advance(1.5), (1.0, 0.5, 0.0)) and c.index == 1
+    assert close(c.advance(10.0), (1.0, 1.0, 0.0)) and c.at_end
+    assert close(c.advance(-1.0), (1.0, 1.0, 0.0))
+
+
 def test_turn_radius_is_measured():
     path = _arc(0.5)
     r = turn_radii(path)

@@ -92,6 +92,14 @@ PREARM_PX4_TIMEOUT_S = 1.0
 
 PARAMETERS = (
     ('takeoff_altitude_m', 0.85),
+    # Climb target this far along the route's first leg instead of straight
+    # above the drone, m (see takeoff_target). 0 = straight up. Gazebo, drone
+    # profile, centreline route: Barrier 1 clearance during the climb 3.1-4.7
+    # cm at 0, 16.1 cm at 0.15, 18.3 cm at 0.25. The first corridor is open
+    # for 1.6 m ahead, so the larger lean is free if the real drone does not
+    # drift at all, and it covers more backward drift if it does. Never on
+    # the fly_home take-off from the pad (see lead_m).
+    ('takeoff_lead_m', 0.25),
     ('arrival_radius_m', 0.25),
     ('takeoff_timeout_s', 15.0),
     ('publish_rate_hz', 10.0),
@@ -150,6 +158,7 @@ class CourseMission(Node):
             return float(self.get_parameter(name).value)
 
         self.takeoff_altitude = param('takeoff_altitude_m')
+        self.takeoff_lead = max(0.0, param('takeoff_lead_m'))
         self.arrival_radius = param('arrival_radius_m')
         self.takeoff_timeout = param('takeoff_timeout_s')
         rate_hz = param('publish_rate_hz')
@@ -416,12 +425,29 @@ class CourseMission(Node):
             self.goto('REFUSED', self.position)
             self._state_refused()       # no tick without a setpoint
             return
-        x, y, _ = self.position
-        # Climb to the route's first point, so the route doesn't open with a
-        # height step (Gazebo: 7 cm once start_height_m is set).
-        z = self.route[0][2] if self.route else self.takeoff_altitude
-        self.goto('TAKEOFF', (x, y, z))
+        self.goto('TAKEOFF', self.takeoff_target())
         self._state_takeoff()       # climb on this tick, not the next one
+
+    def takeoff_target(self):
+        """Straight up to the route's first height (no height step when the
+        route opens; Gazebo: 7 cm once start_height_m is set), leaning
+        takeoff_lead_m into the route's first leg. Barrier 1 is behind the
+        launch mark and the first corridor ahead of it; in Gazebo the liftoff
+        drifts ~15 cm backwards (thrust-model mismatch), to 3 cm from the
+        barrier, and the lean takes that margin back."""
+        x, y, _ = self.position
+        if not self.route:
+            return (x, y, self.takeoff_altitude)
+        r0 = self.route[0]
+        p = Carrot(self.route, 1.0, math.inf).advance(self.lead_m())
+        return (x + p[0] - r0[0], y + p[1] - r0[1], r0[2])
+
+    def lead_m(self):
+        """takeoff_lead_m, but 0 on the fly_home take-off: the pad has room
+        all round (over 0.7 m to anything in Gazebo's model), and a lean
+        there only starts the hop over Barrier 1 closer to the wall, with
+        less run-up to finish the climb."""
+        return 0.0 if self.going_home else self.takeoff_lead
 
     def _state_takeoff(self):
         self.send(*self.target)
@@ -438,7 +464,12 @@ class CourseMission(Node):
         if not self.route:
             self.goto('HOLD', self.target)
             return
-        offset = math.dist(self.position[:2], self.route[0][:2])
+        carrot = Carrot(self.route, self.cruise_speed, self.max_lead,
+                        self.max_lat_accel)
+        carrot.advance(self.lead_m())       # never pull back behind the lean
+        # Measured from where the route starts after the lean, so the lean
+        # does not use up max_start_offset_m.
+        offset = math.dist(self.position[:2], carrot.point[:2])
         if offset > self.max_start_offset:
             self.get_logger().error(
                 f'{offset:.2f} m from the route start (limit '
@@ -446,8 +477,7 @@ class CourseMission(Node):
                 'Holding. Power up on the launch mark.')
             self.goto('HOLD', self.target)
             return
-        self.carrot = Carrot(self.route, self.cruise_speed, self.max_lead,
-                             self.max_lat_accel)
+        self.carrot = carrot
         self.last_tick = self.now_s()
         self.progress_at = (self.last_tick, 0, self.carrot.point)
         self.goto('ROUTE')
