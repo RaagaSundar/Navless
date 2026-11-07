@@ -79,9 +79,10 @@ def run_simulation_episode(
     fast_mode: bool = True,
     spawn_unmapped_boulder: bool = True,
     block_window: bool = False,
+    planner_mode: str = "nmpc",
 ) -> Dict:
     """Execute a complete closed-loop physics + noisy VIO + raycasted depth episode and return telemetry."""
-    cfg = PlannerConfig(fast_mode=fast_mode)
+    cfg = PlannerConfig(fast_mode=fast_mode, short_term_planner=planner_mode)
     base_grid = _get_base_grid(cfg)
     planner_grid = _clone_grid(base_grid, cfg)
     initial_raw = planner_grid.raw_grid.copy()
@@ -121,7 +122,7 @@ def run_simulation_episode(
     home_disarm_ticks = 0
     home_descend_z_sp = cfg.checkpoints.fly_home_altitude_m
 
-    for step_i in range(950):
+    for step_i in range(1350):
         sim_t = round(step_i * dt, 3)
         meas_pos_ned, meas_vel_ned, meas_yaw_ned = phys.observe_noisy_vio_ned(dt)
         est_enu = ned_to_enu_pos(meas_pos_ned, origin_enu=tracker.launch_origin_enu)
@@ -304,6 +305,11 @@ def run_simulation_episode(
 
         speed_mps = float(np.linalg.norm(phys.true_vel_enu))
         vio_err_cm = float(np.linalg.norm(est_enu - phys.true_pos_enu) * 100.0)
+        nmpc_pts = None
+        nmpc_ms = 0.0
+        if tracker.last_nmpc_rollout is not None and cfg.short_term_planner == "nmpc":
+            nmpc_pts = np.round(tracker.last_nmpc_rollout.positions_enu, 3).tolist()
+            nmpc_ms = round(float(tracker.last_nmpc_rollout.solve_time_ms), 2)
 
         frames.append(
             {
@@ -319,6 +325,8 @@ def run_simulation_episode(
                 "sp_enu": [round(float(x), 4) for x in sp_enu],
                 "speed_mps": round(speed_mps, 3),
                 "vio_err_cm": round(vio_err_cm, 2),
+                "nmpc_ms": nmpc_ms,
+                "nmpc_horizon": nmpc_pts,
                 "spline": active_spline_pts if (step_i % 3 == 0 or reason != "tracking_active_spline") else None,
                 "discovered_voxels": depth_hits_world if depth_hits_world else None,
             }
@@ -328,6 +336,7 @@ def run_simulation_episode(
             break
 
     return {
+        "planner_mode": planner_mode,
         "fast_mode": fast_mode,
         "spawn_unmapped_boulder": spawn_unmapped_boulder,
         "block_window": block_window,
@@ -387,8 +396,9 @@ HTML_PAGE = """<!DOCTYPE html>
 <body>
   <div id="canvas-container"></div>
   <div id="hud">
-    <h1>DroneHacks 2026 — 3D Sim & EGO-Planner</h1>
+    <h1>DroneHacks 2026 — 3D Sim (NMPC + EGO)</h1>
     <div class="row"><span class="label">Sim Time:</span><span class="val" id="val-t">0.00 s</span></div>
+    <div class="row"><span class="label">Short-Term Planner:</span><span class="val badge badge-win" id="val-planner">3D NMPC (MPCC)</span></div>
     <div class="row"><span class="label">PX4 Arm/Mode:</span><span class="val badge badge-win" id="val-px4">ARMED (OFFBOARD)</span></div>
     <div class="row"><span class="label">FSM Stage:</span><span class="val badge badge-stage" id="val-stage">LOADING...</span></div>
     <div class="row"><span class="label">Chicane Branch:</span><span class="val badge badge-win" id="val-branch">PENDING</span></div>
@@ -404,6 +414,11 @@ HTML_PAGE = """<!DOCTYPE html>
         <button id="btn-cam">Follow Cam: OFF</button>
       </div>
       <input type="range" id="timeline" min="0" max="100" value="0" />
+      <div style="font-size:12px; color:#94a3b8; margin-top:4px;">Short-Term Planner Mode:</div>
+      <div class="btn-group">
+        <button id="mode-nmpc" class="active">Receding-Horizon 3D NMPC</button>
+        <button id="mode-ego">EGO B-Spline Carrot</button>
+      </div>
       <div style="font-size:12px; color:#94a3b8; margin-top:4px;">Scenario Presets (runs live Python physics + 3D A*):</div>
       <div class="btn-group">
         <button id="preset-win" class="active">Window + Unmapped Boulder</button>
@@ -413,8 +428,9 @@ HTML_PAGE = """<!DOCTYPE html>
 
     <div class="legend">
       <div><span class="dot" style="background:#22d3ee;"></span>True Physical Drone (2nd-Order PX4 + Wind)</div>
+      <div><span class="dot" style="background:#facc15;"></span>12-Step 3D NMPC Receding Horizon Rollout</div>
       <div><span class="dot" style="background:#f43f5e;"></span>Noisy/Drifted VIO Estimate (No GPS)</div>
-      <div><span class="dot" style="background:#4ade80;"></span>Active EGO B-Spline Trajectory</div>
+      <div><span class="dot" style="background:#4ade80;"></span>Active Guiding B-Spline Trajectory</div>
       <div><span class="dot" style="background:#fb923c;"></span>Live OAK-D Discovered Obstacle Voxels</div>
     </div>
   </div>
@@ -528,6 +544,12 @@ HTML_PAGE = """<!DOCTYPE html>
     const splineLine = new THREE.Line(splineGeom, splineMat);
     scene.add(splineLine);
 
+    // 12-Step NMPC Receding Horizon rollout line (Gold)
+    const nmpcMat = new THREE.LineBasicMaterial({ color: 0xfacc15, linewidth: 4 });
+    const nmpcGeom = new THREE.BufferGeometry();
+    const nmpcLine = new THREE.Line(nmpcGeom, nmpcMat);
+    scene.add(nmpcLine);
+
     // Unmapped obstacle group & discovered OAK-D voxels group
     const unmappedGroup = new THREE.Group();
     scene.add(unmappedGroup);
@@ -538,18 +560,24 @@ HTML_PAGE = """<!DOCTYPE html>
     let frameIdx = 0;
     let playing = true;
     let followCam = false;
+    let currentBlockWindow = false;
+    let currentPlanner = 'nmpc';
     let lastTick = performance.now();
 
     const timeline = document.getElementById('timeline');
     const btnPlay = document.getElementById('btn-play');
     const btnRestart = document.getElementById('btn-restart');
     const btnCam = document.getElementById('btn-cam');
+    const modeNmpc = document.getElementById('mode-nmpc');
+    const modeEgo = document.getElementById('mode-ego');
     const presetWin = document.getElementById('preset-win');
     const presetGateB = document.getElementById('preset-gateb');
 
-    async function loadScenario(blockWindow) {
+    async function loadScenario(blockWindow, plannerMode = currentPlanner) {
+      currentBlockWindow = blockWindow;
+      currentPlanner = plannerMode;
       document.getElementById('val-stage').textContent = 'SIMULATING...';
-      const res = await fetch(`/api/sim?fast_mode=1&boulder=1&block_window=${blockWindow ? 1 : 0}`);
+      const res = await fetch(`/api/sim?fast_mode=1&boulder=1&block_window=${blockWindow ? 1 : 0}&planner=${plannerMode}`);
       episode = await res.json();
       frameIdx = 0;
       timeline.max = Math.max(0, episode.frames.length - 1);
@@ -585,6 +613,15 @@ HTML_PAGE = """<!DOCTYPE html>
 
       if (f.spline) {
         splineGeom.setFromPoints(f.spline.map(p => new THREE.Vector3(p[0], p[1], p[2])));
+      }
+      if (f.nmpc_horizon && f.nmpc_horizon.length > 1) {
+        nmpcGeom.setFromPoints(f.nmpc_horizon.map(p => new THREE.Vector3(p[0], p[1], p[2] + 0.02)));
+      } else {
+        nmpcGeom.setFromPoints([]);
+      }
+      const plEl = document.getElementById('val-planner');
+      if (plEl) {
+        plEl.textContent = currentPlanner === 'nmpc' ? `3D NMPC (${(f.nmpc_ms || 0).toFixed(1)} ms)` : 'EGO B-Spline';
       }
       if (f.discovered_voxels) {
         voxGroup.clear();
@@ -634,13 +671,21 @@ HTML_PAGE = """<!DOCTYPE html>
       frameIdx = parseInt(e.target.value, 10);
       applyFrame(frameIdx);
     };
+    modeNmpc.onclick = () => {
+      modeNmpc.classList.add('active'); modeEgo.classList.remove('active');
+      loadScenario(currentBlockWindow, 'nmpc');
+    };
+    modeEgo.onclick = () => {
+      modeEgo.classList.add('active'); modeNmpc.classList.remove('active');
+      loadScenario(currentBlockWindow, 'ego');
+    };
     presetWin.onclick = () => {
       presetWin.classList.add('active'); presetGateB.classList.remove('active');
-      loadScenario(false);
+      loadScenario(false, currentPlanner);
     };
     presetGateB.onclick = () => {
       presetGateB.classList.add('active'); presetWin.classList.remove('active');
-      loadScenario(true);
+      loadScenario(true, currentPlanner);
     };
 
     window.addEventListener('resize', () => {
@@ -701,12 +746,14 @@ class SimViewerHandler(BaseHTTPRequestHandler):
             fast = qs.get("fast_mode", ["1"])[0] == "1"
             boulder = qs.get("boulder", ["1"])[0] == "1"
             block_win = qs.get("block_window", ["0"])[0] == "1"
-            key = f"{fast}_{boulder}_{block_win}"
+            planner_mode = qs.get("planner", ["nmpc"])[0]
+            key = f"{planner_mode}_{fast}_{boulder}_{block_win}"
             if key not in self._cache:
                 ep = run_simulation_episode(
                     fast_mode=fast,
                     spawn_unmapped_boulder=boulder,
                     block_window=block_win,
+                    planner_mode=planner_mode,
                 )
                 self._cache[key] = json.dumps(ep).encode("utf-8")
             body = self._cache[key]

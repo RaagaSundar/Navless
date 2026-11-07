@@ -794,7 +794,7 @@ class PX4TrajectoryTrackerCore:
                 drone_vel_enu,
                 current_yaw_enu,
                 spline,
-                max(0.0, t_eval - self.lookahead_s),
+                t_eval,
                 profile,
                 z_min_override=z_min_clamp,
                 xy_limit_m=xy_fence,

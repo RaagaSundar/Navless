@@ -141,9 +141,14 @@ class NonlinearMPCPlanner:
         p0: np.ndarray,
         v0: np.ndarray,
         profile: StageProfile,
+        *,
+        z_min: Optional[float] = None,
+        z_max: Optional[float] = None,
         xy_limit_m: Optional[float] = None,
     ) -> np.ndarray:
         """Enforce stage acceleration norms ||u_k|| <= a_max and velocity damping when ||v_k|| > v_max."""
+        z_lo = float(z_min if z_min is not None else profile.z_min_enu)
+        z_hi = float(z_max if z_max is not None else profile.z_max_enu)
         u_proj = u_mat.copy()
         a_norms = np.linalg.norm(u_proj, axis=1, keepdims=True)
         over_a = a_norms > profile.a_max
@@ -165,10 +170,10 @@ class NonlinearMPCPlanner:
                     v_next = v_cur + u_proj[k] * self.dt
 
             p_next = p_cur + v_cur * self.dt + 0.5 * u_proj[k] * (self.dt * self.dt)
-            if p_next[2] < profile.z_min_enu and v_next[2] < 0.0:
+            if p_next[2] < z_lo and v_next[2] < 0.0:
                 u_proj[k, 2] = min(profile.a_max, max(0.0, -v_cur[2] / self.dt))
                 v_next[2] = v_cur[2] + u_proj[k, 2] * self.dt
-            elif p_next[2] > profile.z_max_enu and v_next[2] > 0.0:
+            elif p_next[2] > z_hi and v_next[2] > 0.0:
                 u_proj[k, 2] = max(-profile.a_max, min(0.0, -v_cur[2] / self.dt))
                 v_next[2] = v_cur[2] + u_proj[k, 2] * self.dt
 
@@ -203,22 +208,21 @@ class NonlinearMPCPlanner:
         if v0_norm > profile.v_max * 1.5:
             v0 = v0 * (profile.v_max * 1.5 / v0_norm)
 
-        # 1. Anchor reference time t_anchor on ref_spline without jumping past corners:
-        #    Only advance t_anchor from t_ref_start when the drone is within max_lead_m of ref_spline(t_ref_start).
-        t_anchor = float(np.clip(t_ref_start, 0.0, ref_spline.duration))
-        # Fine local search in a small window [t_anchor - 0.15, t_anchor + 0.25] around current progress
-        t_lo_search = max(0.0, t_anchor - 0.15)
-        t_hi_search = min(ref_spline.duration, t_anchor + 0.25)
+        # 1. Anchor reference time t_anchor on ref_spline in [t_ref_start - 0.35, t_ref_start] closest to p0:
+        t_carrot = float(np.clip(t_ref_start, 0.0, ref_spline.duration))
+        t_lo_search = max(0.0, t_carrot - 0.35)
+        t_hi_search = t_carrot
         ts_local = np.linspace(t_lo_search, t_hi_search, 9)
-        best_t = t_anchor
-        best_d = float(np.linalg.norm(ref_spline.evaluate_position(t_anchor) - p0))
+        best_t = t_lo_search
+        best_d = float("inf")
         for tc in ts_local:
             dc = float(np.linalg.norm(ref_spline.evaluate_position(float(tc)) - p0))
-            if dc + 0.01 < best_d:
+            if dc < best_d:
                 best_d = dc
                 best_t = float(tc)
+        t_anchor = best_t
 
-        # Compute upcoming corner curvature ahead of best_t so we brake BEFORE the turn vertex
+        # Compute upcoming corner curvature ahead of best_t (only when horizontal speed >= 0.15 m/s)
         yaw_bwd = ref_spline.evaluate_yaw(max(0.0, best_t - 0.25), fallback_yaw=current_yaw_enu)
         yaw_mid = ref_spline.evaluate_yaw(min(ref_spline.duration, best_t + 0.35), fallback_yaw=current_yaw_enu)
         yaw_fwd = ref_spline.evaluate_yaw(min(ref_spline.duration, best_t + 0.75), fallback_yaw=current_yaw_enu)
@@ -228,19 +232,6 @@ class NonlinearMPCPlanner:
         turn_ratio = min(1.0, max(0.0, (upcoming_turn - 0.18) / 0.70))
         corner_speed_scale = 1.0 / (1.0 + self.curvature_slowdown_gain * turn_ratio)
         effective_lead_m = max_lead_m * max(0.46, corner_speed_scale) if max_lead_m > 0.0 else 0.45
-
-        # Waiting-carrot gate on reference progress: if cross-track/lead error exceeds effective_lead_m,
-        # hold t_anchor at t_ref_start so the reference horizon pulls the drone back onto the corner vertex!
-        p_ref_cur = clamp_altitude_enu(
-            ref_spline.evaluate_position(t_anchor),
-            z_min,
-            z_max,
-            xy_limit_m=xy_limit_m,
-        )
-        if float(np.linalg.norm(p_ref_cur - p0)) >= effective_lead_m:
-            t_anchor = min(t_anchor, best_t)
-        else:
-            t_anchor = max(t_anchor, best_t)
 
         # 2. Sample curvature-modulated reference trajectory (p_ref, v_ref, tangents) over N steps
         p_ref = np.zeros((self.N, 3), dtype=np.float64)
@@ -253,7 +244,7 @@ class NonlinearMPCPlanner:
             dk_yaw = abs(math.atan2(math.sin(y1 - y0), math.cos(y1 - y0)))
             k_turn = min(1.0, max(0.0, (dk_yaw - 0.18) / 0.70))
             step_scale = 1.0 / (1.0 + self.curvature_slowdown_gain * k_turn)
-            t_cursor = min(ref_spline.duration, t_cursor + self.dt * step_scale)
+            t_cursor = min(ref_spline.duration, max(t_carrot if k >= 3 else 0.0, t_cursor + self.dt * step_scale))
 
             pk = clamp_altitude_enu(
                 ref_spline.evaluate_position(t_cursor),
@@ -284,7 +275,7 @@ class NonlinearMPCPlanner:
             u_mat = np.vstack([self._warm_U[1:], self._warm_U[-1:]])
         else:
             u_mat = np.zeros((self.N, 3), dtype=np.float64)
-        u_mat = self._project_controls(u_mat, p0, v0, profile, xy_limit_m=xy_limit_m)
+        u_mat = self._project_controls(u_mat, p0, v0, profile, z_min=z_min, z_max=z_max, xy_limit_m=xy_limit_m)
 
         # 4. Preconditioned Quasi-Newton / Nesterov optimization with Anisotropic MPCC + Obstacle Barrier
         u_prev = u_mat.copy()
@@ -310,14 +301,15 @@ class NonlinearMPCPlanner:
             if np.any(high_z):
                 grad_p[high_z, 2] += 45.0 * (p_roll[high_z, 2] - (z_max - 0.04))
 
-            # Multi-voxel obstacle repulsion barrier gradient across the horizon
-            for k in range(self.N):
-                obs_cost, obs_grad = self.grid.obstacle_repulsion_gradient(
-                    p_roll[k],
-                    self.safe_clearance,
-                )
-                if obs_cost > 1e-6:
-                    grad_p[k] += self.w_obs * obs_grad
+            # Multi-voxel obstacle repulsion barrier gradient across the horizon (skip during vertical fly-home climb)
+            if z_min_override is None or z_min_override >= 0.20:
+                for k in range(self.N):
+                    obs_cost, obs_grad = self.grid.obstacle_repulsion_gradient(
+                        p_roll[k],
+                        self.safe_clearance,
+                    )
+                    if obs_cost > 1e-6:
+                        grad_p[k] += self.w_obs * obs_grad
 
             # Velocity tracking + speed limit gradient
             grad_v = self.w_vel * (v_roll - v_ref)
@@ -338,7 +330,7 @@ class NonlinearMPCPlanner:
             u_prev = u_mat
             step_u = self._H_inv @ grad_u
             u_cand = u_eval - 0.65 * step_u
-            u_mat = self._project_controls(u_cand, p0, v0, profile, xy_limit_m=xy_limit_m)
+            u_mat = self._project_controls(u_cand, p0, v0, profile, z_min=z_min, z_max=z_max, xy_limit_m=xy_limit_m)
             if float(np.max(np.abs(u_mat - u_prev))) < 1e-3:
                 break
 
@@ -349,14 +341,20 @@ class NonlinearMPCPlanner:
             p_opt[k] = clamp_altitude_enu(p_opt[k], z_min, z_max, xy_limit_m=xy_limit_m)
 
         # Select short-term lookahead setpoint on the solved NMPC rollout using PX4 position-loop
-        # inversion (combining mid-horizon NMPC state p_opt[look_idx], contour reference, and immediate control u_0)
+        # inversion (combining mid-horizon NMPC state p_opt[look_idx], carrot target, and immediate control u_0)
         look_idx = min(6, self.N)
         for k in range(1, min(7, self.N + 1)):
             if float(np.linalg.norm(p_opt[k] - p0)) <= max(effective_lead_m, 0.25):
                 look_idx = k
         target_vel = v_opt[look_idx].copy()
         target_acc = u_mat[0].copy()
-        raw_target_pos = 0.55 * p_opt[look_idx] + 0.45 * p_ref[min(look_idx - 1, self.N - 1)] + 0.18 * target_acc
+        p_carrot = clamp_altitude_enu(
+            ref_spline.evaluate_position(t_carrot),
+            z_min,
+            z_max,
+            xy_limit_m=xy_limit_m,
+        )
+        raw_target_pos = 0.50 * p_opt[look_idx] + 0.50 * p_carrot + 0.18 * target_acc
         target_pos = clamp_altitude_enu(
             raw_target_pos,
             z_min,
