@@ -5,6 +5,7 @@
   python3 fly_navless.py                         # route_gate_b.json with navless_nav's own defaults
   python3 fly_navless.py --instance 1 --tag fast -p cruise_speed_mps=0.8 -p max_lead_m=0.8
   python3 fly_navless.py --route route_window.json --noise 0.01 --vio-dropout 20:23
+  python3 fly_navless.py --pilot modes -p fly_home=true    # pad, then the pilot re-arms for the home leg
 
 navless_nav is a ROS 2 node and this machine has no ROS, so the node runs UNMODIFIED on a small
 in-process rclpy stand-in. FlightInterface below stands in for the stack's flight_interface. It
@@ -12,8 +13,14 @@ sends PX4 exactly what the drone's interface sends:
   - position-only setpoints (no yaw), or velocity-only ones, at 10 Hz
   - altitude clamped to [min_alt, max_alt] above the odometry origin, twist norm capped
   - a twist expires after 1 s and falls back to the last pose
-  - one takeover per run: a fresh setpoint, landed, local position valid, then Offboard. On the
-    drone the pilot arms, then switches to Position; in SITL nobody does, so this sends offboard + arm.
+  - takeover (--pilot modes) by the drone interface's rules: every disarm makes the next arming
+    count; the go signal is arming OFF Position, then switching INTO Position, on the ground, with
+    a valid local position and a fresh team setpoint; one Offboard attempt per arming. Arming with
+    the switch already on Position gives no autonomy (--arm-in-position checks that).
+Pilot below plays the safety pilot. --pilot modes: virtual sticks (MANUAL_CONTROL, centred, throttle
+low) for the whole run; it selects Altitude, arms, waits, flips to Position. --pilot direct (default):
+the old SITL shortcut, Offboard + arm straight away. Either way the pilot only arms once PX4's height
+has sat within --settle-tol (15 cm, as navless_nav's pre-arm check) of the floor for 2 s, and with fly_home it re-arms after the pad landing.
 Odometry is Gazebo ground truth in the power-up frame: origin and heading at start, like cuVSLAM.
 Noise and latency are optional. Scoring reuses fly_course.py's (read-only import).
 
@@ -40,7 +47,7 @@ sys.path.insert(0, os.path.join(REPO, "navless_nav"))
 
 ODOM_TOPIC = "/visual_slam/tracking/odometry"
 STATUS_TOPIC = "/visual_slam/status"
-PX4_OFFBOARD = 6
+PX4_ALTCTL, PX4_POSCTL, PX4_OFFBOARD = 2, 3, 6     # PX4 custom main modes
 LANDED_ON_GROUND = 1
 
 
@@ -192,7 +199,7 @@ class FlightInterface:
     MASK_VEL = 0b010111000111    # vx vy vz + yaw rate
 
     def __init__(self, px4, p0, yaw0, pose_topic, twist_topic, min_alt=0.3, max_alt=2.5,
-                 max_speed=1.0, twist_timeout=1.0, px4_frame="world"):
+                 max_speed=1.0, twist_timeout=1.0, px4_frame="world", rules=True, settle_tol=0.15):
         self.px4, self.p0, self.yaw0 = px4, np.asarray(p0, float), yaw0
         self.px4_frame = px4_frame
         self.min_alt, self.max_alt, self.max_speed = min_alt, max_alt, max_speed
@@ -202,12 +209,18 @@ class FlightInterface:
         self.yawspeed_ned = 0.0
         self.last_setpoint = self.last_twist = None
         self.clamped = []
-        self.saw_disarmed = False
-        self.takeover_at = None       # sim time the takeover started (stand-in for the pilot's arm)
         self.height_settled_since = None
         self.height_err = None
-        self.armed_at = None
-        self._last_cmd = -1e9
+        # PX4's height on the floor may sit a few cm off (rangefinder noise and mount offset under the
+        # drone profile); the failure this guards against was 0.6 m.
+        self.settle_tol = settle_tol
+        self.armed_at = None          # first time Offboard went active (sim time)
+        self.takeovers = []           # sim time Offboard went active, once per arming
+        self._was_offboard = False
+        # takeover rules (--pilot modes); state names as on the drone
+        self.rules = rules
+        self.ao = "wait_disarmed"
+        self._req_until = self._req_next = 0.0
         BUS[pose_topic].append(self.on_pose)
         BUS[twist_topic].append(self.on_twist)
 
@@ -294,40 +307,97 @@ class FlightInterface:
             m.mav.set_position_target_local_ned_send(
                 px4.boot_ms, m.target_system, m.target_component, mavutil.mavlink.MAV_FRAME_LOCAL_NED,
                 self.MASK_VEL, 0, 0, 0, *ned, 0, 0, 0, 0, self.yawspeed_ned)
-        self.step_takeover()
+        self.watch_height()
+        if self.rules:
+            self.step_rules()
+        if self.offboard_active and not self._was_offboard:
+            self.takeovers.append(CLOCK.t)
+            self.armed_at = self.armed_at or CLOCK.t
+        self._was_offboard = self.offboard_active
         return kind, v
 
-    def step_takeover(self):
+    def setpoint_fresh(self):
+        return self.last_setpoint is not None and CLOCK.t - self.last_setpoint <= 1.0
+
+    def watch_height(self):
+        # PX4's height can boot ~0.6 m off and park the error in its terrain estimate; with
+        # EV_CTRL 9 nothing pulls it back, and every odom-z setpoint is then flown that far low
+        # (lap 2 of the live demo). The pilot arms only once PX4 agrees the drone is on the floor.
         px4 = self.px4
-        if not px4.armed and self.takeover_at is None:
-            self.saw_disarmed = True
-        if self.takeover_at is None:
-            fresh = self.last_setpoint is not None and CLOCK.t - self.last_setpoint <= 1.0
-            # PX4's height can boot ~0.6 m off and park the error in its terrain estimate; with
-            # EV_CTRL 9 nothing pulls it back, and every odom-z setpoint is then flown that far low
-            # (lap 2 of the live demo). Hand over only once PX4 agrees the drone is on the floor.
-            if px4.local is not None:
-                dz = abs(self.px4_to_world(px4.local)[2] - self.p0[2])
-                self.height_settled_since = ((self.height_settled_since or CLOCK.t) if dz < 0.05 else None)
-                self.height_err = dz
-            settled = (self.height_settled_since is not None
-                       and CLOCK.t - self.height_settled_since >= 2.0)
-            if (self.saw_disarmed and fresh and settled and px4.landed_state == LANDED_ON_GROUND
-                    and px4.local is not None):
-                self.takeover_at = CLOCK.t
-                print(f"  [{CLOCK.t:7.2f}] flight_interface: takeover (stand-in for arm -> Position)", flush=True)
+        if px4.local is not None and not px4.armed:
+            dz = abs(self.px4_to_world(px4.local)[2] - self.p0[2])
+            self.height_settled_since = ((self.height_settled_since or CLOCK.t) if dz < self.settle_tol else None)
+            self.height_err = dz
+        elif px4.armed:
+            self.height_settled_since = None
+
+    def ready_on_ground(self):
+        """What a careful pilot checks before arming: on the floor, height settled, team setpoint live."""
+        px4 = self.px4
+        settled = self.height_settled_since is not None and CLOCK.t - self.height_settled_since >= 2.0
+        return (not px4.armed and px4.local is not None and px4.landed_state == LANDED_ON_GROUND
+                and settled and self.setpoint_fresh())
+
+    def _rule(self, msg):
+        print(f"  [{CLOCK.t:7.2f}] flight_interface: {msg}", flush=True)
+
+    def _refusal(self):
+        px4 = self.px4
+        if px4.landed_state != LANDED_ON_GROUND:
+            return "in the air: Position stays with the pilot"
+        if px4.local is None:
+            return "no valid local position (is VIO tracking?)"
+        if self.last_setpoint is None:
+            return "no team setpoint received"
+        if not self.setpoint_fresh():
+            return f"the last team setpoint is {CLOCK.t - self.last_setpoint:.1f} s old"
+        return None
+
+    def step_rules(self):
+        """The drone interface's takeover rules, re-implemented (no copy of its code)."""
+        px4 = self.px4
+        in_position = px4.main_mode == PX4_POSCTL
+        offboard = px4.main_mode == PX4_OFFBOARD
+        if not px4.armed:
+            if self.ao != "ready":
+                self._rule("disarmed: the next arming counts")
+            self.ao = "ready"
             return
-        if self.armed_at is None and px4.armed and px4.main_mode == PX4_OFFBOARD:
-            self.armed_at = CLOCK.t
-        if self.armed_at is not None or CLOCK.t - self.takeover_at > 10.0:
+        if self.ao == "ready":
+            if in_position:
+                self.ao = "armed_in_position"
+                self._rule("armed already in Position: no autonomy. To start it, arm first, then switch to Position")
+            else:
+                self.ao = "armed"
+                self._rule("armed: waiting for the switch to Position")
             return
-        if CLOCK.t - self._last_cmd < 1.0:
+        if self.ao == "armed_in_position":
+            if not in_position:
+                self.ao = "armed"
             return
-        self._last_cmd = CLOCK.t
-        if px4.main_mode != PX4_OFFBOARD:
-            px4.cmd(mavutil.mavlink.MAV_CMD_DO_SET_MODE, 1, PX4_OFFBOARD)
-        elif not px4.armed:
-            px4.cmd(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 1)
+        if self.ao == "armed":
+            if not in_position:
+                return
+            self.ao = "done"
+            why = self._refusal()
+            if why:
+                self._rule(f"staying out of Offboard: {why}")
+                return
+            self.ao, self._req_until, self._req_next = "requesting", CLOCK.t + 2.0, CLOCK.t
+            self._rule("switched to Position after arming: requesting Offboard")
+        if self.ao == "requesting":
+            if offboard:
+                self.ao = "done"
+                self._rule("Offboard active")
+            elif not in_position:
+                self.ao = "done"
+                self._rule("mode changed while requesting Offboard: stopping")
+            elif CLOCK.t >= self._req_until:
+                self.ao = "done"
+                self._rule("PX4 did not enter Offboard within 2 s")
+            elif CLOCK.t >= self._req_next:
+                self._req_next = CLOCK.t + 0.5
+                px4.cmd(mavutil.mavlink.MAV_CMD_DO_SET_MODE, 1, PX4_OFFBOARD)
 
     def state_json(self):
         loc = self.local_world()
@@ -344,6 +414,105 @@ class FlightInterface:
             "envelope": {"min_altitude_m": self.min_alt, "max_altitude_m": self.max_alt,
                          "max_speed_mps": self.max_speed},
         })
+
+
+# ------------------------------------------------------------------------------------ the safety pilot
+class Pilot:
+    """The safety pilot, simulated. 'modes': as on the drone. Virtual sticks (MANUAL_CONTROL: centred,
+    throttle low) stream for the whole run; to start a flight the pilot selects Altitude (or Position
+    with --arm-in-position), arms, waits switch_delay s and flips to Position. The flight interface's
+    rules decide whether that is a go. 'direct': the old SITL shortcut, Offboard + arm straight away."""
+
+    def __init__(self, px4, mode="direct", switch_delay=1.0, arm_in_position=False):
+        self.px4, self.mode = px4, mode
+        self.switch_delay, self.arm_in_position = switch_delay, arm_in_position
+        self.phase = None
+        self.flights = 0
+        self.t_armed = None
+        self._t_phase = self._last_cmd = self._last_stick = -1e9
+
+    @property
+    def busy(self):
+        return self.phase is not None
+
+    def say(self, msg):
+        print(f"  [{CLOCK.t:7.2f}] pilot: {msg}", flush=True)
+
+    def sticks(self):
+        if self.mode == "modes" and CLOCK.t - self._last_stick >= 0.05:
+            self._last_stick = CLOCK.t
+            self.px4.m.mav.manual_control_send(self.px4.m.target_system, 0, 0, 0, 0, 0)
+
+    def start(self):
+        self.flights += 1
+        self.phase, self._t_phase, self._last_cmd = "select", CLOCK.t, -1e9
+        if self.mode == "direct":
+            self.say(f"flight {self.flights}: Offboard + arm (SITL shortcut)")
+        else:
+            pre = "Position" if self.arm_in_position else "Altitude"
+            self.say(f"flight {self.flights}: select {pre}, arm" + ("" if self.arm_in_position else ", then switch to Position"))
+
+    def step(self):
+        if self.phase is None:
+            return
+        px4 = self.px4
+        retry = CLOCK.t - self._last_cmd >= 1.0
+        arm = mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
+        set_mode = mavutil.mavlink.MAV_CMD_DO_SET_MODE
+        if self.mode == "direct":
+            if px4.armed and px4.main_mode == PX4_OFFBOARD:
+                self.phase, self.t_armed = None, CLOCK.t
+            elif retry:
+                self._last_cmd = CLOCK.t
+                px4.cmd(set_mode, 1, PX4_OFFBOARD) if px4.main_mode != PX4_OFFBOARD else px4.cmd(arm, 1)
+            return
+        pre = PX4_POSCTL if self.arm_in_position else PX4_ALTCTL
+        if self.phase == "select":
+            if px4.main_mode == pre:
+                self.phase, self._last_cmd = "arm", -1e9
+            elif retry:
+                self._last_cmd = CLOCK.t
+                px4.cmd(set_mode, 1, pre)
+        elif self.phase == "arm":
+            if px4.armed:
+                self.phase, self._t_phase, self.t_armed = "switch", CLOCK.t, CLOCK.t
+                self.say("armed in " + ("Position" if self.arm_in_position else "Altitude"))
+            elif retry:
+                self._last_cmd = CLOCK.t
+                px4.cmd(arm, 1)
+        elif self.phase == "switch":
+            if self.arm_in_position or not px4.armed:
+                self.phase = None
+            elif CLOCK.t - self._t_phase >= self.switch_delay:
+                if px4.main_mode in (PX4_POSCTL, PX4_OFFBOARD):
+                    self.phase = None
+                    self.say("switched to Position")
+                elif retry:
+                    self._last_cmd = CLOCK.t
+                    px4.cmd(set_mode, 1, PX4_POSCTL)
+
+
+def set_int_param(px4, name, value, tries=5):
+    """PX4 int params travel bytewise-encoded in PARAM_SET's float field. Returns the value PX4 echoes."""
+    import struct
+    f = struct.unpack("<f", struct.pack("<i", int(value)))[0]
+    for _ in range(tries):
+        px4.m.mav.param_set_send(px4.m.target_system, px4.m.target_component, name.encode(), f,
+                                 mavutil.mavlink.MAV_PARAM_TYPE_INT32)
+        m = px4.m.recv_match(type="PARAM_VALUE", blocking=True, timeout=1)
+        if m is not None and m.param_id == name:
+            return struct.unpack("<i", struct.pack("<f", m.param_value))[0]
+    return None
+
+
+def part_gap(obs, name, P, yaw_ned, parts=slice(0, 4)):
+    """Per-row gap (m) between the drone's parts (default: the 4 rotor discs) and one course obstacle."""
+    from dh.geom import drone_points
+    j = obs.names.index(name)
+    pts, r = drone_points(P, yaw_ned)
+    pts, r = pts[:, parts], r[parts]
+    d = obs.sdf(pts.reshape(-1, 3))[:, j].reshape(len(P), -1) - r[None]
+    return d.min(1)
 
 
 # ------------------------------------------------------------------------------------ helpers
@@ -384,6 +553,18 @@ def main():
     ap.add_argument("--tag", default="")
     ap.add_argument("--relay", type=int, default=0, metavar="PORT",
                     help="stream the run live for gazebo_sim/mirror/mirror.py --run 127.0.0.1:PORT (0 = off)")
+    ap.add_argument("--pilot", choices=("direct", "modes"), default="direct",
+                    help="'modes': the drone's sequence with virtual sticks (Altitude, arm, then Position) and the "
+                         "interface's takeover rules; 'direct': the old Offboard + arm shortcut")
+    ap.add_argument("--rearm", type=int, default=-1,
+                    help="how many times the pilot re-arms after a landing (default: 1 with -p fly_home=true, else 0)")
+    ap.add_argument("--rearm-delay", type=float, default=3.0, help="s on the ground before the pilot re-arms")
+    ap.add_argument("--switch-delay", type=float, default=1.0, help="s between arming and the switch to Position")
+    ap.add_argument("--arm-in-position", action="store_true",
+                    help="--pilot modes: arm with the switch already on Position (expect no autonomy)")
+    ap.add_argument("--ceiling", type=float, default=2.5, help="room ceiling above the floor, m (home-leg report)")
+    ap.add_argument("--settle-tol", type=float, default=0.15,
+                    help="the pilot arms only once PX4's height has stayed within this of the floor for 2 s, m")
     a = ap.parse_args()
 
     os.environ["GZ_PARTITION"] = f"dh{a.instance}"     # before any gz Node exists
@@ -428,9 +609,19 @@ def main():
 
     node = course_mission.CourseMission()
     fi = FlightInterface(px4, p0, yaw0, course_mission.POSE_TOPIC, course_mission.TWIST_TOPIC,
-                         a.min_alt, a.max_alt, a.max_speed, px4_frame=a.px4_frame)
+                         a.min_alt, a.max_alt, a.max_speed, px4_frame=a.px4_frame, rules=(a.pilot == "modes"),
+                         settle_tol=a.settle_tol)
     print(f"PX4 local frame: {a.px4_frame}", flush=True)
     dropout = tuple(float(x) for x in a.vio_dropout.split(":")) if a.vio_dropout else None
+    pilot = Pilot(px4, a.pilot, a.switch_delay, a.arm_in_position)
+    if a.pilot == "modes":
+        # Altitude/Position need a stick source: the virtual sticks are a joystick to PX4.
+        got = set_int_param(px4, "COM_RC_IN_MODE", 1)
+        if got != 1:
+            raise SystemExit(f"could not set COM_RC_IN_MODE=1 (PX4 says {got}); --pilot modes needs joystick input")
+        print("pilot: virtual sticks on (COM_RC_IN_MODE=1, MANUAL_CONTROL centred, throttle low)", flush=True)
+    fly_home = str(OVERRIDES.get("fly_home", False)).lower() in ("true", "1")
+    rearms_left = a.rearm if a.rearm >= 0 else (1 if fly_home else 0)
 
     odom_buf = collections.deque()
     rows = []
@@ -439,6 +630,10 @@ def main():
     t_land_cmd = t_done = None
     held_since = None
     result = None
+    t_flight = None            # when the pilot started the current flight
+    t_disarmed = None          # when PX4 last went armed -> disarmed after a takeover
+    was_armed = False
+    landings = 0
     while True:
         px4.poll()
         st, p, q = gt.snapshot()
@@ -446,6 +641,7 @@ def main():
             time.sleep(0.002)
             continue
         CLOCK.t = max(CLOCK.t, st)
+        pilot.sticks()
 
         # cuVSLAM stand-in: ground truth in the power-up frame at 30 Hz, delayed and noisy
         if st - t_odom >= 1 / 30:
@@ -489,16 +685,47 @@ def main():
                     timer[2] = st
                     timer[1]()
             kind, v = fi.tick()
+            pilot.step()
             sp = v if kind == "position" else np.full(3, np.nan)
             rows.append([st, st - (fi.armed_at or st), node.state, kind, *sp, *p, tilt_deg(q), yaw_enu(q),
                          int(px4.armed), px4.main_mode, px4.landed_state])
+
+            # the pilot: first flight once everything is ready, then a re-arm after each landing
+            if was_armed and not px4.armed and fi.takeovers:
+                t_disarmed, landings = st, landings + 1
+                print(f"  [{st:7.2f}] disarmed after landing {landings} (node: {node.state})", flush=True)
+            was_armed = px4.armed
+            if not pilot.busy and node.state == "WAIT_FOR_OFFBOARD" and fi.ready_on_ground():
+                if pilot.flights == 0:
+                    pilot.start()
+                    t_flight = st
+                elif rearms_left > 0 and t_disarmed is not None and st - t_disarmed >= a.rearm_delay:
+                    rearms_left -= 1
+                    pilot.start()
+                    t_flight = st
+            elif (not px4.armed and not pilot.busy and fi.height_err is not None
+                  and fi.height_err >= fi.settle_tol and int(st * 10) % 50 == 0):
+                print(f"  [{st:7.2f}] pilot: waiting, PX4's height is {fi.height_err:.3f} m off the floor "
+                      f"(arms once within {fi.settle_tol:.2f} m for 2 s)", flush=True)
 
             # end conditions
             if node.state == "DONE":
                 t_done = t_done or st
                 if st - t_done > 1.0:
-                    result = "LANDED"
+                    result = "LANDED" + (" (home leg)" if landings >= 2 else "")
                     break
+            if (landings and len(fi.takeovers) == landings and rearms_left == 0 and not px4.armed
+                    and node.state == "WAIT_FOR_OFFBOARD" and st - t_disarmed > a.rearm_delay + 2.0):
+                result = f"LANDED ({landings} landing{'s' * (landings > 1)}); pilot did not re-arm"
+                break
+            if t_flight is not None and len(fi.takeovers) < pilot.flights and st - t_flight > 15.0:
+                if a.arm_in_position:
+                    result = "NO AUTONOMY (armed with the switch on Position, as on the drone)"
+                    px4.cmd(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0)
+                    break
+                raise SystemExit(f"flight {pilot.flights}: no takeover 15 s after the pilot started "
+                                 f"(rules state {fi.ao}, PX4 mode {px4.main_mode}, armed {px4.armed}); PX4 said: "
+                                 + " | ".join(px4.texts[-5:]))
             if node.state in ("HOLD", "PAUSED") and fi.armed_at is not None:
                 held_since = held_since or st
                 if st - held_since > 5.0 and t_land_cmd is None:
@@ -510,11 +737,9 @@ def main():
             if t_land_cmd is not None and not px4.armed:
                 result = "HELD then pilot-landed"
                 break
-            if fi.takeover_at is None and st - t_start > 30:
-                raise SystemExit("no takeover in 30 s: the node never published, PX4 is not landed/ready, "
+            if pilot.flights == 0 and st - t_start > 60:
+                raise SystemExit("the pilot never armed in 60 s: the node never published, PX4 is not landed/ready, "
                                  f"or PX4's height never settled (off by {fi.height_err} m on the ground)")
-            if fi.takeover_at is not None and fi.armed_at is None and st - fi.takeover_at > 10:
-                raise SystemExit("PX4 refused offboard/arm; PX4 said: " + " | ".join(px4.texts[-5:]))
             if st - t_start > a.timeout:
                 result = "TIMEOUT"
                 px4.cmd(mavutil.mavlink.MAV_CMD_NAV_LAND)
@@ -549,6 +774,39 @@ def main():
     lead = [float(np.linalg.norm(SP[i] - P[i])) for i in route_rows if np.all(np.isfinite(SP[i]))]
     contacts = sorted({n for (_, n) in gt.contacts})
     errors = [m for (_, lvl, m) in LOGS if lvl == "ERROR"]
+
+    # home leg (fly_home): the second takeover onwards
+    home = None
+    SIMT = np.array([r[0] for r in rows], float)
+    if len(fi.takeovers) >= 2:
+        t2 = fi.takeovers[1]
+        hi = [i for i in range(len(rows)) if SIMT[i] >= t2]
+        z_target = p0[2] + float(getattr(node, "home_z", float("nan")))   # odom z of the hop, as height above the floor
+        climb = [i for i in hi if states[i] in ("TAKEOFF", "ROUTE")]
+        desc = [i for i in hi if states[i] == "LAND"]
+        zmax = float(np.max(P[climb, 2])) if climb else float("nan")
+        gap_leg = part_gap(obs, "Barrier1_wall", P[hi], yaw_ned[hi]) if hi else np.array([np.inf])
+        gap_desc = part_gap(obs, "Barrier1_wall", P[desc], yaw_ned[desc]) if desc else None
+        td2 = next((i for i in desc if P[i, 2] < GROUND_Z + 0.012), None)
+        vz = np.diff(P[hi, 2]) / np.maximum(np.diff(SIMT[hi]), 1e-3) if len(hi) > 1 else np.zeros(1)
+        k = int(np.argmin(gap_desc)) if gap_desc is not None else None
+        pad_disarm = next((SIMT[i] for i in range(1, len(rows))
+                           if rows[i - 1][12] and not rows[i][12] and SIMT[i] < t2), None)   # armed column
+        home = {
+            "takeover_after_pad_disarm_s": None if pad_disarm is None else round(float(t2 - pad_disarm), 2),
+            "climb_target_z_m": round(z_target, 3),
+            "climb_max_z_m": round(zmax, 3),
+            "climb_overshoot_cm": round((zmax - z_target) * 100, 1),
+            "max_climb_rate_mps": round(float(np.max(vz)), 2),
+            "ceiling_m": a.ceiling,
+            "ceiling_margin_cm": round((a.ceiling - zmax) * 100, 1),
+            "interface_ceiling_above_floor_m": round(p0[2] + a.max_alt, 3),
+            "barrier1_rotor_gap_descent_min_cm": None if gap_desc is None else round(float(gap_desc.min()) * 100, 1),
+            "barrier1_rotor_gap_descent_min_at": None if k is None else [round(float(v), 3) for v in P[desc][k]],
+            "barrier1_rotor_gap_home_leg_min_cm": round(float(gap_leg.min()) * 100, 1),
+            "touchdown_from_second_takeover_s": None if td2 is None else round(float(SIMT[td2] - t2), 2),
+            "touchdown_offset_from_launch_mark_cm": None if td2 is None else round(float(np.linalg.norm(P[td2, :2] - p0[:2])) * 100, 1),
+        }
     summary = {
         "result": ("COLLISION + " if contacts else "") + (result or "?"),
         "route": OVERRIDES["route_file"],
@@ -567,6 +825,10 @@ def main():
         "max_speed_mps": round(float(np.max(np.linalg.norm(np.diff(P, axis=0), axis=1) / np.maximum(np.diff(T), 1e-3))), 2),
         "contacts": contacts,
         "node_errors": errors,
+        "pilot": a.pilot,
+        "takeovers_after_first_s": [round(t - fi.takeovers[0], 2) for t in fi.takeovers],
+        "landings": landings,
+        "home_leg": home,
     }
     with open(os.path.join(out, "log.csv"), "w", newline="") as f:
         wr = csv.writer(f)
