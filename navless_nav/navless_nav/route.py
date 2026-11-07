@@ -152,7 +152,7 @@ def plan_dynamic_course_route(branch='window', start_enu=None, router=None):
             raise ValueError('3D A* + B-spline could not find a collision-free Stage 1 detour to Gate A')
         for pt in sp1.sample_points(60):
             waypoints.append(tuple(round(float(v), 4) for v in pt))
-        tun_prof = router.profile_for_stage(CourseStage.STAGE_2_TUNNEL)
+        tun_prof = router.profile_for_stage(CourseStage.STAGE_3_TUNNEL)
         sp2, _ = router.optimizer.plan_spline(
             waypoints[-1],
             tunnel_exit,
@@ -165,7 +165,7 @@ def plan_dynamic_course_route(branch='window', start_enu=None, router=None):
                 waypoints.append(tuple(round(float(v), 4) for v in pt))
         stage4_start = waypoints[-1]
     elif s_pt[0] >= 1.65 and s_pt[1] > -0.75:
-        tun_prof = router.profile_for_stage(CourseStage.STAGE_2_TUNNEL)
+        tun_prof = router.profile_for_stage(CourseStage.STAGE_3_TUNNEL)
         sp2, _ = router.optimizer.plan_spline(
             s_pt,
             tunnel_exit,
