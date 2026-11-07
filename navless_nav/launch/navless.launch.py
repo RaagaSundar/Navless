@@ -23,7 +23,9 @@ ARGUMENTS = [
      'enter Offboard once when the pilot arms, then switches to Position'),
     ('odometry_topic', '/visual_slam/tracking/odometry',
      'source of the ENU pose the altitude band is measured against'),
-    ('takeoff_altitude_m', '0.85', 'climb-out height above the origin, metres'),
+    ('takeoff_altitude_m', '0.85',
+     'hover height above the origin when no route loads; with a route, the '
+     'climb goes to its first point'),
     ('arrival_radius_m', '0.25', 'how close counts as arrived, metres'),
     ('takeoff_timeout_s', '15.0', 'give up climbing and hold after this'),
     ('route_file', 'route_gate_b.json',
@@ -31,9 +33,12 @@ ARGUMENTS = [
     ('start_bearing_deg', '0.0',
      'nose bearing on the launch mark at power-up, deg clockwise from course '
      'north (0 = facing up the first corridor)'),
-    ('start_height_m', '0.0', 'height of the odom origin above the floor, m'),
+    ('start_height_m', '0.07',
+     'height of the odom origin (Pixhawk IMU) above the floor at power-up, m'),
     ('cruise_speed_mps', '0.5', 'carrot speed along the route, m/s'),
     ('max_lead_m', '0.6', 'how far the carrot may run ahead of the drone, m'),
+    ('max_lat_accel_mps2', '0.25',
+     'slow through bends: speed <= sqrt(this * radius); 0 = off'),
     ('net_margin_m', '0.4', 'keep setpoints this far inside the net, m'),
     ('land_at_end', 'true', 'land on the route end (the pad) and disarm'),
     ('land_speed_mps', '0.3', 'descent rate onto the pad, m/s'),
@@ -45,7 +50,8 @@ FLIGHT_INTERFACE_PKG = 'skybeta_flight_interface'
 
 MISSION_PARAMS = ('takeoff_altitude_m', 'arrival_radius_m', 'takeoff_timeout_s',
                   'route_file', 'start_bearing_deg', 'start_height_m',
-                  'cruise_speed_mps', 'max_lead_m', 'net_margin_m',
+                  'cruise_speed_mps', 'max_lead_m', 'max_lat_accel_mps2',
+                  'net_margin_m',
                   'land_at_end', 'land_speed_mps')
 
 

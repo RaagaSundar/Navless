@@ -8,7 +8,8 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from navless_nav.route import (Carrot, NET_HALF_M, REPO_ROOT,  # noqa: E402
                                clamp_to_net, course_to_odom, load_route,
-                               odom_to_course, resolve_route_path)
+                               odom_to_course, resolve_route_path,
+                               speed_profile, turn_radii)
 
 LAUNCH = (-2.515, 0.914)
 
@@ -73,6 +74,45 @@ def test_carrot_waits_for_a_lagging_drone():
     assert math.dist(drone, p) <= 0.6 + 0.1 + 1e-9
     held = c.step(drone, 0.1)
     assert close(held, c.step(drone, 0.1))   # no further while we lag
+
+
+def _arc(radius, n=40):
+    """Straight 2 m east, a quarter circle of `radius` turning north, 2 m north."""
+    pts = [(x * 0.1, 0.0, 1.0) for x in range(20)]
+    for k in range(n + 1):
+        a = -math.pi / 2 + (math.pi / 2) * k / n
+        pts.append((2.0 + radius * math.cos(a), radius + radius * math.sin(a), 1.0))
+    pts += [(2.0 + radius, radius + 0.1 * y, 1.0) for y in range(1, 21)]
+    return pts
+
+
+def test_turn_radius_is_measured():
+    path = _arc(0.5)
+    r = turn_radii(path)
+    assert math.isinf(r[5]) or r[5] > 50          # straight
+    assert abs(r[40] - 0.5) < 0.02                # middle of the arc
+
+
+def test_speed_profile_slows_through_bends_and_before_them():
+    path = _arc(0.5)
+    v = speed_profile(path, cruise=0.5, max_lat_accel=0.25, max_accel=0.5)
+    assert abs(v[0] - 0.5) < 1e-9 and abs(v[-1] - 0.5) < 1e-9     # straights at cruise
+    assert abs(v[40] - math.sqrt(0.25 * 0.5)) < 0.01                 # 0.354 m/s in the bend
+    assert v[20] < 0.5                                                # braking from the arc entry
+    assert all(a >= b - 1e-12 for a, b in zip(v[15:40], v[16:41]))    # and only slowing into it
+    assert speed_profile(path, 0.5, 0.0) == [0.5] * len(path)         # off
+
+
+def test_carrot_takes_longer_through_a_bend_when_limited():
+    def time_to_end(lat):
+        c = Carrot(_arc(0.5), speed=0.5, max_lead=10.0, max_lat_accel=lat)
+        t = 0.0
+        while not c.at_end and t < 100:
+            c.step(c.point, 0.1)
+            t += 0.1
+        return t
+    free, limited = time_to_end(0.0), time_to_end(0.25)
+    assert limited > free + 0.3
 
 
 def test_shipped_routes_load_and_start_on_the_launch_mark():
