@@ -125,3 +125,59 @@ No clean installation, build, startup, sensor smoke, flight or hardware test was
 performed for this follow-up. Prior stationary/disarmed results in the linked
 runbook are observations of those earlier deployments, not qualification of
 this checkout.
+
+## Install the wrong-interface fix in an existing split deployment
+
+A multi-interface Jetson can advertise an unreachable mDNS IPv4 while an
+already authenticated SSH connection uses a working wired address. Using a new
+mDNS lookup for XRCE then silently selects the wrong interface. The portable
+`split_network.sh` helper reads the **server address (third field) of the
+remote `SSH_CONNECTION`** through authenticated SSH. `JETSON_IP` remains the
+highest-priority explicit XRCE IPv4 override; it does not require SSH lookup.
+Malformed/missing data or SSH failure stops startup rather than guessing an IP.
+Link-local IPv4 is accepted; multicast, wildcard, loopback and IPv6 are rejected.
+An SSH-confirmed address does not prove that SITL's UDP can reach that address:
+retain the passive XRCE/PX4 checks above.
+
+On an existing reviewed deployment, install only the file patch:
+
+```bash
+python3 split_setup/install_network_fix.py /path/to/reviewed/split-deployment
+```
+
+The installer validates both known launcher blocks before writing, refuses an
+unknown revision and can be repeated. It installs the helper and changes only
+`start.sh` and `start_px4_from_mac.sh`; it does not run Docker/SSH, restart
+processes, install packages, alter routes or require sudo. Keep the helper next
+to both launchers. Reinspect changed sources; the historical launcher hashes
+above describe the version **before** this patch.
+
+Optional environment settings, inherited by either launcher:
+
+| Setting | Meaning |
+| --- | --- |
+| `JETSON_IP` | Explicit literal IPv4 for XRCE; takes precedence over SSH server address |
+| `JETSON_SSH_TARGET` | Explicit reviewed `user@host-or-IP`; takes precedence over default mDNS and disables fallback |
+| `JETSON_SSH_FALLBACK` | Optional reviewed `user@IP` tried only if default mDNS SSH fails; no built-in address scan or guessed fallback |
+| `JETSON_HOST_KEY_ALIAS` | Known-host identity, default `skybeta-19.local`; strict checking stays enabled for IP targets |
+| `JETSON_SSH_SOCKET` | Operator-owned ControlMaster socket; defaults to the existing deployment's socket for compatibility |
+
+For example, an operator who independently verified the wired address and its
+known host key can set `JETSON_SSH_TARGET=dronehacks@<reviewed-wired-ip>` before
+running the installed `start.sh --split`. Never paste an unverified IP into this
+setting, disable host checking, or blindly accept a new key. The helper reuses an
+existing authenticated socket if available; verify its owner and destination.
+If a socket is stale or belongs to another target, have its owner close it and
+choose an unused operator-owned socket. The helper does not delete sockets.
+The SITL launcher uses BatchMode for address discovery; establish the reviewed
+interactive SSH connection with `start.sh` first when needed.
+
+Validation uses mocked SSH only: explicit override precedence, server-address
+selection despite different advertised interface, malformed/failed discovery,
+strict host alias options, reviewed fallback and installer refusal/idempotence.
+It does not initiate an SSH session or change running simulations:
+
+```bash
+python3 -m unittest split_setup.test_doctor split_setup.test_network -v
+bash -n split_setup/split_network.sh
+```
