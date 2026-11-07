@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 T = [0.0]           # sim time, s
 OVERRIDES = {}      # parameter overrides for the next node
 SENT = []           # (topic, msg) the node published
+SUBS = []           # topics the node subscribed to
 Z_BIAS = [0.0]      # PX4's height error vs odom, m (pre-arm check tests)
 
 
@@ -41,8 +42,8 @@ class Node:
     def create_publisher(self, msg_type, topic, qos):
         return types.SimpleNamespace(publish=lambda m: SENT.append((topic, m)))
 
-    def create_subscription(self, *args):
-        pass
+    def create_subscription(self, msg_type, topic, *args):
+        SUBS.append(topic)
 
     def create_timer(self, *args):
         pass

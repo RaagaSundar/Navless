@@ -112,6 +112,12 @@ PARAMETERS = (
     ('arrival_radius_m', 0.25),
     ('takeoff_timeout_s', 15.0),
     ('publish_rate_hz', 10.0),
+    # Where we read our own position. Use the same odometry that feeds PX4's
+    # vision fusion: cuVSLAM's raw topic through the stock px4_odom_bridge,
+    # or Koji's gated /mapping/validated_odometry (which drops samples while
+    # cuVSLAM is not tracking) if PX4 is fed that. Then a VIO loss looks the
+    # same to this node as to PX4 (see blind_carry and odom_arriving).
+    ('odometry_topic', ODOM_TOPIC),
     # Route: a planner file, and how the drone sat on the launch mark at
     # power-up (nose bearing clockwise from course north; height of the odom
     # origin above the floor).
@@ -241,7 +247,8 @@ class CourseMission(Node):
         self.twist_pub = self.create_publisher(
             TwistStamped, TWIST_TOPIC, 10)
         self.create_subscription(
-            Odometry, ODOM_TOPIC, self.odometry_cb, 10)
+            Odometry, str(self.get_parameter('odometry_topic').value),
+            self.odometry_cb, 10)
         self.create_subscription(String, STATE_TOPIC, self.state_cb, 10)
         if VisualSlamStatus is not None:
             self.create_subscription(

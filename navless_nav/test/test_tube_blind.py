@@ -156,6 +156,21 @@ def test_moving_then_frozen_odometry_holds_at_the_frozen_pose():
         assert math.dist(last_pose(node), frozen_at) < 1e-9, moving_ticks
 
 
+def test_odometry_topic_is_configurable():
+    # Read the same odometry that feeds PX4 (e.g. Koji's gated topic, which
+    # drops samples while cuVSLAM is not tracking), so a loss looks the same.
+    h.SUBS.clear()
+    h.OVERRIDES.clear()
+    h.OVERRIDES.update(odometry_topic='/mapping/validated_odometry')
+    cm.CourseMission()
+    assert '/mapping/validated_odometry' in h.SUBS
+    assert '/visual_slam/tracking/odometry' not in h.SUBS
+    h.SUBS.clear()
+    h.OVERRIDES.clear()
+    cm.CourseMission()
+    assert '/visual_slam/tracking/odometry' in h.SUBS          # the default
+
+
 def test_blind_carry_never_runs_outside_the_tube_zone():
     h.T[0] = 0.0
     h.OVERRIDES.clear()

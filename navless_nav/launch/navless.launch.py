@@ -22,7 +22,8 @@ ARGUMENTS = [
     ('auto_offboard_on_arm', 'true',
      'enter Offboard once when the pilot arms, then switches to Position'),
     ('odometry_topic', '/visual_slam/tracking/odometry',
-     'source of the ENU pose the altitude band is measured against'),
+     'odometry for flight_interface (altitude band) and the course node: '
+     'use the topic that feeds the PX4 vision fusion'),
     ('takeoff_altitude_m', '0.85',
      'hover height above the origin when no route loads; with a route, the '
      'climb goes to its first point'),
@@ -71,7 +72,8 @@ ARGUMENTS = [
 # The stack's flight-interface package. Its name is fixed by the image.
 FLIGHT_INTERFACE_PKG = 'skybeta_flight_interface'
 
-MISSION_PARAMS = ('takeoff_altitude_m', 'takeoff_lead_m', 'arrival_radius_m',
+MISSION_PARAMS = ('odometry_topic',     # the same source as flight_interface's
+                  'takeoff_altitude_m', 'takeoff_lead_m', 'arrival_radius_m',
                   'takeoff_timeout_s',
                   'route_file', 'start_bearing_deg', 'start_height_m',
                   'cruise_speed_mps', 'max_lead_m', 'max_lat_accel_mps2',
