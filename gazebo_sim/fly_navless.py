@@ -89,6 +89,12 @@ class TwistStamped:
         self.twist = _ns(linear=_vec(), angular=_vec())
 
 
+class PointStamped:
+    def __init__(self):
+        self.header = _ns(stamp=None, frame_id="")
+        self.point = _vec()
+
+
 class Odometry:
     def __init__(self):
         self.header = _ns(stamp=None, frame_id="odom")
@@ -187,7 +193,9 @@ def install_ros_standin():
 
     mod("rclpy", init=lambda args=None: None, ok=lambda: False, spin=lambda n: None, shutdown=lambda: None)
     sys.modules["rclpy"].node = mod("rclpy.node", Node=Node)
-    for pkg, attrs in (("geometry_msgs", dict(PoseStamped=PoseStamped, TwistStamped=TwistStamped)),
+    sys.modules["rclpy"].qos = mod("rclpy.qos", qos_profile_sensor_data=10)   # course_mission's /tube/offset
+    for pkg, attrs in (("geometry_msgs", dict(PointStamped=PointStamped, PoseStamped=PoseStamped,
+                                              TwistStamped=TwistStamped)),
                        ("nav_msgs", dict(Odometry=Odometry)),
                        ("std_msgs", dict(String=String)),
                        ("rcl_interfaces", dict(ParameterDescriptor=lambda **kw: kw)),

@@ -1,16 +1,16 @@
 # Packaging verification
 
-Checked2026-11-07 from a new clone of main`c967e27`, with no live simulation or
+Checked 2026-11-07 from a new clone of main `c967e27`, with no live simulation or
 Jetson installation changes:
 
-- `python3 split_sim/doctor.py --source-only`: every prerequisite present;32
+- `python3 split_sim/doctor.py --source-only`: every prerequisite present; 32
   manifest-listed frozen runtime files match exact SHA-256.
-- `python3 -m unittest split_sim.test_install -v`:2passed, including complete copy
+- `python3 -m unittest split_sim.test_install -v`: 2 passed, including complete copy
   into a fresh space-containing folder and missing-prerequisite rejection.
-- Host transport/admission/prepared-recorder tests:16passed.
-- Frozen runtime tests:13passed,1skipped because the private failed-flight ULog
+- Host transport/admission/prepared-recorder tests: 16 passed.
+- Frozen runtime tests: 13 passed, 1 skipped because the private failed-flight ULog
   is intentionally not distributed. The skip is not a synthetic pass.
--13shell syntax checks;58Python compilation checks; Docker Compose config parse
+- 13 shell syntax checks; 58 Python compilation checks; Docker Compose config parse
   passed. The command parsed config only, without starting containers.
 - `bash split_sim/setup_jetson.sh --dry-run`: source checks and printed plan;
   no SSH/Docker action.
@@ -26,3 +26,7 @@ No clean-install full-course success is claimed. The included213553 baseline
 stopped airborne at the elevated sill on an overly strict conditional-range gate
 while EV/baro remained healthy; corrected height/forward-window work must be referenced
 separately before those variants are selected.
+
+An additional shallow clone of the published GitHub branch into a new directory
+containing spaces passed source doctor and installer dry-run. It did not use
+workspace-only files.
