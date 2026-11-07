@@ -320,7 +320,12 @@ class GlobalCourseRouter:
             t_rel = max(0.0, now_s - self.spline_start_time_s)
             if (now_s - self.last_replan_time_s) >= 0.40:
                 spline_blocked = not self.optimizer.is_spline_collision_free(self.active_spline, t_start=t_rel)
-            spline_finished = t_rel >= (self.active_spline.duration - 0.05)
+            end_pos = self.active_spline.evaluate_position(self.active_spline.duration)
+            end_at_goal = (
+                float(np.linalg.norm(end_pos - np.asarray(self.current_goal_enu(), dtype=np.float64)))
+                <= self.config.acceptance_radius_m
+            )
+            spline_finished = t_rel >= (self.active_spline.duration + (1.5 if end_at_goal else -0.05))
 
         needs_new_spline = (
             force_replan

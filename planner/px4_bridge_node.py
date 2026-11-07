@@ -178,6 +178,9 @@ class PX4TrajectoryTrackerCore:
         self.start_height_m = float(start_height_m)
         self.max_yaw_rate_rad_s = float(max_yaw_rate_rad_s)
         self.max_lead_m = float(max_lead_m)
+        self.carrot_t: float = 0.0
+        self.last_carrot_spline: Optional[UniformBspline] = None
+        self.last_carrot_time_s: Optional[float] = None
         self.touch_and_go_fly_home = bool(touch_and_go_fly_home)
         self.prearm_settle_s = float(prearm_settle_s)
         self.prearm_height_tol_m = float(prearm_height_tol_m)
@@ -603,10 +606,12 @@ class PX4TrajectoryTrackerCore:
 
         # 2. Mandatory vertical takeoff climb gate in direct PX4 mode:
         # Climb straight up over the launch mark and hold initial yaw before starting lateral flight!
+        force_takeoff_replan = False
         if self.router.stage == CourseStage.STAGE_1_MAZE and not self.direct_takeoff_complete:
             climb_done_z = 0.72 if self.launch_origin_enu[2] > 0.05 else 0.65
             if float(drone_pos_enu[2]) >= climb_done_z:
                 self.direct_takeoff_complete = True
+                force_takeoff_replan = True
             else:
                 self.router.spline_start_time_s = now_s
                 takeoff_z = float(self.config.checkpoints.start_pad[2])
@@ -640,6 +645,7 @@ class PX4TrajectoryTrackerCore:
             now_s,
             drone_pos_enu,
             external_window_confidence=external_window_confidence,
+            force_replan=force_takeoff_replan,
         )
 
         # 3. Autonomous Concentric Pad Landing before Stage 6 Fly-Home:
@@ -679,46 +685,60 @@ class PX4TrajectoryTrackerCore:
             return None, f"no_feasible_spline ({decision.reason})"
 
         profile = self.router.profile_for_stage(decision.stage)
-        t_rel = max(0.0, now_s - self.router.spline_start_time_s)
-        t_eval = min(spline.duration, t_rel + self.lookahead_s)
         z_min_clamp = 0.05 if decision.stage == CourseStage.STAGE_6_FLY_HOME else profile.z_min_enu
         xy_fence = safety.arena_half_extent_xy_m - safety.net_keepout_margin_m
-        pos_enu = clamp_altitude_enu(
-            spline.evaluate_position(t_eval),
+
+        # Monotonic waiting-carrot advancement along the active B-spline (matching mission.py Carrot):
+        # Never jump past a corner via closest-point projection when the drone has cross-track overshoot;
+        # instead, slow down and shrink lead radius approaching turns, and wait at the current carrot point
+        # whenever ||carrot - drone|| >= effective_lead_m!
+        new_spline = (
+            self.last_carrot_spline is not spline
+            or (decision.replanned and decision.reason != "periodic_1hz_route_verified_clear")
+        )
+        if new_spline:
+            t_prev = 0.0
+            dt_carrot = self.lookahead_s
+        else:
+            t_prev = min(spline.duration, max(0.0, self.carrot_t))
+            dt_carrot = (
+                max(0.0, min(0.25, now_s - self.last_carrot_time_s))
+                if self.last_carrot_time_s is not None
+                else self.lookahead_s
+            )
+
+        yaw_bwd = spline.evaluate_yaw(max(0.0, t_prev - 0.30), fallback_yaw=current_yaw_enu)
+        yaw_fwd1 = spline.evaluate_yaw(min(spline.duration, t_prev + 0.35), fallback_yaw=current_yaw_enu)
+        yaw_fwd2 = spline.evaluate_yaw(min(spline.duration, t_prev + 0.70), fallback_yaw=current_yaw_enu)
+        ang1 = abs(math.atan2(math.sin(yaw_fwd1 - yaw_bwd), math.cos(yaw_fwd1 - yaw_bwd)))
+        ang2 = abs(math.atan2(math.sin(yaw_fwd2 - yaw_fwd1), math.cos(yaw_fwd2 - yaw_fwd1)))
+        turn_angle = max(ang1, ang2)
+        turn_ratio = min(1.0, max(0.0, (turn_angle - 0.20) / 0.70))
+        turn_factor = 1.0 - 0.50 * turn_ratio
+        effective_lead_m = self.max_lead_m * turn_factor if self.max_lead_m > 0.0 else 0.0
+
+        p_prev = clamp_altitude_enu(
+            spline.evaluate_position(t_prev),
             z_min_clamp,
             profile.z_max_enu,
             xy_limit_m=xy_fence,
         )
-        # Curve-following carrot cap: if the spline point is > max_lead_m ahead of the drone,
-        # walk t_eval back along the B-spline curve and pause spline_start_time_s so the carrot
-        # Cap lead distance by pulling `t_eval` back along the B-spline curve (`best_t`) so the target
-        # stays ON the collision-free spline instead of cutting straight across maze/chicane corners!
-        # In turns (high heading change over ±0.35 s), shrink effective lead (0.55m -> 0.28m) so VIO lag never cuts corners.
-        yaw_prev = spline.evaluate_yaw(max(0.0, t_eval - 0.35), fallback_yaw=current_yaw_enu)
-        yaw_next = spline.evaluate_yaw(min(spline.duration, t_eval + 0.35), fallback_yaw=current_yaw_enu)
-        turn_angle = abs(math.atan2(math.sin(yaw_next - yaw_prev), math.cos(yaw_next - yaw_prev)))
-        turn_ratio = min(1.0, max(0.0, (turn_angle - 0.20) / 0.70))
-        effective_lead_m = self.max_lead_m * (1.0 - 0.48 * turn_ratio) if self.max_lead_m > 0.0 else 0.0
-        if effective_lead_m > 0.0:
-            lead_vec = pos_enu - drone_pos_enu
-            lead_dist = float(np.linalg.norm(lead_vec))
-            if lead_dist > effective_lead_m:
-                t_search_min = max(0.0, t_eval - 4.0)
-                ts_grid = np.linspace(t_search_min, t_eval, 17)
-                best_t = float(ts_grid[0])
-                best_d = 1e9
-                for tc in ts_grid:
-                    pc = clamp_altitude_enu(
-                        spline.evaluate_position(float(tc)),
-                        z_min_clamp,
-                        profile.z_max_enu,
-                        xy_limit_m=xy_fence,
-                    )
-                    dc = float(np.linalg.norm(pc - drone_pos_enu))
-                    if dc < best_d:
-                        best_d = dc
-                        best_t = float(tc)
-                t_lo, t_hi = best_t, t_eval
+        d_prev = float(np.linalg.norm(p_prev - drone_pos_enu))
+
+        if effective_lead_m > 0.0 and not new_spline and d_prev >= effective_lead_m:
+            t_eval = t_prev
+            pos_enu = p_prev
+        else:
+            step_dt = dt_carrot if new_spline else dt_carrot * turn_factor
+            t_cand = min(spline.duration, t_prev + step_dt)
+            p_cand = clamp_altitude_enu(
+                spline.evaluate_position(t_cand),
+                z_min_clamp,
+                profile.z_max_enu,
+                xy_limit_m=xy_fence,
+            )
+            if effective_lead_m > 0.0 and float(np.linalg.norm(p_cand - drone_pos_enu)) > effective_lead_m:
+                t_lo, t_hi = t_prev, t_cand
                 for _ in range(10):
                     t_mid = 0.5 * (t_lo + t_hi)
                     pm = clamp_altitude_enu(
@@ -732,24 +752,32 @@ class PX4TrajectoryTrackerCore:
                     else:
                         t_hi = t_mid
                 t_eval = t_lo
-                self.router.spline_start_time_s = now_s - max(0.0, t_eval - self.lookahead_s)
                 pos_enu = clamp_altitude_enu(
                     spline.evaluate_position(t_eval),
                     z_min_clamp,
                     profile.z_max_enu,
                     xy_limit_m=xy_fence,
                 )
-                lead_vec = pos_enu - drone_pos_enu
-                lead_dist = float(np.linalg.norm(lead_vec))
-                if lead_dist > effective_lead_m:
-                    pos_enu = clamp_altitude_enu(
-                        drone_pos_enu + (effective_lead_m / lead_dist) * lead_vec,
-                        z_min_clamp,
-                        profile.z_max_enu,
-                        xy_limit_m=xy_fence,
-                    )
-        vel_enu = spline.evaluate_velocity(t_eval) * (1.0 - 0.30 * turn_ratio)
-        t_yaw = max(0.0, t_eval - self.lookahead_s)
+            else:
+                t_eval = t_cand
+                pos_enu = p_cand
+
+            lead_vec = pos_enu - drone_pos_enu
+            lead_dist = float(np.linalg.norm(lead_vec))
+            if effective_lead_m > 0.0 and lead_dist > effective_lead_m:
+                pos_enu = clamp_altitude_enu(
+                    drone_pos_enu + (effective_lead_m / lead_dist) * lead_vec,
+                    z_min_clamp,
+                    profile.z_max_enu,
+                    xy_limit_m=xy_fence,
+                )
+
+        self.carrot_t = t_eval
+        self.last_carrot_spline = spline
+        self.last_carrot_time_s = now_s
+        self.router.spline_start_time_s = now_s - max(0.0, t_eval - self.lookahead_s)
+        vel_enu = spline.evaluate_velocity(t_eval) * turn_factor
+        t_yaw = max(0.0, t_eval - 0.15)
         raw_yaw_enu = spline.evaluate_yaw(t_yaw, fallback_yaw=current_yaw_enu)
         yaw_enu = self._rate_limit_yaw_enu(now_s, raw_yaw_enu)
 
@@ -1275,7 +1303,8 @@ class PX4TrajectoryTrackerCore:
         if state == "TAKEOFF":
             assert self.px4_takeoff_enu is not None
             takeoff_z = float(self.config.checkpoints.start_pad[2])
-            target = (self.px4_takeoff_enu[0], self.px4_takeoff_enu[1] + 0.20, takeoff_z)
+            north_nudge = 0.0 if self.launch_origin_enu[1] > 1.00 else 0.20
+            target = (self.px4_takeoff_enu[0], self.px4_takeoff_enu[1] + north_nudge, takeoff_z)
             if float(pos_enu[2]) >= takeoff_z - 0.15:
                 self._px4_enter("ROUTE", now_s)
                 self.router.spline_start_time_s = now_s
