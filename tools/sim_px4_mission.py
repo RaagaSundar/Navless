@@ -44,10 +44,13 @@ def main() -> int:
     ap.add_argument("--no-fly-home", action="store_true")
     ap.add_argument("--max-s", type=float, default=240.0)
     ap.add_argument("--prior", type=Path, default=ROOT / "gazebo_sim/models/dh_course/meshes/course_visual.obj")
+    ap.add_argument("--planner", choices=("nmpc", "ego"), default=None, help="short-term planner (default: config)")
     a = ap.parse_args()
 
     cfg = PlannerConfig.from_json(ROOT / "planner/config/course_config.json")
     cfg.enable_fly_home = not a.no_fly_home
+    if a.planner:
+        cfg.short_term_planner = a.planner
     grid = OccupancyGrid3D(bounds_min_m=cfg.global_map_bounds_min_m, bounds_max_m=cfg.global_map_bounds_max_m,
                            resolution_m=cfg.voxel_resolution_m, inflation_radius_m=cfg.obstacle_inflation_m,
                            local_window_m=cfg.local_window_size_m)

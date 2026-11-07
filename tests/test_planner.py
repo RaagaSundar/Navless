@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -419,6 +420,90 @@ class TestPlannerScaffold(unittest.TestCase):
         cmd_done = tracker.step_skybeta_mission(19.0)
         self.assertEqual(cmd_done.skybeta_state, "DONE")
         self.assertEqual(cmd_done.mode, "none")
+
+    def _skybeta_tracker(self) -> PX4TrajectoryTrackerCore:
+        router = GlobalCourseRouter(PlannerConfig(), OccupancyGrid3D())
+        return PX4TrajectoryTrackerCore(router, start_bearing_deg=0.0, start_height_m=0.07, prearm_settle_s=0.0)
+
+    def _skybeta_tick(self, tracker, t, ned, *, armed=False, offboard=False, landed=True):
+        tracker.update_local_position(t, ned[0], ned[1], ned[2], 0.0, 0.0, 0.0, 0.0, True, True)
+        tracker.update_estimator_health(True)
+        tracker.update_vehicle_status(
+            t, ARMING_STATE_ARMED if armed else 1, NAVIGATION_STATE_OFFBOARD if offboard else 2, landed=landed
+        )
+        return tracker.step_skybeta_mission(t)
+
+    def test_skybeta_setpoints_undo_zero_tare(self) -> None:
+        # Odometry drifted 0.2 m north / 0.1 m west of the launch mark before arming: the pre-arm tare
+        # makes the tracker read "on the mark", but flight_interface flies raw odom, so every setpoint
+        # must carry the drift back (else the whole flight is shifted by it).
+        tracker = self._skybeta_tracker()
+        cmd = self._skybeta_tick(tracker, 0.0, (0.2, -0.1, -0.07))
+        self.assertEqual((cmd.skybeta_state, cmd.mode), ("WAIT_FOR_OFFBOARD", "pose"))
+        np.testing.assert_allclose(cmd.pos_odom, (0.2, 0.1, 0.0), atol=1e-6)  # where the drone really is
+        cmd = self._skybeta_tick(tracker, 0.1, (0.2, -0.1, -0.07), armed=True, offboard=True, landed=False)
+        self.assertEqual(cmd.skybeta_state, "TAKEOFF")
+        # Takeoff target: 0.20 m north of the mark at 0.85 m, i.e. odom (0.2 + 0.2, 0.1, 0.85 - 0.07)
+        np.testing.assert_allclose(cmd.pos_odom, (0.4, 0.1, 0.78), atol=1e-6)
+
+    def test_skybeta_operator_stop_descends_until_disarmed(self) -> None:
+        tracker = self._skybeta_tracker()
+        self._skybeta_tick(tracker, 0.0, (0.0, 0.0, -0.07))
+        self._skybeta_tick(tracker, 0.1, (0.0, 0.0, -0.07), armed=True, offboard=True, landed=False)
+        tracker.request_stop(2.0)
+        air = dict(armed=True, offboard=True, landed=False)
+        cmd = self._skybeta_tick(tracker, 2.0, (0.3, 0.0, -0.6), **air)
+        self.assertEqual((cmd.skybeta_state, cmd.mode), ("STOP_LAND", "twist"))
+        self.assertAlmostEqual(cmd.vel_odom[2], -0.38, places=3)
+        self.assertAlmostEqual(math.hypot(cmd.vel_odom[0], cmd.vel_odom[1]), 0.0, places=3)  # lands where it is
+        cmd = self._skybeta_tick(tracker, 3.0, (0.3, 0.0, -0.2), **air)
+        self.assertAlmostEqual(cmd.vel_odom[2], -0.18, places=3)
+        # Touched down but still armed: keep pushing down until PX4 disarms (COM_DISARM_LAND)
+        cmd = self._skybeta_tick(tracker, 4.0, (0.3, 0.0, -0.07), armed=True, offboard=True, landed=True)
+        self.assertEqual(cmd.skybeta_state, "STOP_LAND")
+        self.assertFalse(tracker.stop_finished())
+        cmd = self._skybeta_tick(tracker, 6.0, (0.3, 0.0, -0.07))
+        self.assertEqual((cmd.skybeta_state, cmd.mode), ("DONE", "none"))
+        self.assertTrue(tracker.stop_finished())
+
+    def test_skybeta_operator_stop_on_ground_or_pilot_control_finishes_now(self) -> None:
+        tracker = self._skybeta_tracker()
+        self._skybeta_tick(tracker, 0.0, (0.0, 0.0, -0.07))
+        tracker.request_stop(0.5)
+        cmd = self._skybeta_tick(tracker, 0.5, (0.0, 0.0, -0.07))
+        self.assertEqual((cmd.skybeta_state, cmd.mode), ("DONE", "none"))
+        # Pilot already took over (armed, not Offboard): never fight the pilot
+        tracker = self._skybeta_tracker()
+        self._skybeta_tick(tracker, 0.0, (0.0, 0.0, -0.07))
+        self._skybeta_tick(tracker, 0.1, (0.0, 0.0, -0.07), armed=True, offboard=True, landed=False)
+        tracker.request_stop(1.0)
+        cmd = self._skybeta_tick(tracker, 1.0, (0.0, 0.0, -0.6), armed=True, offboard=False, landed=False)
+        self.assertEqual((cmd.skybeta_state, cmd.mode), ("DONE", "none"))
+
+    def test_px4_operator_stop_lands_and_never_rearms(self) -> None:
+        cfg = PlannerConfig()
+        self.assertTrue(cfg.enable_fly_home)
+        tracker = PX4TrajectoryTrackerCore(GlobalCourseRouter(cfg, OccupancyGrid3D()))
+
+        def tick(t, ned, arming=1, nav=2, landed=True):
+            tracker.update_local_position(t, ned[0], ned[1], ned[2], 0.0, 0.0, 0.0, 0.0, True, True)
+            tracker.update_vehicle_status(t, arming, nav)
+            tracker.update_landed(t, landed)
+            tracker.update_estimator_health(True)
+            return tracker.step_px4_mission(t)
+
+        tracker.px4_state = "ROUTE"
+        tracker.request_stop(5.0)
+        c = tick(5.0, (0.5, 0.0, -0.8), ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD, landed=False)
+        self.assertEqual(c.state, "LAND")
+        self.assertIn((VEHICLE_CMD_NAV_LAND, 0.0, 0.0), c.commands)
+        c = tick(9.0, (0.5, 0.0, -0.07), landed=True)  # disarmed on the ground
+        self.assertEqual(c.state, "DONE")  # not PREFLIGHT for a fly-home re-arm
+        self.assertTrue(tracker.stop_finished())
+
+        tracker = PX4TrajectoryTrackerCore(GlobalCourseRouter(cfg, OccupancyGrid3D()))
+        tracker.request_stop(0.0)
+        self.assertEqual(tick(0.0, (0.0, 0.0, -0.07)).state, "ABORT")
 
     def test_px4_mission_takeoff_route_pad_land_fly_home_land(self) -> None:
         cfg = PlannerConfig()
