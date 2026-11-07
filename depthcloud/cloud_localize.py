@@ -31,6 +31,7 @@ Yaw 0 = camera looking along +x, yaw 90 = along +y. Pitch is positive when looki
 """
 import json
 import math
+import os
 import sys
 import threading
 import time
@@ -236,6 +237,24 @@ def camera_pose(x, y, z, yaw_deg, pitch_deg=0.0, roll_deg=0.0):
     return T
 
 
+def base_pose(x, y, z, yaw_deg, pitch_deg=0.0, roll_deg=0.0):
+    """4x4 transform taking base_link (forward-left-up) points into the course frame."""
+    T = np.eye(4)
+    T[:3, :3] = rot_z(math.radians(yaw_deg)) @ rot_y(math.radians(pitch_deg)) @ rot_x(math.radians(roll_deg))
+    T[:3, 3] = (x, y, z)
+    return T
+
+
+def mount_transform(x, y, z, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0):
+    """base_link -> camera optical frame, from a camera mount given as FLU offset + angles (the stack's
+    CAMERA_X/Y/Z/ROLL/PITCH/YAW convention). Used when TF isn't available."""
+    return base_pose(x, y, z, yaw_deg, pitch_deg, roll_deg) @ camera_pose(0, 0, 0, 0)
+
+
+# Koji's measured skybeta mount (hardware_slam/README.md): 10.53 cm forward, 3.04 cm up, level.
+DEFAULT_MOUNT = (0.1053, 0.0, 0.0304)
+
+
 def pose_angles(T):
     """(yaw, pitch, roll) in degrees of the camera body frame; pitch > 0 = looking down."""
     R = T[:3, :3] @ R_OPT_TO_FLU.T
@@ -355,7 +374,8 @@ class Localizer:
 
     def __init__(self, model, T0, max_range=5.0, voxel=0.05, max_points=1500,
                  min_fitness=0.35, min_matches=300, max_rmse=0.06, max_jump=0.6, max_turn_deg=30.0,
-                 max_speed=3.0, max_turn_rate=360.0):
+                 max_speed=3.0, max_turn_rate=360.0, crop_margin=0.5, max_corr_m=0.05, max_corr_deg=1.5,
+                 min_neighbors=5):
         """A frame is accepted if its matched points fit tightly (rmse) AND there are enough of them:
         either min_fitness of the cloud, or at least min_matches points. The absolute count matters in
         a room full of people and chairs that aren't in the model, where most points can't match."""
@@ -370,6 +390,13 @@ class Localizer:
         self.searching, self.odom = False, False
         self.max_speed, self.max_turn_rate = max_speed, max_turn_rate      # m/s, deg/s: odometry sanity
         self.odom_rejects, self.odom_note, self.last_delta = 0, "", None
+        # Drop points that land outside the modelled course (+ margin) at the predicted pose: beyond the
+        # net is unmodelled (the venue on the real drone; a plain ground plane + sky in Gazebo, where
+        # SGBM invents depths from camera noise). None = keep everything.
+        self.crop_margin, self.cropped = crop_margin, 0.0
+        self.max_corr_m, self.max_corr_deg = max_corr_m, max_corr_deg   # per-frame cap with odometry
+        self.min_neighbors, self.neighbor_radius, self.sparse = min_neighbors, 0.12, 0.0
+        self.last_T_pred, self.last_src = None, None                # for frame dumps
 
     def reset(self, T, search_heading=False):
         """New start pose. With search_heading, the next frames try every heading from this position
@@ -406,15 +433,51 @@ class Localizer:
                               reason=f"ambiguous heading ({best_yaw:.0f}° vs {pose_angles(rival[1])[0]:.0f}°)")
         return best_T, best_info
 
-    def prepare(self, pts_cam):
+    def prepare(self, pts_cam, T=None):
         z = pts_cam[:, 2]
         p = pts_cam[np.isfinite(z) & (z > 0.3) & (z < self.max_range)]
         if len(p) > 8 * self.max_points:                              # live clouds are big: thin first
             p = p[self.rng.choice(len(p), 8 * self.max_points, replace=False)]
+        if T is not None and self.crop_margin is not None and len(p):
+            w, lo, hi, m = transform(T, p), self.model.lo, self.model.hi, self.crop_margin
+            keep = ((w[:, 0] > lo[0] - m) & (w[:, 0] < hi[0] + m) & (w[:, 1] > lo[1] - m) & (w[:, 1] < hi[1] + m)
+                    & (w[:, 2] > lo[2] - 0.3) & (w[:, 2] < hi[2] + 0.3))
+            self.cropped = float(1.0 - keep.mean())
+            p = p[keep]
         p = voxel_down(p, self.voxel)
+        if self.min_neighbors and len(p) > 50:
+            # Radius outlier removal: real surfaces give dense clusters; depths SGBM invents on
+            # featureless areas scatter thinly. Keep points with >= min_neighbors (incl. itself) within r.
+            try:
+                from scipy.spatial import cKDTree
+                # Fixed radius on purpose: widening it with depth (for stereo's z^2 noise) let invented
+                # far points back in and was worse in simulation. min_neighbors:=0 turns the filter off.
+                cnt = cKDTree(p).query_ball_point(p, r=self.neighbor_radius, return_length=True)
+                self.sparse = float(np.mean(cnt < self.min_neighbors))
+                p = p[cnt >= self.min_neighbors]
+            except ImportError:
+                pass
         if len(p) > self.max_points:
             p = p[self.rng.choice(len(p), self.max_points, replace=False)]
         return p
+
+    def clamp_correction(self, T):
+        """With odometry predicting the motion, let the course match correct the prediction (self.T) by at
+        most max_corr_m / max_corr_deg per frame. Real VSLAM drift needs millimetres per frame; a bad match
+        (clutter or noise lining up with a wall end) can otherwise yank the pose tens of cm at once."""
+        dp = T[:3, 3] - self.T[:3, 3]
+        n = float(np.linalg.norm(dp))
+        if n > self.max_corr_m:
+            dp *= self.max_corr_m / n
+        rv = cv2.Rodrigues(T[:3, :3] @ self.T[:3, :3].T)[0].ravel()      # rotation about the camera
+        a = float(np.linalg.norm(rv))
+        if a > math.radians(self.max_corr_deg):
+            rv *= math.radians(self.max_corr_deg) / a
+        out = self.T.copy()
+        out[:3, :3] = cv2.Rodrigues(rv.reshape(3, 1))[0] @ self.T[:3, :3]
+        out[:3, 3] = self.T[:3, 3] + dp
+        self.info["clamped"] = n > self.max_corr_m or a > math.radians(self.max_corr_deg)
+        return out
 
     def odom_plausible(self, delta, dt):
         """Reject odometry steps the drone can't physically make (a VSLAM reset / relocalization jump
@@ -445,7 +508,9 @@ class Localizer:
         if delta is not None:
             self.T = self.T @ delta
         self.odom = delta is not None
-        src = self.prepare(pts_cam)
+        # crop at the predicted pose, except while searching the heading (the heading is unknown then)
+        src = self.prepare(pts_cam, None if self.searching else self.T)
+        self.last_T_pred, self.last_src = self.T.copy(), src
         if len(src) < 150:
             self.status = "odometry" if self.odom else "no data"
             self.info = {"ok": False, "matches": len(src), "reason": "too few points in range"}
@@ -474,6 +539,8 @@ class Localizer:
                 good, info["reason"] = False, "jump too large"
         elif info["ok"]:
             info["reason"] = "poor fit"
+        if good and self.odom and self.max_corr_m is not None:
+            T = self.clamp_correction(T)
         if good:
             self.T, self.rejects = T, 0
             self.last_good, self.measured = time.monotonic(), info.get("proj", {})
@@ -828,7 +895,9 @@ class Tracker:
                     "fitness": info.get("fitness"), "rmse": info.get("rmse"), "ms": self.ms, "hz": self.hz,
                     "measured": loc.measured, "odom": loc.odom, "truth": getattr(self, "truth", None),
                     "odom_source": getattr(self, "odom_source", ""), "odom_note": loc.odom_note,
-                    "odom_rejects": loc.odom_rejects,
+                    "odom_rejects": loc.odom_rejects, "cropped": round(loc.cropped, 3),
+                    "sparse_removed": round(loc.sparse, 3),
+                    "matches": info.get("matches"),
                     "age": None if loc.last_good is None else time.monotonic() - loc.last_good,
                     "trail": list(loc.trail)}
 
@@ -849,8 +918,10 @@ class Tracker:
 # Offline self-test: simulated views of the model, perturbed start, check ICP recovers the pose
 # ----------------------------------------------------------------------------------------------
 
-def simulate_view(model, T_cam, rng, w=96, h=60, hfov_deg=72.0, max_range=5.0, outliers=0.05):
-    """Visible model surface points in the camera optical frame, with stereo-like noise."""
+def simulate_view(model, T_cam, rng, w=96, h=60, hfov_deg=72.0, max_range=5.0, outliers=0.05, background=0.0):
+    """Visible model surface points in the camera optical frame, with stereo-like noise.
+    background: fraction of the pixels that see NO model surface (sky, ground beyond the net) that get
+    a point at a random depth, like SGBM inventing depths from camera noise on featureless areas."""
     Ti = np.linalg.inv(T_cam)
     pc = transform(Ti, model.pts[~model.see_through])                # stereo looks through the net
     z = pc[:, 2]
@@ -866,7 +937,46 @@ def simulate_view(model, T_cam, rng, w=96, h=60, hfov_deg=72.0, max_range=5.0, o
     vis = vis + rng.normal(0, 1, vis.shape) * (0.004 * vis[:, 2:3] ** 2)      # noise grows with z^2
     n_out = int(outliers * len(vis))
     junk = rng.uniform([-1.5, -1.0, 0.5], [1.5, 1.0, 3.0], (n_out, 3))       # people, chairs, etc.
-    return np.vstack([vis, junk])
+    out = [vis, junk]
+    if background > 0:
+        empty = np.setdiff1d(np.arange(w * h), np.unique(pix))
+        k = int(background * len(empty))
+        if k:
+            sel = rng.choice(empty, k, replace=False)
+            d = rng.uniform(0.5, max_range, k)
+            uu, vv = sel % w + 0.5, sel // w + 0.5
+            out.append(np.stack([(uu - w / 2) / f * d, (vv - h / 2) / f * d, d], axis=1))
+    return np.vstack(out)
+
+
+def benchtest(obj_path, background=0.6, frames=8, init="new", crop=0.5, mount=(0.115, 0.0375, 0.01),
+              base_z=0.07, seed=5, hfov_deg=80.0):
+    """The master sim's bench case: the drone sits still on the launch mark facing north, camera on a
+    mount (default: master_sim's 11.5 cm forward, 3.75 cm left, 1 cm up). Feeds `frames` simulated views
+    to a fresh tracker and prints what it does each frame.
+    init: 'new' = base_link on the mark + mount (fixed code), 'old' = camera on the mark at 0.2 m."""
+    model = CourseModel(obj_path)
+    lm = model.group_centre("launch")
+    rng = np.random.default_rng(seed)
+    Tbc = mount_transform(*mount)
+    T_true = base_pose(lm[0], lm[1], base_z, 90.0) @ Tbc
+    T0 = camera_pose(lm[0], lm[1], 0.2, 90.0) if init == "old" else base_pose(lm[0], lm[1], base_z, 90.0) @ Tbc
+    loc = Localizer(model, T0, crop_margin=None if str(crop) == "off" else float(crop))
+    loc.reset(T0)
+    c = T_true[:3, 3]
+    print(f"bench: camera truly at ({c[0]:.3f}, {c[1]:.3f}, {c[2]:.3f}); init={init} starts "
+          f"{100 * np.linalg.norm(T0[:3, 3] - c):.1f} cm off; background={background}; crop={crop}")
+    print(" frame  status     fit   matches  cropped   pos err   hdg err")
+    for k in range(frames):
+        cloud = simulate_view(model, T_true, rng, hfov_deg=hfov_deg, background=background)
+        loc.update(cloud)
+        i = loc.info
+        e = 100 * np.linalg.norm(loc.T[:3, 3] - c)
+        h = abs((pose_angles(loc.T)[0] - 90.0 + 180) % 360 - 180)
+        fit = f"{i['fitness']:.2f}" if i.get("fitness") is not None else "  - "
+        print(f"  {k:3d}   {loc.status:9s} {fit}  {i.get('matches', '-'):>6}   {100 * loc.cropped:5.1f}%  "
+              f"{e:6.1f} cm  {h:5.2f}°   {i.get('reason', '')}")
+    return loc
 
 
 def selftest(obj_path, up="z", scale=1.0, trials=20, max_range=5.0, perturb=0.4, points=1500, clutter=0.05,
@@ -959,7 +1069,8 @@ def selftest(obj_path, up="z", scale=1.0, trials=20, max_range=5.0, perturb=0.4,
 
 def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutter=0.3, max_range=5.0,
               points=1500, seed=11, every=10, odom=True, odom_scale=0.03, odom_yaw_dps=0.3, odom_only=False,
-              view=0, odom_drop=0.0, odom_resets=(), max_speed=3.0):
+              view=0, odom_drop=0.0, odom_resets=(), max_speed=3.0, background=0.0, mount=DEFAULT_MOUNT,
+              base_z=0.07, max_corr_m=0.05, min_neighbors=5):
     """Fly a route in simulation, frame by frame, the way the live node tracks: the localizer starts on
     the launch mark facing 90 deg (north, along the guideline) and each frame starts from the previous
     estimate. The drone sits on the mark (camera ~0.2 m up), climbs to the route height, then follows
@@ -972,7 +1083,10 @@ def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutte
     odom_drop: chance per frame that VSLAM isn't trusted (lost tracking / gate rejects it): no delta that
     frame, and the odometry chain restarts, exactly like the live node.
     odom_resets: frame numbers where VSLAM 'resets' and its odometry jumps 1.5 m + 40 deg; the tracker
-    must reject that step instead of teleporting."""
+    must reject that step instead of teleporting.
+    The route is the DRONE's (base_link) path; the camera rides on `mount` (x, y, z FLU from base_link).
+    The drone starts standing on the mark at base_z, as the live node assumes. background: see
+    simulate_view (random-depth points where nothing in the model is seen)."""
     model = CourseModel(obj_path)
     route = json.load(open(route_path))
     W = np.asarray(route["waypoints_enu"], float)
@@ -980,8 +1094,9 @@ def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutte
     rng = np.random.default_rng(seed)
     step = speed / rate
     # path: 3 frames sitting on the mark, climb to the first waypoint's height, then the route
-    pts = [np.array([lm[0], lm[1], 0.2])] * 3
-    for zc in np.arange(0.2, W[0, 2], step)[1:]:
+    Tbc = mount_transform(*mount)
+    pts = [np.array([lm[0], lm[1], base_z])] * 3
+    for zc in np.arange(base_z, W[0, 2], step)[1:]:
         pts.append(np.array([lm[0], lm[1], zc]))
     for a, b in zip(W[:-1], W[1:]):
         n = max(1, int(np.ceil(np.linalg.norm(b - a) / step)))
@@ -995,10 +1110,11 @@ def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutte
             want = math.degrees(math.atan2(d[1], d[0])) if np.linalg.norm(d) > 1e-3 else yaws[i - 1]
             turn = (want - yaws[i - 1] + 180) % 360 - 180            # a real drone yaws <= ~90 deg/s
             yaws[i] = yaws[i - 1] + max(-90.0 / rate, min(90.0 / rate, turn))
-    start = lambda: camera_pose(lm[0] + rng.normal(0, 0.05), lm[1] + rng.normal(0, 0.05), 0.2,
-                                90 + rng.normal(0, 5), 0.0)
+    start = lambda: base_pose(lm[0] + rng.normal(0, 0.05), lm[1] + rng.normal(0, 0.05), base_z,
+                              90 + rng.normal(0, 5)) @ Tbc
     tracker = Tracker(model, start(), max_range=max_range, max_points=points,
-                      max_speed=max_speed, max_turn_rate=360.0 if max_speed < 100 else 1e9)
+                      max_speed=max_speed, max_turn_rate=360.0 if max_speed < 100 else 1e9, max_corr_m=max_corr_m,
+                      min_neighbors=min_neighbors)
     loc = tracker.loc
     loc.status = "reset"
     if odom_only:                                                     # baseline: never accept a course match
@@ -1021,7 +1137,7 @@ def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutte
         T_prev, gap, odt = None, 1, 1.0 / rate
         for i, (p, yw) in enumerate(zip(P, yaws)):
             t_frame = time.monotonic()
-            T_true = camera_pose(p[0], p[1], p[2], yw, rng.normal(0, 2), rng.normal(0, 2))
+            T_true = base_pose(p[0], p[1], p[2], yw, rng.normal(0, 2), rng.normal(0, 2)) @ Tbc
             delta = None
             # untrusted frame (lost tracking / gate rejected it): no odometry now, but VSLAM's frame is
             # continuous, so the next trusted frame bridges the gap from the last trusted one (live node too)
@@ -1043,7 +1159,8 @@ def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutte
                 gap += 1
             tracker.truth = {"position": T_true[:3, 3].round(3).tolist(),
                              "forward": (T_true[:3, :3] @ R_OPT_TO_FLU.T)[:, 0].round(3).tolist()}
-            tracker.process(simulate_view(model, T_true, rng, max_range=max(5.0, max_range), outliers=clutter),
+            tracker.process(simulate_view(model, T_true, rng, max_range=max(5.0, max_range), outliers=clutter,
+                                          background=background),
                             delta, odt if delta is not None else 1.0 / rate)
             e = np.linalg.norm(loc.T[:3, 3] - T_true[:3, 3])
             h = abs((pose_angles(loc.T)[0] - yw + 180) % 360 - 180)
@@ -1114,10 +1231,12 @@ def main():
                                 p("model_spacing", 0.04), p("match_ceiling", True))
             self.get_logger().info(f"{obj}: {len(model.pts):,} samples ({model.nn.kind}) in "
                                    f"{time.perf_counter() - t0:.1f} s")
-            # Start pose: defaults to the model's launch mark (if it has one), camera ~0.2 m up as when
-            # the drone sits on the floor, facing 90 deg (north): the drone is always placed facing
-            # forward along the guideline, which runs north from the launch mark. search_heading:=true
-            # tries every heading instead (unreliable from the mark: walls 0.5 m away look alike).
+            # Start pose: the DRONE (base_link) sits on the model's launch mark, standing on the floor
+            # (init_base_z, like navless_nav's start_height_m), facing 90 deg (north): it's always placed
+            # facing forward along the guideline, which runs north from the mark. The camera is placed
+            # from that through the base_link -> camera mount (TF, else mount_fallback), on the first
+            # cloud. search_heading:=true tries every heading instead (unreliable from the mark).
+            # Legacy: -p init_z:=<camera height> puts the CAMERA at (init_x, init_y, init_z) as before.
             launch = model.group_centre("launch")
             ix, iy = p("init_x", float("nan")), p("init_y", float("nan"))
             if math.isnan(ix) or math.isnan(iy):
@@ -1125,12 +1244,27 @@ def main():
                     raise SystemExit("no 'Launch' group in the model: set -p init_x:=... -p init_y:=...")
                 ix, iy = float(launch[0]), float(launch[1])
                 self.get_logger().info(f"starting at the launch mark ({ix:.3f}, {iy:.3f})")
-            search = bool(p("search_heading", False))
-            T0 = camera_pose(ix, iy, p("init_z", 0.2), p("init_yaw_deg", 90.0), p("init_pitch_deg", 0.0))
+            self.search = bool(p("search_heading", False))
+            yaw0 = p("init_yaw_deg", 90.0)
+            legacy_z = p("init_z", float("nan"))
+            self.T_base0 = base_pose(ix, iy, p("init_base_z", 0.07), yaw0)
+            self.T_cam_legacy = None if math.isnan(legacy_z) else camera_pose(ix, iy, legacy_z, yaw0,
+                                                                             p("init_pitch_deg", 0.0))
+            fb = [float(t) for t in str(p("mount_fallback", ",".join(str(v) for v in DEFAULT_MOUNT))).split(",")]
+            self.mount_fallback = mount_transform(*fb)
+            self.started, self.t_first_cloud = False, None
+            T0 = self.T_cam_legacy if self.T_cam_legacy is not None else self.T_base0 @ self.mount_fallback
             self.tracker = Tracker(model, T0, max_range=p("max_range", 5.0), max_points=int(p("max_points", 1500)),
                                    min_fitness=p("min_fitness", 0.35), min_matches=int(p("min_matches", 300)),
-                                   max_rmse=p("max_rmse", 0.06))
-            self.tracker.loc.reset(T0, search_heading=search)
+                                   max_rmse=p("max_rmse", 0.06), crop_margin=p("crop_margin", 0.5),
+                                   max_corr_m=p("max_corr_m", 0.05), max_corr_deg=p("max_corr_deg", 1.5),
+                                   min_neighbors=int(p("min_neighbors", 5)))
+            self.tracker.loc.status = "waiting"
+            # optional frame dumps for offline debugging: every dump_every-th processed frame
+            self.dump_dir, self.dump_every, self.n_frames = p("dump_dir", ""), int(p("dump_every", 5)), 0
+            if self.dump_dir:
+                os.makedirs(self.dump_dir, exist_ok=True)
+                self.get_logger().info(f"dumping every {self.dump_every}th frame to {self.dump_dir}")
             self.period = 1.0 / p("rate_hz", 3.0)
             self.last = 0.0
             # --- odometry prediction (camera motion between frames) ---------------------------------
@@ -1218,11 +1352,50 @@ def main():
             out.pose.orientation.x, out.pose.orientation.y, out.pose.orientation.z, out.pose.orientation.w = q
             return out
 
+        def start_tracking(self, msg):
+            """First cloud: place the camera from the drone's start pose and the mount, then start."""
+            if self.t_first_cloud is None:
+                self.t_first_cloud = time.monotonic()
+            Tbc = self.base_to_cam(msg.header.frame_id)
+            if Tbc is None and time.monotonic() - self.t_first_cloud < 3.0:
+                self.tracker.odom_source = f"waiting for TF {self.base_frame} -> {msg.header.frame_id}"
+                return False
+            if self.T_cam_legacy is not None:
+                T0, how = self.T_cam_legacy, "legacy init_z: camera placed directly"
+            elif Tbc is not None:
+                T0, how = self.T_base0 @ Tbc, "base_link on the mark + mount from TF"
+            else:
+                T0, how = self.T_base0 @ self.mount_fallback, "base_link on the mark + mount_fallback (no TF)"
+                self.T_base_cam = self.mount_fallback                # same mount for odometry + base_pose
+                self.get_logger().warn(f"no TF {self.base_frame} -> {msg.header.frame_id} after 3 s: "
+                                       "using mount_fallback for the start, odometry and base_pose")
+            with self.tracker.lock:
+                self.tracker.loc.reset(T0, search_heading=self.search)
+            c = T0[:3, 3]
+            self.get_logger().info(f"start: {how}; camera at ({c[0]:.3f}, {c[1]:.3f}, {c[2]:.3f})")
+            self.started = True
+            return True
+
+        def dump(self, msg, pts, delta, dt):
+            loc = self.tracker.loc
+            raw = pts if len(pts) <= 20000 else pts[:: int(math.ceil(len(pts) / 20000))]
+            info = {k: v for k, v in loc.info.items() if isinstance(v, (int, float, str, bool, dict, type(None)))}
+            meta = {"stamp": msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9, "frame_id": msg.header.frame_id,
+                    "status": loc.status, "info": info, "cropped": loc.cropped,
+                    "odom_source": self.tracker.odom_source, "odom_note": loc.odom_note, "dt": dt}
+            np.savez_compressed(os.path.join(self.dump_dir, f"frame_{self.n_frames:05d}.npz"),
+                                raw=raw.astype(np.float32), src=np.asarray(loc.last_src, np.float32),
+                                T_pred=loc.last_T_pred, T=loc.T, delta=np.eye(4) if delta is None else delta,
+                                T_base_cam=self.T_base_cam if self.T_base_cam is not None else np.eye(4),
+                                meta=json.dumps(meta))
+
         def on_cloud(self, msg):
             now = time.monotonic()
             if now - self.last < self.period:
                 return
             self.last = now
+            if not self.started and not self.start_tracking(msg):
+                return
             delta, dt = None, None
             st = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
             if self.use_odom:
@@ -1237,7 +1410,14 @@ def main():
                     self.prev_odom, self.prev_stamp = O, st
             else:
                 self.tracker.odom_source = "off"
-            T, status = self.tracker.process(cloud_to_xyz(msg), delta, dt)
+            pts = cloud_to_xyz(msg)
+            T, status = self.tracker.process(pts, delta, dt)
+            self.n_frames += 1
+            if self.dump_dir and self.n_frames % self.dump_every == 1:
+                try:
+                    self.dump(msg, pts, delta, dt)
+                except Exception as e:                               # never let debugging break tracking
+                    self.get_logger().warn(f"frame dump failed: {e}")
             s = self.tracker.state()
             s.pop("trail", None)
             s.pop("truth", None)
@@ -1276,7 +1456,20 @@ if __name__ == "__main__":
                   odom_only=opts.get("odom_only", "0") not in ("0", "false"), view=int(opts.get("view", 0)),
                   odom_drop=float(opts.get("odom_drop", 0.0)),
                   odom_resets=tuple(int(t) for t in opts["odom_resets"].split(",")) if "odom_resets" in opts else (),
-                  max_speed=float(opts.get("max_speed", 3.0)), seed=int(opts.get("seed", 11)))
+                  max_speed=float(opts.get("max_speed", 3.0)), seed=int(opts.get("seed", 11)),
+                  background=float(opts.get("background", 0.0)),
+                  mount=tuple(float(t) for t in opts.get("mount", ",".join(map(str, DEFAULT_MOUNT))).split(",")),
+                  base_z=float(opts.get("base_z", 0.07)),
+                  max_corr_m=None if opts.get("max_corr", "0.05") == "off" else float(opts.get("max_corr", "0.05")),
+                  min_neighbors=int(opts.get("min_neighbors", 5)))
+        sys.exit(0)
+    if len(sys.argv) >= 3 and sys.argv[1] == "--benchtest":
+        # --benchtest model.obj [background=0.6] [frames=8] [init=new|old] [crop=0.5|off] [mount=x,y,z] [base_z=0.07]
+        opts = dict(a.split("=", 1) for a in sys.argv[3:] if "=" in a)
+        benchtest(sys.argv[2], background=float(opts.get("background", 0.6)), frames=int(opts.get("frames", 8)),
+                  init=opts.get("init", "new"), crop=opts.get("crop", "0.5"),
+                  mount=tuple(float(t) for t in opts.get("mount", "0.115,0.0375,0.01").split(",")),
+                  base_z=float(opts.get("base_z", 0.07)), seed=int(opts.get("seed", 5)))
         sys.exit(0)
     if len(sys.argv) >= 3 and sys.argv[1] == "--selftest":
         # --selftest model.obj [up=z|y] [trials=20] [range=5] [perturb=0.4] [points=1500] [clutter=0.05]

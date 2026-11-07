@@ -73,7 +73,7 @@ Check the maths offline first (no ROS needed):
 python3 cloud_localize.py --selftest test_room.obj
 ```
 
-On the drone, with `stereo_cloud.py` already running, start it against the course model (`dronehacks-course-v3.obj`: metres, Z up, origin at the centre of the floor). With no `init_*` parameters it starts on the model's **launch mark** (−2.515, 0.914), camera 0.2 m up, facing **north (90°)**. The drone is always placed facing forward along the guideline, which runs north from the mark.
+On the drone, with `stereo_cloud.py` already running, start it against the course model (`dronehacks-course-v3.obj`: metres, Z up, origin at the centre of the floor). With no `init_*` parameters, the **drone's centre (`base_link`)** starts on the model's **launch mark** (−2.515, 0.914), standing at `init_base_z` (0.07 m, like `navless_nav`'s `start_height_m`), facing **north (90°)**. The drone is always placed facing forward along the guideline, which runs north from the mark. The camera is placed from that through the `base_link` → camera mount from TF, on the first cloud. If TF has no mount after 3 s, it uses `mount_fallback` (Koji's measured `0.1053,0,0.0304`). `-p init_z:=<camera height>` gives the old behaviour, putting the camera itself at (`init_x`, `init_y`, `init_z`).
 
 ```bash
 python3 /root/team_ws/src/dronehacks/cloud_localize.py --ros-args -p obj:=/root/team_ws/src/dronehacks/dronehacks-course-v3.obj
@@ -98,6 +98,17 @@ Start it with `docker exec -d ...` or in its own shell: a background `&` inside 
 The two pose topics are published only while status is `tracking`, `weak` or `odometry`. Check `status` and `measured` before trusting a pose: `odometry` means no course match right now.
 
 ICP uses Tukey weighting with an annealed cut-off (`max(6 cm, 0.5 × search radius)`), so coarse passes can still correct 10–15° heading errors.
+
+**Junk-point defences** (from the master sim's 0.13-fitness problem, reproduced with `--benchtest`):
+- `crop_margin` (0.5 m): drops points that land outside the course's bounds plus this margin at the predicted pose. Beyond the net is unmodelled: the venue on the real drone, plain ground and sky in Gazebo, where SGBM invents depths from camera noise. To effectively turn it off, set a large margin such as `crop_margin:=50`.
+- `min_neighbors` (5, within 12 cm after the 5 cm voxel step): radius outlier removal, because real surfaces are dense and invented depths are scattered. `min_neighbors:=0` turns it off.
+- `max_corr_m` / `max_corr_deg` (5 cm / 1.5° per frame): with odometry, the course match may only correct the odometry prediction this much per frame. Real VSLAM drift needs millimetres; a bad match could otherwise yank the pose tens of cm at once.
+
+Simulated results: the bench case (drone still on the mark, camera 8 cm up, invented background) went from fit 0.19 and *rejected every frame* (old start pose, no crop) to fit 0.75 and 0.0–0.2 cm. With the old start pose plus crop, it was accepted but drifted 17 → 39 cm. Nose-north window flight, perfect odometry plus background: max 84 cm → 20 cm. **Unsolved:** nose-north plus drifting odometry plus heavy invented background stays bad (136–181 cm in every variant), and it depends entirely on how much junk real stereo produces, which only real or Gazebo data can show.
+
+**Frame dumps:** `-p dump_dir:=/tmp/loc_dump -p dump_every:=5` saves every 5th processed frame as `.npz`: the raw cloud (up to 20k points), the points used, the predicted and final pose, odometry delta, mount, status and fit info. Send these for offline analysis.
+
+`--benchtest <obj> [background=0.6] [frames=8] [init=new|old] [crop=0.5|off] [mount=x,y,z] [base_z=0.07]` reproduces the master sim's bench case. `--simflight` also takes `background=`, `mount=x,y,z`, `base_z=`, `max_corr=off` and `min_neighbors=`.
 
 **Window route** (`route_centreline_window.json`, simulated, 2 seeds each):
 
