@@ -65,6 +65,8 @@ class SafetyConfig:
     course_z_max_m: float = 1.10
     fly_home_z_min_m: float = 1.85
     fly_home_z_max_m: float = 2.30
+    arena_half_extent_xy_m: float = 3.048  # 20x20 ft perimeter net cage (±3.048 m)
+    net_keepout_margin_m: float = 0.39     # Hard keep-out margin from invisible perimeter net (|x|,|y| <= 2.658 m)
 
 
 @dataclass

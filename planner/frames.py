@@ -29,11 +29,15 @@ def clamp_altitude_enu(
     pos_enu: np.ndarray | Tuple[float, float, float],
     z_min: float = 0.50,
     z_max: float = 1.10,
+    xy_limit_m: Optional[float] = None,
 ) -> np.ndarray:
-    """Enforce vertical Z-ceiling clamp in ENU/FLU (+Z Up) meters."""
+    """Enforce vertical Z-ceiling clamp and optional perimeter net XY keep-out clamp in ENU meters."""
     if z_min > z_max:
         raise ValueError(f"z_min ({z_min}) cannot exceed z_max ({z_max})")
     out = np.asarray(pos_enu, dtype=np.float64).copy()
+    if xy_limit_m is not None and xy_limit_m > 0.0:
+        out[0] = float(np.clip(out[0], -xy_limit_m, xy_limit_m))
+        out[1] = float(np.clip(out[1], -xy_limit_m, xy_limit_m))
     out[2] = float(np.clip(out[2], z_min, z_max))
     return out
 

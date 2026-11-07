@@ -88,6 +88,39 @@ class OccupancyGrid3D:
         self.inflated_grid = np.zeros(self.shape, dtype=bool)
         self._inflation_offsets = self._build_spherical_offsets(self.inflation_radius)
 
+        # If this grid covers the 20x20 ft course arena, permanently bake in the perimeter net border
+        # because the thin mesh net at x,y = ±3.048 m is invisible to the OAK-D stereo depth sensor.
+        if (
+            self.bounds_min[0] <= -3.0
+            and self.bounds_min[1] <= -3.0
+            and self.bounds_max[0] >= 3.0
+            and self.bounds_max[1] >= 3.0
+        ):
+            self.add_arena_net_border()
+
+    def add_arena_net_border(
+        self,
+        arena_half_extent_m: float = 3.048,
+        net_inward_pad_m: float = 0.06,
+    ) -> None:
+        """Permanently mark the outer perimeter net (x, y = ±3.048 m) as solid walls in the grid.
+
+        Since the thin arena net cannot be reliably detected by stereo depth, baking this border
+        into the map (plus `inflation_radius_m = 0.22 m` -> hard keep-out at ±2.75 m and soft
+        repulsion out to ±2.45 m) prevents local replanning from ever dodging boulders into the net.
+        """
+        inner = arena_half_extent_m - net_inward_pad_m  # 2.988 m (inflated to ~2.75 m)
+        z_lo = float(self.bounds_min[2])
+        z_hi = float(self.bounds_max[2])
+        bmin_x, bmax_x = float(self.bounds_min[0]), float(self.bounds_max[0])
+        bmin_y, bmax_y = float(self.bounds_min[1]), float(self.bounds_max[1])
+
+        # West, East, South, and North net walls
+        self.add_aabb_obstacle((bmin_x, bmin_y, z_lo), (-inner, bmax_y, z_hi))
+        self.add_aabb_obstacle((inner, bmin_y, z_lo), (bmax_x, bmax_y, z_hi))
+        self.add_aabb_obstacle((bmin_x, bmin_y, z_lo), (bmax_x, -inner, z_hi))
+        self.add_aabb_obstacle((bmin_x, inner, z_lo), (bmax_x, bmax_y, z_hi))
+
     def _build_spherical_offsets(self, radius_m: float) -> np.ndarray:
         r_vox = int(math.ceil(radius_m / self.resolution))
         if r_vox <= 0:
@@ -573,14 +606,15 @@ class OccupancyGrid3D:
             normal = -normal
 
         win_center = (float(center_xy[0]), float(center_xy[1]), float(center_z))
+        # Keep approach and exit points at least 0.47 m inside the ±3.048 m perimeter net (|x|,|y| <= 2.58 m)
         approach_pt = (
-            float(center_xy[0] + standoff_distance_m * normal[0]),
-            float(center_xy[1] + standoff_distance_m * normal[1]),
+            float(np.clip(center_xy[0] + standoff_distance_m * normal[0], -2.58, 2.58)),
+            float(np.clip(center_xy[1] + standoff_distance_m * normal[1], -2.58, 2.58)),
             float(center_z),
         )
         exit_pt = (
-            float(center_xy[0] - standoff_distance_m * normal[0]),
-            float(center_xy[1] - standoff_distance_m * normal[1]),
+            float(np.clip(center_xy[0] - standoff_distance_m * normal[0], -2.58, 2.58)),
+            float(np.clip(center_xy[1] - standoff_distance_m * normal[1], -2.58, 2.58)),
             float(center_z),
         )
         return win_center, (float(normal[0]), float(normal[1])), approach_pt, exit_pt

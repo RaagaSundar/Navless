@@ -240,6 +240,32 @@ class TestPlannerScaffold(unittest.TestCase):
         self.assertEqual(window_route["route_type"], "WINDOW")
         self.assertEqual(len(window_route["stages"]), 6)
 
+    def test_perimeter_net_border_prevents_outside_dodging(self) -> None:
+        cfg = PlannerConfig()
+        # Even on an empty grid (no .obj loaded, invisible net), the perimeter net border is active
+        grid = OccupancyGrid3D(
+            bounds_min_m=cfg.global_map_bounds_min_m,
+            bounds_max_m=cfg.global_map_bounds_max_m,
+            resolution_m=cfg.voxel_resolution_m,
+            inflation_radius_m=cfg.obstacle_inflation_m,
+        )
+        # Points near the ±3.048m perimeter net must be occupied in the inflated grid
+        self.assertTrue(grid.is_occupied((-3.02, 0.0, 0.85), inflated=False))
+        self.assertTrue(grid.is_occupied((0.0, -2.80, 0.85), inflated=True))
+        self.assertTrue(grid.is_occupied((0.0, 2.80, 0.85), inflated=True))
+
+        # Place a boulder near the South net at y = -2.40 m and plan past it:
+        # Planner must dodge NORTH (toward interior y > -2.40), never SOUTH into the invisible net!
+        grid.add_aabb_obstacle((-0.25, -2.65, 0.0), (0.25, -2.20, 1.5))
+        opt = EgoBsplineOptimizer(grid)
+        spline, _ = opt.plan_spline((1.0, -2.40, 0.85), (-1.0, -2.40, 0.85), cfg.chicane_profile)
+        self.assertIsNotNone(spline)
+        assert spline is not None
+        pts = spline.sample_points(40)
+        # Every point must stay >= 0.35 m inside the -3.048 m South net (y >= -2.70 m) and dodge North (y > -2.0 m)
+        self.assertTrue(np.all(pts[:, 1] >= -2.70))
+        self.assertGreater(float(np.max(pts[:, 1])), -2.00)
+
 
 if __name__ == "__main__":
     unittest.main()
