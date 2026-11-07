@@ -42,13 +42,19 @@ Until this PR merges, use the actual published branch rather than assume main:
 ```bash
 git clone --branch codex/m3-bounded-recipes https://github.com/zoutei/Navless.git Navless-m3
 cd Navless-m3
+# Offline host tools use Python >=3.12; do not install these into Jetson ROS.
+python3 -m venv split_sim/state/m3-tools-env
+source split_sim/state/m3-tools-env/bin/activate
+python3 -m pip install -r split_sim/m3_bench/tools-requirements.txt
 python3 split_sim/doctor.py --source-only
 python3 split_sim/m3_bench/mission_m3_capture.py --runtime split_sim/course_runtime \
   --contract split_sim/m3_bench/m3-capture-contract.json --check-contract
 python3 -m unittest discover -s split_sim/m3_bench -p 'test_*.py' -v
 ```
 
-Geometry/replay tests need NumPy; image generation also needs Pillow. Mocked
+The pinned host NumPy/Pillow environment above was installed and tested in a
+fresh network clone. These are offline host dependencies, not ARM/ROS runtime
+replacements. Mocked
 wrapper tests need no ROS. The [install guide](../INSTALL.md) provides Mac
 Docker/PX4, organizer Jetson Humble/NVIDIA image, verified SSH, stopped isolated
 container and preview/video prerequisites. No fresh full-image build or moving

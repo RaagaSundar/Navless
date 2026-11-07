@@ -1,0 +1,3 @@
+# Offline host tooling only (Python >=3.12); never replace Jetson ROS dependencies.
+numpy==2.5.4
+Pillow==11.3.0
