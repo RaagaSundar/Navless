@@ -1,0 +1,50 @@
+Session date: 2026-11-07 America/Los_Angeles
+Initial checkout: 9c57a315f34fd4dd59f3e2a51d0024942e38f5e3
+PR worktree base: 59704e21088845165237975e4826654321d93544 (origin/main)
+Tests and final image simulation were rerun in that isolated worktree.
+Editor: existing Git identity Koji Shukawa <kshukawa@stsci.edu>
+
+Before edits:
+  uv run --with pytest python -m pytest navless_nav/test gazebo_sim/dh/test_tube_blackout.py gazebo_sim/mirror/test_tube_test.py -q
+  79 passed in 0.76s
+
+First new integration test (summary copied from tool output):
+  FAILED test_real_mission_applies_only_in_tube_and_stops_on_authority_loss
+  assert node.tube_guidance.shift > 0
+  E assert 0.0 > 0
+  1 failed, 15 passed in 0.27s
+  Cause: simulated timestamp 25.40000000000009 compared to clock-derived
+  25.400000000000002 was classified as future. Corrected with 1 us comparison
+  tolerance. The sensor sample is not re-stamped. post-clock-fix-tests.log
+  preserves the following 16-test pass.
+
+First image simulation:
+  uv run --with pytest python tube/sim_stereo_centering.py --output tube/stereo_evidence/initial-rendered.json
+  Serialization failed on a NumPy boolean; traceback in initial-rendered.log.
+  After converting score scalars to native Python types, rendered.json/log
+  preserve the actual initial result: zero accepted wall fits.
+  Correction: reject untextured SGBM-fill pixels and retain an independently
+  observed centerline in continuous healthy odometry, with explicit time/travel
+  limits. No wall-fit or score thresholds were relaxed to get a passing run.
+
+Final regression command:
+  uv run --with pytest python -m pytest navless_nav/test gazebo_sim/dh/test_tube_blackout.py gazebo_sim/mirror/test_tube_test.py tube/test_tube.py -q
+  See regression.log (100 passed).
+
+Final simulation command:
+  uv run --with pytest python tube/sim_stereo_centering.py --output tube/stereo_evidence/final-rendered.json
+  See final-rendered.json/log: exact source hashes, Python/NumPy/OpenCV
+  versions, settings and per-frame traces. Script exit status was 0.
+
+Static verification:
+  git diff --check
+  uv run --with pytest python -m compileall -q navless_nav/navless_nav/stereo_tube.py navless_nav/navless_nav/tube_guidance.py navless_nav/navless_nav/course_mission.py navless_nav/launch/navless.launch.py navless_nav/launch/navless_course.launch.py depthcloud/stereo_cloud.py tube/sim_stereo_centering.py
+  Both passed.
+
+Simulation level: rendered stereo images + modeled odometry/dynamics.
+No actual cuVSLAM, ROS/DDS integration run, PX4 SITL or hardware flight.
+The ROS callback adapter and real mission were tested on isolated mock transports.
+No aircraft access, PX4 parameter changes, grader changes, or flight deployment.
+
+User scope clarification: backward traversal support is unnecessary. The
+fixed-backward-camera case is retained as a negative visibility/rejection test.

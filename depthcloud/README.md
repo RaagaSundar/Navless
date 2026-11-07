@@ -55,6 +55,8 @@ Pass with `--ros-args -p name:=value`.
 | `num_disparities`, `block_size` | 64, 5 | SGBM settings |
 | `min_depth`, `max_depth` | 0.3, 5.0 | metres |
 | `fallback_baseline_m` | 0.075 | used only if the camera-to-camera TF is missing |
+| `require_calibration_tf` | false | reject image pairs when stereo extrinsics TF is unavailable; required for the experimental tube-centering pipeline |
+| `texture_filter` | false | reject low local contrast pixels that SGBM may fill across an opening; use true for tube centering |
 | `http_port` | 8081 | browser view |
 | `max_view_points` | 40000 | points sent to the 3D viewer per update |
 

@@ -1,0 +1,14 @@
+seed=1 dir=-1 center=False texture=True faces_travel=True fits=11/40 final=0.1188m clearance=0.3692m
+seed=1 dir=-1 center=True texture=True faces_travel=True fits=11/40 final=0.0036m clearance=0.3860m
+seed=1 dir=+1 center=False texture=True faces_travel=True fits=8/40 final=0.1188m clearance=0.3692m
+seed=1 dir=+1 center=True texture=True faces_travel=True fits=8/40 final=0.0218m clearance=0.3860m
+seed=2 dir=-1 center=False texture=True faces_travel=True fits=11/40 final=0.1188m clearance=0.3692m
+seed=2 dir=-1 center=True texture=True faces_travel=True fits=12/40 final=0.0062m clearance=0.3860m
+seed=2 dir=+1 center=False texture=True faces_travel=True fits=8/40 final=0.1188m clearance=0.3692m
+seed=2 dir=+1 center=True texture=True faces_travel=True fits=8/40 final=0.0238m clearance=0.3860m
+seed=3 dir=-1 center=False texture=True faces_travel=True fits=12/40 final=0.1188m clearance=0.3692m
+seed=3 dir=-1 center=True texture=True faces_travel=True fits=11/40 final=0.0021m clearance=0.3860m
+seed=3 dir=+1 center=False texture=True faces_travel=True fits=9/40 final=0.1188m clearance=0.3692m
+seed=3 dir=+1 center=True texture=True faces_travel=True fits=9/40 final=0.0147m clearance=0.3860m
+seed=1 dir=-1 center=True texture=False faces_travel=True fits=0/40 final=0.1188m clearance=0.3692m
+seed=1 dir=-1 center=True texture=True faces_travel=False fits=0/40 final=0.1188m clearance=0.3692m

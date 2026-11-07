@@ -42,9 +42,10 @@ import numpy as np
 class StereoDepth:
     """Rectify a stereo pair, run SGBM, return depth and 3D points in the LEFT optical frame."""
 
-    def __init__(self, num_disp=64, block=5, min_depth=0.3, max_depth=5.0):
+    def __init__(self, num_disp=64, block=5, min_depth=0.3, max_depth=5.0, texture_filter=False):
         self.num_disp = int(math.ceil(num_disp / 16) * 16)
         self.min_depth, self.max_depth = min_depth, max_depth
+        self.texture_filter = texture_filter
         self.sgbm = cv2.StereoSGBM_create(
             minDisparity=0, numDisparities=self.num_disp, blockSize=block,
             P1=8 * block * block, P2=32 * block * block, disp12MaxDiff=1,
@@ -73,6 +74,13 @@ class StereoDepth:
         xyz_rect = cv2.reprojectImageTo3D(disp, self.Q)               # rectified-left frame
         z = xyz_rect[..., 2]
         valid = (disp > 0.5) & np.isfinite(z) & (z > self.min_depth) & (z < self.max_depth)
+        if self.texture_filter:
+            # SGBM can propagate a rim disparity through an untextured opening.
+            # Such pixels are not independent depth measurements for wall fitting.
+            intensity = rl.astype(np.float32)
+            mean = cv2.boxFilter(intensity, -1, (5, 5))
+            variance = cv2.boxFilter(intensity*intensity, -1, (5, 5)) - mean*mean
+            valid &= variance > 30.0
         depth = np.where(valid, z, 0.0).astype(np.float32)
         pts = xyz_rect[valid] @ self.R1                                # rect -> left optical (R1^T)
         return rl, depth, valid, pts.astype(np.float32)
@@ -364,10 +372,12 @@ def main():
             self.scale = p("scale", 0.5).value              # 0.5 -> 512x320 matching
             self.cloud_stride = int(p("cloud_stride", 2).value)
             self.fallback_baseline = p("fallback_baseline_m", 0.075).value
+            self.require_calibration_tf = p("require_calibration_tf", False).value
             self.stereo = StereoDepth(num_disp=int(p("num_disparities", 64).value),
                                       block=int(p("block_size", 5).value),
                                       min_depth=p("min_depth", 0.3).value,
-                                      max_depth=p("max_depth", 5.0).value)
+                                      max_depth=p("max_depth", 5.0).value,
+                                      texture_filter=p("texture_filter", False).value)
             self.web = WebServer(int(p("http_port", 8081).value),
                                  int(p("max_view_points", 40000).value))
             self.pub_cloud = self.create_publisher(PointCloud2, "/team/stereo/points", 2)
@@ -393,6 +403,11 @@ def main():
                 q, t = tf.transform.rotation, tf.transform.translation
                 return quat_to_rot(q.x, q.y, q.z, q.w), np.array([[t.x], [t.y], [t.z]])
             except tf2_ros.TransformException:
+                if self.require_calibration_tf:
+                    if not self.warned_tf:
+                        self.get_logger().warn(f"Missing stereo calibration TF {lf}->{rf}; no depth published")
+                        self.warned_tf = True
+                    return None
                 if not self.warned_tf:
                     self.get_logger().warn(f"No TF {lf}->{rf}; assuming parallel cameras, "
                                            f"{self.fallback_baseline} m baseline")
@@ -416,7 +431,10 @@ def main():
             K2 = S @ np.array(r_info.k, float).reshape(3, 3)
             D1 = np.array(l_info.d, float) if len(l_info.d) else np.zeros(5)
             D2 = np.array(r_info.d, float) if len(r_info.d) else np.zeros(5)
-            R, T = self.left_to_right(l_msg.header.frame_id, r_msg.header.frame_id)
+            extrinsics = self.left_to_right(l_msg.header.frame_id, r_msg.header.frame_id)
+            if extrinsics is None:
+                return
+            R, T = extrinsics
             size = (gl.shape[1], gl.shape[0])
             self.stereo.setup(K1, D1, K2, D2, size, R, T)
             rect, depth, valid, pts = self.stereo.compute(gl, gr)

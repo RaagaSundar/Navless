@@ -15,6 +15,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 ARGUMENTS = [
+    ('use_sim_time', 'false', 'use ROS simulation clock for every launch-managed component'),
     ('max_altitude_m', '2.5', 'ceiling above the odometry origin, metres'),
     ('min_altitude_m', '0.3', 'floor above the odometry origin, metres'),
     ('max_speed_mps', '1.0', 'cap on the norm of a twist setpoint, m/s'),
@@ -69,6 +70,11 @@ ARGUMENTS = [
     ('blind_zone_margin_m', '0.4',
      'blind carry also allowed this far outside each tube mouth, m'),
     ('competitor', 'true', 'also start the course node'),
+    ('stereo_tube_centering', 'false', 'experimental bounded stereo tube correction; requires validated stereo points'),
+    ('stereo_tube_max_shift_m', '0.20', 'maximum stereo lateral change from the route, m'),
+    ('stereo_tube_rate_mps', '0.10', 'maximum rate of stereo lateral target change, m/s'),
+    ('stereo_tube_hold_s', '3.0', 'maximum age of observed centerline while SLAM remains healthy, s'),
+    ('stereo_tube_cloud_topic', '/team/stereo/points', 'calibrated stereo cloud in camera optical frame'),
 ]
 
 # The stack's flight-interface package. Its name is fixed by the image.
@@ -84,7 +90,8 @@ MISSION_PARAMS = ('odometry_topic',     # the same source as flight_interface's
                   'land_at_end', 'land_speed_mps', 'fly_home',
                   'home_altitude_m', 'home_climb_tol_m', 'home_arrival_radius_m',
                   'prearm_height_tol_m', 'prearm_settle_s',
-                  'blind_carry', 'blind_carry_max_s', 'blind_zone_margin_m')
+                  'blind_carry', 'blind_carry_max_s', 'blind_zone_margin_m',
+                  'stereo_tube_centering', 'stereo_tube_max_shift_m', 'stereo_tube_rate_mps', 'stereo_tube_hold_s')
 
 
 def generate_launch_description():
@@ -107,6 +114,7 @@ def generate_launch_description():
             'allow_mode_request': False,
             'auto_offboard_on_arm': LaunchConfiguration('auto_offboard_on_arm'),
             'odometry_topic': LaunchConfiguration('odometry_topic'),
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
         }],
     )
 
@@ -118,7 +126,16 @@ def generate_launch_description():
         emulate_tty=True,
         condition=IfCondition(LaunchConfiguration('competitor')),
         parameters=[{name: LaunchConfiguration(name)
-                     for name in MISSION_PARAMS}],
+                     for name in MISSION_PARAMS},
+                    {'use_sim_time': LaunchConfiguration('use_sim_time')}],
     )
 
-    return LaunchDescription(declared + [flight_interface, mission])
+    stereo_tube = Node(
+        package='navless_nav', executable='stereo_tube', output='screen',
+        condition=IfCondition(LaunchConfiguration('stereo_tube_centering')),
+        parameters=[{'odometry_topic': LaunchConfiguration('odometry_topic'),
+                     'use_sim_time': LaunchConfiguration('use_sim_time'),
+                     'start_bearing_deg': LaunchConfiguration('start_bearing_deg'),
+                     'hold_s': LaunchConfiguration('stereo_tube_hold_s'),
+                     'cloud_topic': LaunchConfiguration('stereo_tube_cloud_topic')}])
+    return LaunchDescription(declared + [flight_interface, mission, stereo_tube])
