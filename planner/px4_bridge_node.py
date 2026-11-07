@@ -127,6 +127,56 @@ class PX4TrajectoryTrackerCore:
         self.last_tube_offset_time_s: Optional[float] = None
         self.tube_offset_left_m: float = 0.0
         self.tube_width_m: float = 0.0
+        self.last_localize_time_s: Optional[float] = None
+        self.localized_pos_enu: Optional[Tuple[float, float, float]] = None
+        self.localized_yaw_enu_rad: float = 0.0
+
+    def update_localized_course_pose(
+        self,
+        now_s: float,
+        x_course_m: float,
+        y_course_m: float,
+        z_course_m: float,
+        yaw_enu_rad: float = 0.0,
+    ) -> None:
+        """Update course-frame pose from `/team/localize/pose` (`depthcloud/cloud_localize.py`).
+
+        Smooths step corrections (limiting per-update jump to 8 cm and 5 deg) so setpoints never jump.
+        """
+        if not (math.isfinite(x_course_m) and math.isfinite(y_course_m) and math.isfinite(z_course_m)):
+            return
+        if self.localized_pos_enu is not None and self.last_localize_time_s is not None and (now_s - self.last_localize_time_s) <= 2.0:
+            prev = np.asarray(self.localized_pos_enu, dtype=np.float64)
+            raw = np.array([x_course_m, y_course_m, z_course_m], dtype=np.float64)
+            diff = raw - prev
+            dist = float(np.linalg.norm(diff))
+            if dist > 0.08:
+                raw = prev + (0.08 / dist) * diff
+            self.localized_pos_enu = (float(raw[0]), float(raw[1]), float(raw[2]))
+        else:
+            self.localized_pos_enu = (float(x_course_m), float(y_course_m), float(z_course_m))
+        self.localized_yaw_enu_rad = float(yaw_enu_rad)
+        self.last_localize_time_s = float(now_s)
+
+    def current_course_pose_enu(self, now_s: float) -> Tuple[np.ndarray, float]:
+        """Return `(pos_enu, yaw_enu)` in the course frame, preferring `/team/localize/pose` when fresh."""
+        if (
+            self.localized_pos_enu is not None
+            and self.last_localize_time_s is not None
+            and (now_s - self.last_localize_time_s) <= 1.5
+        ):
+            return np.asarray(self.localized_pos_enu, dtype=np.float64), float(self.localized_yaw_enu_rad)
+        pos_enu = ned_to_enu_pos(
+            self.telemetry.pos_ned,
+            convention=self.frame_convention,
+            origin_enu=self.launch_origin_enu,
+        )
+        yaw_enu = (
+            (0.5 * math.pi - self.telemetry.heading_ned_rad)
+            if self.frame_convention == "enu_to_ned"
+            else -self.telemetry.heading_ned_rad
+        )
+        return pos_enu, float(yaw_enu)
 
     def update_tube_offset(self, now_s: float, offset_left_m: float, width_m: float = 0.0) -> None:
         """Update lateral tunnel-centering offset `(L - R) / 2` from `/tube/offset` (`tube/tube_node.py`)."""
@@ -183,11 +233,7 @@ class PX4TrajectoryTrackerCore:
         if not ok:
             return None, reason
 
-        drone_pos_enu = ned_to_enu_pos(
-            self.telemetry.pos_ned,
-            convention=self.frame_convention,
-            origin_enu=self.launch_origin_enu,
-        )
+        drone_pos_enu, _ = self.current_course_pose_enu(now_s)
         decision = self.router.step(
             now_s,
             drone_pos_enu,
@@ -424,12 +470,7 @@ def run_ros2_node(argv=None) -> int:
             # Support half-resolution depth images (e.g. 512x320 `/team/stereo/depth` vs 1024x640 `/oak/left/camera_info`)
             sx = (float(msg.width) / cam_intrinsics["width"]) if cam_intrinsics.get("width", 0.0) > 0 else 1.0
             sy = (float(msg.height) / cam_intrinsics["height"]) if cam_intrinsics.get("height", 0.0) > 0 else 1.0
-            pos_enu = ned_to_enu_pos(
-                tracker.telemetry.pos_ned,
-                convention=tracker.frame_convention,
-                origin_enu=tracker.launch_origin_enu,
-            )
-            yaw_enu = (0.5 * math.pi - tracker.telemetry.heading_ned_rad) if tracker.frame_convention == "enu_to_ned" else -tracker.telemetry.heading_ned_rad
+            pos_enu, yaw_enu = tracker.current_course_pose_enu(now_sec())
             grid.update_from_depth_image(
                 depth_m,
                 cam_intrinsics["fx"] * sx,
@@ -443,20 +484,23 @@ def run_ros2_node(argv=None) -> int:
             node.get_logger().warning(f"Depth decode warning: {err}")
 
     def on_pointcloud(msg: PointCloud2) -> None:
-        if tracker.telemetry.last_local_pos_time_s is None:
+        if tracker.telemetry.last_local_pos_time_s is None and tracker.last_localize_time_s is None:
             return
-        pos_enu = ned_to_enu_pos(
-            tracker.telemetry.pos_ned,
-            convention=tracker.frame_convention,
-            origin_enu=tracker.launch_origin_enu,
-        )
-        yaw_enu = (0.5 * math.pi - tracker.telemetry.heading_ned_rad) if tracker.frame_convention == "enu_to_ned" else -tracker.telemetry.heading_ned_rad
+        pos_enu, yaw_enu = tracker.current_course_pose_enu(now_sec())
         pts_world = decode_ros_pointcloud2_optical(msg, pos_enu, yaw_enu)
         if pts_world.size > 0:
             grid.insert_point_cloud(pts_world, sensor_origin_m=pos_enu)
 
     def on_tube_offset(msg: PointStamped) -> None:
         tracker.update_tube_offset(now_sec(), float(msg.point.y), float(msg.point.z))
+
+    def on_localize_pose(msg: PoseStamped) -> None:
+        p = msg.pose.position
+        q = msg.pose.orientation
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        yaw_enu = math.atan2(siny_cosp, cosy_cosp)
+        tracker.update_localized_course_pose(now_sec(), float(p.x), float(p.y), float(p.z), yaw_enu)
 
     def on_visual_slam_odom(msg: Odometry) -> None:
         p = msg.pose.pose.position
@@ -493,6 +537,7 @@ def run_ros2_node(argv=None) -> int:
     node.create_subscription(Image, "/team/stereo/depth", on_depth, px4_qos)
     node.create_subscription(PointCloud2, "/team/stereo/points", on_pointcloud, px4_qos)
     node.create_subscription(PointStamped, "/tube/offset", on_tube_offset, px4_qos)
+    node.create_subscription(PoseStamped, "/team/localize/pose", on_localize_pose, 10)
     node.create_subscription(Odometry, "/visual_slam/tracking/odometry", on_visual_slam_odom, 10)
     node.create_subscription(String, "/skybeta/state", on_skybeta_state, 10)
 

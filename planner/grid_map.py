@@ -149,13 +149,17 @@ class OccupancyGrid3D:
         self.add_aabb_obstacle((bmin_x, inner, z_lo), (bmax_x, bmax_y, z_hi))
 
     def _build_spherical_offsets(self, radius_m: float) -> np.ndarray:
-        r_vox = int(math.ceil(radius_m / self.resolution))
-        if r_vox <= 0:
+        """Build quadrotor-shaped (cylindrical XY = radius_m, vertical Z = min(radius_m, 0.15 m)) inflation offsets."""
+        r_xy = int(math.ceil(radius_m / self.resolution))
+        if r_xy <= 0:
             return np.zeros((1, 3), dtype=np.int32)
-        rng = np.arange(-r_vox, r_vox + 1, dtype=np.int32)
-        gx, gy, gz = np.meshgrid(rng, rng, rng, indexing="ij")
-        dist_sq = (gx * self.resolution) ** 2 + (gy * self.resolution) ** 2 + (gz * self.resolution) ** 2
-        mask = dist_sq <= (radius_m + 1e-6) ** 2
+        z_rad = min(radius_m, 0.15)
+        r_z = int(math.ceil(z_rad / self.resolution))
+        rng_xy = np.arange(-r_xy, r_xy + 1, dtype=np.int32)
+        rng_z = np.arange(-r_z, r_z + 1, dtype=np.int32)
+        gx, gy, gz = np.meshgrid(rng_xy, rng_xy, rng_z, indexing="ij")
+        dist_xy_sq = (gx * self.resolution) ** 2 + (gy * self.resolution) ** 2
+        mask = (dist_xy_sq <= (radius_m + 1e-6) ** 2) & (np.abs(gz * self.resolution) <= z_rad + 1e-6)
         return np.stack([gx[mask], gy[mask], gz[mask]], axis=-1)
 
     def world_to_voxel(self, point_m: np.ndarray | Tuple[float, float, float]) -> Tuple[int, int, int]:
