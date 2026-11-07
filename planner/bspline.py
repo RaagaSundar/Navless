@@ -399,7 +399,14 @@ class EgoBsplineOptimizer:
 
     def is_spline_collision_free(self, spline: UniformBspline, t_start: float = 0.0, num_checks: int = 30) -> bool:
         """Verify that the remaining spline trajectory [t_start .. duration] is free of inflated obstacles."""
-        ts = np.linspace(max(0.0, t_start), spline.duration, max(2, num_checks))
+        if t_start > 0.0:
+            t0 = min(spline.duration, t_start + 0.30)
+            t1 = min(spline.duration, t_start + 3.50)
+            if t1 <= t0 + 1e-3:
+                return True
+            ts = np.linspace(t0, t1, max(2, num_checks // 2))
+        else:
+            ts = np.linspace(0.0, spline.duration, max(2, num_checks))
         for t in ts:
             pos = spline.evaluate_position(float(t))
             if self.grid.is_occupied(pos, inflated=True):

@@ -115,11 +115,17 @@ class GlobalCourseRouter:
             standoff_distance_m=self.config.window_inspect_distance_m,
         )
         landing_goal, _ = self.landing_target_enu(features)
-        # When 3D course features are present, 3D A* navigates the entire Maze + Gate A directly
-        # toward the discovered Tunnel entrance without hardcoded corridor_bend / gate_a_exit anchors!
+        # When the Concentric Circle Target is present on the 3D course map, the entire primary run
+        # (Stage 1 -> Stage 5) targets the Concentric Circle Bullseye in ONE continuous unsectioned A* path!
+        if features.concentric_pad is not None and self.stage in (
+            CourseStage.STAGE_1_MAZE,
+            CourseStage.STAGE_2_GATE_A,
+            CourseStage.STAGE_3_TUNNEL,
+            CourseStage.STAGE_4_CHICANE,
+            CourseStage.STAGE_5_LANDING_PAD,
+        ):
+            return landing_goal
         if self.stage in (CourseStage.STAGE_1_MAZE, CourseStage.STAGE_2_GATE_A):
-            if features.concentric_pad is not None:
-                return features.tunnel_entry_m
             return cp.corridor_bend if self.stage == CourseStage.STAGE_1_MAZE else cp.gate_a_exit
         if self.stage == CourseStage.STAGE_3_TUNNEL:
             return features.window_approach_m or cp.window_inspect_point
@@ -165,7 +171,11 @@ class GlobalCourseRouter:
                     inspect_res.is_passable
                     and effective_conf >= self.config.window_confidence_threshold
                 ),
-                reason=inspect_res.reason,
+                reason=(
+                    inspect_res.reason
+                    if effective_conf >= self.config.window_confidence_threshold
+                    else f"vision_confidence_low ({effective_conf:.2f})"
+                ),
                 aperture_center_m=win_center,
                 approach_point_m=features.window_approach_m,
                 exit_point_m=win_exit,
@@ -173,14 +183,18 @@ class GlobalCourseRouter:
         self.last_window_inspection = inspect_res
 
         # 2. If confident, route straight through the detected Window normal within 100 ms budget
+        landing_goal, concentric_r = self.landing_target_enu(features)
         if inspect_res.is_passable:
+            win_target = landing_goal if features.concentric_pad is not None else win_exit
+            win_mids = None if features.concentric_pad is not None else [win_center]
             win_spline, elapsed_ms = self.optimizer.plan_spline(
                 current_pos_enu,
-                win_exit,
+                win_target,
                 profile,
-                intermediate_waypoints=[win_center],
+                intermediate_waypoints=win_mids,
                 max_plan_time_ms=self.config.max_window_plan_time_ms,
-                use_clearance_cost=False,
+                use_clearance_cost=(features.concentric_pad is not None),
+                goal_radius_m=(concentric_r if features.concentric_pad is not None else 0.0),
             )
             if (
                 win_spline is not None
@@ -191,7 +205,6 @@ class GlobalCourseRouter:
 
         # 3. Fallback: mask out the Window opening and let 3D A* + concentric-circle target field
         #    automatically discover the Gate B path around the chicane walls to the Concentric Pad!
-        landing_goal, concentric_r = self.landing_target_enu(features)
         gate_b_spline, elapsed_ms = self.optimizer.plan_spline(
             current_pos_enu,
             landing_goal,
@@ -220,39 +233,75 @@ class GlobalCourseRouter:
         stage_changed = False
 
         if self.stage != CourseStage.MISSION_COMPLETE:
-            # In zero-anchor mode on the 3D course map, STAGE_1_MAZE smoothly progresses into STAGE_2_GATE_A
-            # as the drone crosses the maze midpoint (x > -0.60 m) along its single continuous 3D A* spline
-            if (
-                self.stage == CourseStage.STAGE_1_MAZE
-                and self.grid.detected_concentric_pad is not None
-                and float(pos[0]) > -0.60
+            if self.grid.detected_concentric_pad is not None and self.stage in (
+                CourseStage.STAGE_1_MAZE,
+                CourseStage.STAGE_2_GATE_A,
+                CourseStage.STAGE_3_TUNNEL,
+                CourseStage.STAGE_4_CHICANE,
+                CourseStage.STAGE_5_LANDING_PAD,
             ):
-                self.stage = CourseStage.STAGE_2_GATE_A
-
-            goal = np.asarray(self.current_goal_enu(), dtype=np.float64)
-            dist_to_goal = float(np.linalg.norm(pos - goal))
-
-            if dist_to_goal <= self.config.acceptance_radius_m:
-                stage_changed = True
-                if self.stage == CourseStage.STAGE_1_MAZE:
-                    if self.grid.detected_concentric_pad is not None:
-                        self.stage = CourseStage.STAGE_3_TUNNEL
-                    else:
-                        self.stage = CourseStage.STAGE_2_GATE_A
-                elif self.stage == CourseStage.STAGE_2_GATE_A:
+                # Continuous unsectioned A* tracking toward the Concentric Circle Target:
+                # Update topological stage label smoothly based on spatial progress without cutting the spline!
+                if self.stage == CourseStage.STAGE_1_MAZE and float(pos[0]) > -0.60:
+                    self.stage = CourseStage.STAGE_2_GATE_A
+                elif self.stage == CourseStage.STAGE_2_GATE_A and float(pos[0]) > 1.65 and float(pos[1]) < 1.65:
                     self.stage = CourseStage.STAGE_3_TUNNEL
-                elif self.stage == CourseStage.STAGE_3_TUNNEL:
+                elif self.stage == CourseStage.STAGE_3_TUNNEL and float(pos[1]) < -0.85:
                     self.stage = CourseStage.STAGE_4_CHICANE
-                elif self.stage == CourseStage.STAGE_4_CHICANE:
+                    if self.selected_branch == "PENDING":
+                        # Evaluate Window confidence/clearance as we exit the tunnel:
+                        # Only force a replan if we need to switch to Gate B!
+                        features = self.grid.discover_course_features(
+                            standoff_distance_m=self.config.window_inspect_distance_m,
+                        )
+                        win_c = features.window_center_m or self.config.checkpoints.window_aperture
+                        insp = self.grid.inspect_window_aperture(
+                            win_c,
+                            confidence_threshold=self.config.window_confidence_threshold,
+                        )
+                        eff_c = (
+                            min(insp.confidence, float(external_window_confidence))
+                            if external_window_confidence is not None
+                            else insp.confidence
+                        )
+                        if insp.is_passable and eff_c >= self.config.window_confidence_threshold:
+                            self.selected_branch = "WINDOW"
+                            self.last_window_inspection = insp
+                        else:
+                            stage_changed = True
+                elif self.stage == CourseStage.STAGE_4_CHICANE and float(pos[0]) < -0.90:
                     self.stage = CourseStage.STAGE_5_LANDING_PAD
-                elif self.stage == CourseStage.STAGE_5_LANDING_PAD:
+
+                goal = np.asarray(self.current_goal_enu(), dtype=np.float64)
+                if float(np.linalg.norm(pos - goal)) <= self.config.acceptance_radius_m:
+                    stage_changed = True
                     self.primary_landed = True
                     if self.config.enable_fly_home:
                         self.stage = CourseStage.STAGE_6_FLY_HOME
                     else:
                         self.stage = CourseStage.MISSION_COMPLETE
-                elif self.stage == CourseStage.STAGE_6_FLY_HOME:
-                    self.stage = CourseStage.MISSION_COMPLETE
+            else:
+                goal = np.asarray(self.current_goal_enu(), dtype=np.float64)
+                dist_to_goal = float(np.linalg.norm(pos - goal))
+
+                if dist_to_goal <= self.config.acceptance_radius_m:
+                    stage_changed = True
+                    if self.stage == CourseStage.STAGE_1_MAZE:
+                        self.stage = CourseStage.STAGE_2_GATE_A
+                    elif self.stage == CourseStage.STAGE_2_GATE_A:
+                        self.stage = CourseStage.STAGE_3_TUNNEL
+                    elif self.stage == CourseStage.STAGE_3_TUNNEL:
+                        self.stage = CourseStage.STAGE_4_CHICANE
+                    elif self.stage == CourseStage.STAGE_4_CHICANE:
+                        self.stage = CourseStage.STAGE_5_LANDING_PAD
+                    elif self.stage == CourseStage.STAGE_5_LANDING_PAD:
+                        self.primary_landed = True
+                        if self.config.enable_fly_home:
+                            self.stage = CourseStage.STAGE_6_FLY_HOME
+                        else:
+                            self.stage = CourseStage.MISSION_COMPLETE
+                    elif self.stage == CourseStage.STAGE_6_FLY_HOME:
+                        self.stage = CourseStage.MISSION_COMPLETE
 
         if self.stage == CourseStage.MISSION_COMPLETE:
             return PlannerDecision(
@@ -370,9 +419,9 @@ class GlobalCourseRouter:
         mids: Optional[List[Tuple[float, float, float]]] = None
         use_clearance = True
         goal_rad = 0.0
-        if self.stage == CourseStage.STAGE_5_LANDING_PAD:
+        if self.grid.detected_concentric_pad is not None or self.stage == CourseStage.STAGE_5_LANDING_PAD:
             _, goal_rad = self.landing_target_enu()
-        if self.stage == CourseStage.STAGE_3_TUNNEL:
+        if self.stage == CourseStage.STAGE_3_TUNNEL and self.grid.detected_concentric_pad is None:
             features = self.grid.discover_course_features(
                 standoff_distance_m=self.config.window_inspect_distance_m,
             )

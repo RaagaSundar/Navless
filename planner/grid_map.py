@@ -113,6 +113,7 @@ class OccupancyGrid3D:
         self._inflation_offsets = self._build_spherical_offsets(self.inflation_radius)
         self.detected_concentric_pad: Optional[ConcentricPadTarget] = None
         self.detected_launch_mark_xy: Optional[Tuple[float, float]] = None
+        self._soft_cost_cache: Dict[float, np.ndarray] = {}
 
         # If this grid covers the 20x20 ft course arena, permanently bake in the perimeter net border
         # because the thin mesh net at x,y = ±3.048 m is invisible to the OAK-D stereo depth sensor.
@@ -188,6 +189,7 @@ class OccupancyGrid3D:
         """Inflate a batch of (N, 3) occupied voxel indices into self.inflated_grid."""
         if voxel_indices.size == 0:
             return
+        self._soft_cost_cache.clear()
         nx, ny, nz = self.shape
         for dx, dy, dz in self._inflation_offsets:
             ix = voxel_indices[:, 0] + dx
@@ -198,6 +200,7 @@ class OccupancyGrid3D:
 
     def rebuild_inflation(self) -> None:
         """Recompute inflated_grid from scratch using raw_grid."""
+        self._soft_cost_cache.clear()
         self.inflated_grid.fill(False)
         occ = np.argwhere(self.raw_grid)
         self._inflate_voxels(occ)
@@ -656,9 +659,13 @@ class OccupancyGrid3D:
         Used by 3D A* so paths naturally stay centered in corridors and turn smoothly
         around maze & chicane walls without needing hardcoded intermediate waypoints.
         """
+        key = round(float(buffer_radius_m), 4)
+        if key in self._soft_cost_cache:
+            return self._soft_cost_cache[key]
         cost = np.zeros(self.shape, dtype=np.float32)
         occ = np.argwhere(self.raw_grid)
         if occ.size == 0:
+            self._soft_cost_cache[key] = cost
             return cost
         offsets = self._build_spherical_offsets(buffer_radius_m)
         nx, ny, nz = self.shape
@@ -672,6 +679,7 @@ class OccupancyGrid3D:
             iz = occ[:, 2] + dz
             valid = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny) & (iz >= 0) & (iz < nz)
             np.maximum.at(cost, (ix[valid], iy[valid], iz[valid]), penalty)
+        self._soft_cost_cache[key] = cost
         return cost
 
     def discover_course_features(

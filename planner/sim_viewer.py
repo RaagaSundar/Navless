@@ -64,6 +64,8 @@ def _clone_grid(src: OccupancyGrid3D, cfg: PlannerConfig) -> OccupancyGrid3D:
     )
     g.raw_grid[:] = src.raw_grid
     g.inflated_grid[:] = src.inflated_grid
+    g.detected_concentric_pad = src.detected_concentric_pad
+    g.detected_launch_mark_xy = src.detected_launch_mark_xy
     return g
 
 
@@ -261,7 +263,7 @@ def run_simulation_episode(
                 reason = "descending_to_start_pad"
             elif sample is not None:
                 if router.active_spline is not None:
-                    active_spline_pts = np.round(router.active_spline.sample_points(30), 3).tolist()
+                    active_spline_pts = np.round(router.active_spline.sample_points(120), 3).tolist()
                 prof = router.profile_for_stage(router.stage)
                 phys.step_physics(
                     dt,
