@@ -47,17 +47,33 @@ degree off moves the far end of the route about 9 cm sideways. In the sim, −2 
 3. To take over at any time, change the flight mode: PX4 leaves Offboard and `navless_nav` pauses.
 4. It lands on the pad by itself and disarms (`COM_DISARM_LAND`).
 
-## 4b. Flying the planner (`px4_bridge_node`) instead of `navless_nav`
+## 4b. Flying another script (the planner, the square test) instead of `navless_nav`
 
 Only if the team decides to. Sections 1–3 still apply (run the preflight check first). Then, on the host:
 
 ```bash
-bash ~/team_ws/src/Navless/planner/real_flight_start.sh     # refuses if armed; add --stop-on-pad etc.
-docker exec skybeta-stack tail -f /tmp/px4_bridge_flight.log
+bash ~/team_ws/src/Navless/planner/real_flight_start.sh mission/square_test.py   # movement test (below)
+bash ~/team_ws/src/Navless/planner/real_flight_start.sh                          # px4_bridge_node
+bash ~/team_ws/src/Navless/planner/real_flight_start.sh --stop-on-pad            # ... with bridge args
+docker exec skybeta-stack tail -f /tmp/flight.log
 ```
 
-It replaces the stack's `competitor` window (`navless_nav`) with the bridge in `--skybeta-mode`, so only
-one node commands `/skybeta/setpoint/*`. Fly as in section 4: Altitude, arm, Position.
+It refuses if the drone is armed or a script is already running. Then it replaces the stack's `competitor`
+window (`navless_nav`) with the script, so only one program commands `/skybeta/setpoint/*`. Fly as in
+section 4: Altitude, arm, Position.
+
+**Movement test** (`mission/square_test.py`):
+- Takes off to 0.7 m and flies a 1 ft square: forward, right, back, left.
+- At each corner it turns in place so the camera faces the next side, then lands where it took off.
+- Options: `--side`, `--alt`, `--left` to mirror it.
+- Check it offline with `python3 mission/square_test.py --selftest`.
+- In the FlyX lab, `--px4` mode arms by itself.
+
+Rules for any script started this way:
+- Command only through `/skybeta/setpoint/*`.
+- Never wait for keyboard input.
+- Treat SIGINT/SIGTERM as "land, then exit" (copy `square_test.py`'s handler).
+- Exit once disarmed.
 
 To stop it: `bash ~/team_ws/src/Navless/planner/real_flight_kill.sh`.
 - **Flying:** it descends where it is until PX4 disarms, then exits.
@@ -65,7 +81,8 @@ To stop it: `bash ~/team_ws/src/Navless/planner/real_flight_kill.sh`.
 - `--now` stops publishing immediately, so the pilot must take over.
 - To get `navless_nav` back, on the ground only: `docker rm -f skybeta-stack`.
 
-Caveats: flight_interface ignores pose yaw, so the cameras keep the launch heading. Only plain-PX4 runs
+Caveats: flight_interface ignores pose yaw, so the bridge keeps the launch heading (square_test.py turns
+with velocity setpoints instead). Only plain-PX4 runs
 in the FlyX lab have flown the bridge so far.
 
 ## 5. Open decisions (humans)
