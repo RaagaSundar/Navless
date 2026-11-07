@@ -5,6 +5,8 @@ flight interface's topic namespace):
 
     subscribe  /visual_slam/tracking/odometry   where we are (ENU, odom)
     subscribe  FI_NS/state                      what PX4 is doing (JSON)
+    subscribe  /tube/offset                     tube centre from the side ToF
+                                                sensors (tof_tube_centering only)
     publish    FI_NS/setpoint/{pose,twist}      where we want to be (ENU, odom)
 
 Never publishes to /fmu/*, never arms, never changes mode: flight_interface
@@ -62,8 +64,9 @@ import math
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 
-from geometry_msgs.msg import PoseStamped, TwistStamped
+from geometry_msgs.msg import PointStamped, PoseStamped, TwistStamped
 from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import ParameterDescriptor
 from std_msgs.msg import String
@@ -71,6 +74,7 @@ from std_msgs.msg import String
 from navless_nav.route import (Carrot, clamp_to_net, course_to_odom,
                                load_route, odom_to_course,
                                resolve_route_path)
+from navless_nav.tube_guidance import TubeGuidance
 
 try:
     from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
@@ -183,6 +187,20 @@ PARAMETERS = (
     ('blind_carry', False),
     ('blind_carry_max_s', 4.0),
     ('blind_zone_margin_m', 0.4),
+    # Side ToF tube centring, off by default. tube/tube_node.py publishes
+    # /tube/offset (how far the tube centreline is to the drone's left) only
+    # while both side readings span the tube's width. While the drone and
+    # the carrot are in the tube, the target is pulled toward that centre:
+    # never more than tof_tube_max_shift_m from the route, so a misreading
+    # can do no worse, and at tof_tube_rate_mps. It drops back to the route
+    # at once when the offset is older than tof_tube_timeout_s, outside the
+    # tube, or with nothing to measure from (VIO lost, no blind carry).
+    # Needs the bus-7 sensor on the drone's LEFT: swapped sensors pull
+    # toward a wall, up to the shift limit.
+    ('tof_tube_centering', False),
+    ('tof_tube_max_shift_m', 0.15),
+    ('tof_tube_rate_mps', 0.10),
+    ('tof_tube_timeout_s', 0.3),
 )
 
 
@@ -237,6 +255,14 @@ class CourseMission(Node):
         self.blind_margin = param('blind_zone_margin_m')
         self.blind_since = None     # start of the current VIO loss in ROUTE
         self.blind_carrying = False
+        self.start_height = param('start_height_m')
+        self.tof_tube = str(self.get_parameter('tof_tube_centering').value).lower() in ('true', '1')
+        self.tof_guidance = TubeGuidance(
+            param('tof_tube_max_shift_m'), param('tof_tube_rate_mps'),
+            param('tof_tube_timeout_s'), clamp=True)
+        self.tof_offset = None      # (stamp, metres to the left) from /tube/offset
+        self.tof_used_stamp = None
+        self.yaw = None             # odometry heading: the offset is along body y
         self.heights_agree_since = None
         self.prearm_passed = False
         self.prearm_warned_at = None
@@ -256,6 +282,11 @@ class CourseMission(Node):
             Odometry, str(self.get_parameter('odometry_topic').value),
             self.odometry_cb, 10)
         self.create_subscription(String, STATE_TOPIC, self.state_cb, 10)
+        if self.tof_tube:
+            # tube_node publishes best effort; a reliable subscriber would
+            # never match it.
+            self.create_subscription(PointStamped, '/tube/offset', self.tof_offset_cb,
+                                     qos_profile_sensor_data)
         if VisualSlamStatus is not None:
             self.create_subscription(
                 VisualSlamStatus, '/visual_slam/status', self.status_cb, 10)
@@ -302,6 +333,18 @@ class CourseMission(Node):
         p = msg.pose.pose.position
         self.position = (float(p.x), float(p.y), float(p.z))
         self.odom_at = self.now_s()
+        if self.tof_tube:
+            q = msg.pose.pose.orientation
+            self.yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                  1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+
+    def tof_offset_cb(self, msg):
+        """tube_node's /tube/offset: point.y = how far the tube centreline is
+        to the drone's left (body frame), point.z = measured width."""
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        offset = float(msg.point.y)
+        self.tof_offset = ((stamp, offset) if msg.header.frame_id == 'base_link'
+                           and math.isfinite(offset) else None)
 
     def status_cb(self, msg):
         self.vo_state = int(msg.vo_state)
@@ -581,6 +624,7 @@ class CourseMission(Node):
             self.blind_since = None
             self.set_carrying(False, 'VIO back')
             point = self.carrot.step(self.position, dt)
+            ref = self.position     # where the drone is, in the target's frame
         else:
             # With no trustworthy position, do not move the target: PX4
             # falls back on its own estimate and holds the last point. In
@@ -589,6 +633,7 @@ class CourseMission(Node):
             if self.blind_since is None:
                 self.blind_since = now
             px4 = self.blind_carry_position(now)
+            ref = px4               # None unless carrying on PX4's estimate
             if px4 is not None:
                 # at the route's own speed: a faster carry (1.0 m/s, 1.2 m
                 # lead) drifted 49 cm and touched the tube in Gazebo
@@ -606,6 +651,8 @@ class CourseMission(Node):
                 point = self.position
             else:
                 point = self.carrot.point
+        if self.tof_tube:
+            point = self.tof_tube_point(point, ref, now)
         self.send(*point)
         if self.going_home:
             # Over the launch mark by x/y only: PX4 can hold the hop height a
@@ -634,6 +681,38 @@ class CourseMission(Node):
                 f'({math.dist(self.position, point):.2f} m off); holding. '
                 f'Check `clamped` in {STATE_TOPIC} and VIO.')
             self.goto('HOLD', self.position)
+
+    def in_tube(self, position, point):
+        """Drone and target both inside the tube's footprint, at flying
+        height, and not on the fly_home hop."""
+        if self.frame is None or self.going_home:
+            return False
+        x, y, _ = odom_to_course(position, self.frame[0], self.frame[1])
+        gx, gy, _ = odom_to_course(point, self.frame[0], self.frame[1])
+        height = position[2] + self.start_height
+        return (TUBE_X[0] < x < TUBE_X[1] and TUBE_Y[0] < y < TUBE_Y[1]
+                and TUBE_X[0] < gx < TUBE_X[1] and TUBE_Y[0] < gy < TUBE_Y[1]
+                and 0.3 < height < 1.5)
+
+    def tof_tube_point(self, point, ref, now):
+        """The route target pulled toward the tube centre the side ToF
+        sensors measure (see tof_tube_centering). ref is where the drone is,
+        in the frame the target is flown in: odometry, or PX4's own estimate
+        during a blind carry. None means nothing to measure from."""
+        m = self.tof_offset
+        if not (ref is not None and m is not None and self.yaw is not None
+                and self.armed and self.offboard_active and self.in_tube(ref, point)):
+            self.tof_guidance.clear()       # no correction outlives its data
+            return point
+        axis = math.radians(self.frame[1])  # the tube runs course north-south
+        if m[0] != self.tof_used_stamp:
+            self.tof_used_stamp = m[0]
+            # The offset is along the body's y axis: the centre in odom.
+            left = (-math.sin(self.yaw), math.cos(self.yaw))
+            centre = (ref[0] + m[1] * left[0], ref[1] + m[1] * left[1], ref[2])
+            self.tof_guidance.update(m[0], centre, axis, now)
+        return self.tof_guidance.apply(point, ref, axis, now, enabled=True,
+                                       max_lead=self.max_lead)
 
     def in_blind_zone(self, point):
         """The odom point is in the tube, or within blind_zone_margin_m of a mouth."""

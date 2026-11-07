@@ -11,8 +11,10 @@ COMPETITOR_PKG=navless_nav and COMPETITOR_LAUNCH=navless_course.launch.py.
   mirror_relay (relay:=true)          read-only telemetry for the laptop dashboard, port 8775
 
 skybeta-19's flight branch: the route is planned on the as-built course map (Shining's phone
-scan of the real course, gazebo_sim/course/course_asbuilt.json). The ToF chain is recorded and
-shown on the dashboard; course_mission does not steer on it.
+scan of the real course, gazebo_sim/course/course_asbuilt.json), and course_mission steers on
+the ToF chain in the tube (tof_tube_centering: at most 0.15 m from the route, dropped as soon
+as the readings stop). The sensors were checked on 19: each side reacts alone, and the bus-7
+sensor is on the drone's left.
 
 Never start planner/px4_bridge_node.py or mission/mission.py alongside this: both are
 commanders too, and the drone gets exactly one.
@@ -47,6 +49,8 @@ ARGUMENTS = [
     # ~0.6 m, and the route crosses them 0.256 m from the net. navless.launch.py's 0.4 m would pull
     # those setpoints into the wall ends (stub drone: M1 -4.3 cm, M3 -1.2 cm).
     ('net_margin_m', '0.25', 'keep setpoints this far inside the net, m'),
+    ('tof_tube_centering', 'true',
+     'in the tube, steer toward the centre the side ToF sensors measure (at most 0.15 m from the route)'),
     ('start_bearing_deg', '0.0', 'nose bearing on the launch mark at power-up (0 = north)'),
     # Speed, tuned for the centreline window route above (Gazebo + PX4 SITL, drone profile, real pilot
     # sequence). Arm to touchdown took 32.6 s on 3 of 3 laps, against 42.9 s at navless.launch.py's
@@ -87,7 +91,7 @@ def generate_launch_description():
         launch_arguments={n: LaunchConfiguration(n)
                           for n in ('route_file', 'start_bearing_deg', 'cruise_speed_mps',
                                     'max_lead_m', 'max_lat_accel_mps2', 'max_turn_sagitta_m',
-                                    'odometry_topic', 'net_margin_m')}.items(),
+                                    'odometry_topic', 'net_margin_m', 'tof_tube_centering')}.items(),
     )
     # VL53L1X: from the team image, or from ~/team_ws/pylibs (pip install --target) if it is there.
     pylibs = '/root/team_ws/pylibs'
