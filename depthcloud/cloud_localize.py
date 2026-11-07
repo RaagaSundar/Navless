@@ -47,7 +47,8 @@ R_OPT_TO_FLU = np.array([[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
 FT = 0.3048
 
 # The two courses. asbuilt = the real course (phone scan; made by depthcloud/asbuilt/make_asbuilt.py from the
-# plan .obj), plan = the organisers' temporary plan, which FlyX Lab still simulates. Neither .obj is in git.
+# plan .obj; committed at the repo root), plan = the organisers' temporary plan, which FlyX Lab still simulates
+# (from their zip; not in git).
 COURSE_OBJ = {"asbuilt": "dronehacks-course-asbuilt.obj", "plan": "dronehacks-course-v3.obj"}
 
 
