@@ -83,6 +83,15 @@ All runs were clean (no contacts, every checkpoint). Under the stock controller,
 arming (1 s spool-up, 3 s takeoff ramp, 12° takeoff tilt). The real flight node was also flown on this sim with
 `tools/export_route.py`'s route, and landed both times.
 
+**Gate B route.** `tools/export_route.py --route gate_b` writes `course/route_centreline_gate_b.json` (18.0 m),
+the chicane alternative to the window. Past the tube it turns on arcs centred on three wall ends: round C1's
+south end, up the chicane, west through Gate B, then round A1's south end to the pad.
+- **Planned nose-north clearance:** 17.4 cm to C1 and C2b, 17.7 cm to A1. The overall minimum is 16.6 cm, at
+  M1 in the maze it shares with the window route.
+- **One flight of the node** (`drone` profile, `--pilot modes`): it went through Gate B and landed 9.8 cm from
+  the pad, 48.0 s after arming, with no contacts.
+- **Flown clearance:** 10.0 cm from A1 and 12.2 cm from C2b. The node's carrot cuts the inside of those two turns.
+
 **Camera blind in the tube, node included** (`fly_navless.py`, `drone` profile, centreline route, `--pilot modes`).
 - **`DH_TUBE_BLACKOUT=stop`.** Today's node freezes its carrot when `vo_state` goes to 2, and PX4 dead-reckons.
   Its estimate was 7 cm off after 1 s blind, 0.41 m after 2 s and 0.80 m after 2.5 s, so the hold wandered:
