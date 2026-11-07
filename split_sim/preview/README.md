@@ -185,3 +185,38 @@ node split_sim/preview/test_comparison_ui.cjs
 
 Node is needed only for this optional small UI test; the server and writer use
 Python's standard library. Install it with `brew install node` if needed.
+
+Per-source localization uses run-relative `localization-poses.json`, optional
+`localization-live.json`, and `map-localization.json`. Synchronized source cards
+and coloured trails/markers show raw NVIDIA, admitted VO, PX4 fused, independent
+truth, and measured map hypotheses separately. The cursor uses source simulation
+stamps, never future samples; samples older than 1s have no current marker and
+trajectory gaps over 1s are not joined. The height plot uses registered course
+metres. Origin, units, status, source/cursor age and validity remain visible.
+Unknown/unregistered frames and rejected/ambiguous map results retain diagnostics
+but cannot place a marker on the course. Raw scan poses remain withheld without
+a qualified transform. Default raw VO trail is off to reduce clutter; source
+checkboxes select comparisons. Map studies are labelled offline/non-controller.
+
+Live latest updates actual track/source snapshots in place every3s, retaining
+video elements and replay selection. Playing video suspends cursor movement and
+map redraw; scrubbing turns live latest off. Snapshot generation wall age is
+separate from simulation source age; archived snapshots are not claimed live.
+Direct demonstrations: `?run=nvidia:20261107T215942Z-split-astar-flight` (near-pass
+flight, original independent grade retained) and `?run=nvidia:20261107T215630Z-split-astar-flight`
+(issue flight with measured CAD/as-built/withheld raw-scan comparison).
+
+Portable offline UI validation (Node.js standard library only):
+
+```bash
+node --check split_sim/preview/app.js
+node split_sim/preview/localization_test.cjs
+```
+
+The inline test fixture has all four source metadata/poses and explicit synthetic
+origin; it is never registered as a run or presented as flight evidence. Tests
+cover exact-value preservation, source stamps/no future samples, withheld map
+poses, invalid estimator flags/unregistered frames, and video/cursor continuity.
+Actual local review additionally checked the 215942/215630/221438 source archives
+and rendered the two demo links in headless Chrome. No real recording, private
+absolute path, binary asset, or credentials are included in this feature.

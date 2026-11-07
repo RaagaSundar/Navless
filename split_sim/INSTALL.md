@@ -258,3 +258,7 @@ Until PR49 merges, the actual passing code must be fetched explicitly using
 `git fetch origin pull/49/head:review-pass-49`; do not assume it is already in
 main. The normal launcher now actually archives/invokes the passing route/config.
 No new return-hop, heading-all or obstacle prototype belongs to this profile.
+
+### Passive localization preview dependency
+
+The receive-only localization worker uses Python3.11+ and uv. Its PEP723 metadata installs the pinned sealed ULog reader without modifying the ROS environment. See [LOCALIZATION_POSES.md](LOCALIZATION_POSES.md) for installation, synthetic offline tests, frame/receipt-time semantics and the network-free `--localization-only` runner entrypoint.

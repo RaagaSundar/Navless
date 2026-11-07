@@ -2,7 +2,12 @@
 # Mac orchestrator. Companion/controller remains on Jetson, Gazebo/PX4 on Mac.
 # The approved run includes continuous passive observation before control.
 set -euo pipefail
-cd "$(dirname "$0")"
+launcher_dir="$(cd "$(dirname "$0")" && pwd)"
+if [[ "${1:-}" == --localization-only ]]; then
+  shift
+  exec bash "$launcher_dir/localization_worker.sh" "$@"
+fi
+cd "$launcher_dir"
 source ./prepare_split.sh
 if [[ "${1:-}" == --approve-prepared && $# == 2 ]]; then approve_prepared "$2"; exit; fi
 [[ $# == 1 && ( "$1" == --approve-flight || "$1" == --prepare-flight ) ]] || { echo 'Usage: run_split_course.sh --prepare-flight | --approve-prepared RUN_ID | --approve-flight'; exit 2; }
@@ -33,8 +38,20 @@ fi
 "${SSH[@]}" 'set -e; test "$(docker inspect -f "{{.State.Running}}" drone19-gazebo-bench)" = false; test "$(docker exec drone19-split-sim printenv ROS_DOMAIN_ID)" = 219'
 runid="$(date -u +%Y%m%dT%H%M%SZ)-split-astar-flight"
 run="$(cd ../local_course/state/nvidia-runs && pwd)/$runid"
+baseline="${SPLIT_BASELINE_RUN:-}"
+if [[ -n "$baseline" && ! -d "$baseline" ]]; then
+  echo "Unknown comparison baseline: $baseline" >&2; exit 2
+fi
 mkdir "$run"
 mkdir "$run/flight"
+run_name="${SPLIT_RUN_NAME:-Team A-star course with $yaw_policy camera yaw}"
+comparison=("$run" --name "$run_name")
+if [[ -n "$baseline" ]]; then comparison+=(--baseline "$baseline"); fi
+if [[ -n "${SPLIT_COMPARISON_ANNOTATIONS:-}" ]]; then
+  cp "$SPLIT_COMPARISON_ANNOTATIONS" "$run/comparison-annotations.json"
+  comparison+=(--annotations "$run/comparison-annotations.json")
+fi
+printf '%s\n' "$run_name" > "$run/run-name"
 printf '%s\n' "$run" > /tmp/nvidia-current-run
 cp course_runtime/astar-route.json "$run/flight/planned-route.json"
 cp course_runtime/sources.sha256 "$run/sources.sha256"
@@ -93,7 +110,7 @@ PYFILES
 COPYFILE_DISABLE=1 tar -czf /tmp/nvidia-course-runtime.tgz -T "$run/archive-files.txt" 
 cp /tmp/nvidia-course-runtime.tgz "$run/flown-runtime.tgz"
 cp capture_flight_sensors.py seal_sensor_capture.py "$run/"
-cp run_split_course.sh prepare_split.sh check_startup_recording.py split_record.py wait_settled.py "$run/"
+cp run_split_course.sh prepare_split.sh localization_worker.sh build_localization_poses.py check_startup_recording.py split_record.py wait_settled.py "$run/"
 scp -o ControlPath="$SOCKET" -o BatchMode=yes /tmp/nvidia-course-runtime.tgz "$TARGET":team_ws/split_sim_state/course-runtime.tgz
 "${SSH[@]}" 'set -e; tar -xzf ~/team_ws/split_sim_state/course-runtime.tgz -C ~/team_ws/split_sim_state/course_stage; docker cp ~/team_ws/split_sim_state/course_stage/course_runtime drone19-split-sim:/root/split_state/; docker exec drone19-split-sim bash -lc "cd /root/split_state/course_runtime; sha256sum -c sources.sha256 && python3 -m unittest discover -v"' > "$run/deployed-sources.log" 2>&1
 scp -o ControlPath="$SOCKET" -o BatchMode=yes split_record.py "$TARGET":team_ws/split_sim_state/split_record.py
@@ -121,6 +138,8 @@ if any(field not in record for field in ('fused: True','cs_rng_fault: False','cs
 PYRANGE
 }
 if [[ "$launch_mode" == --approve-flight ]]; then check_px4_sensors; fi
+# Name the experiment after settings and source snapshots are verified.
+python3 run_comparison.py "${comparison[@]}"
 sensor_path="/root/$runid-camera-imu.sqlite"
 sensor_stop="/root/$runid-camera-imu.stop"
 docker exec "$container" python3 /split/capture_flight_sensors.py "$sensor_path" --stop-file "$sensor_stop" > "$run/native-camera-imu.log" 2>&1 & sensor_pid=$!
@@ -137,7 +156,8 @@ docker exec "$container" python3 /split/split_record.py truth --output "/root/$r
 live_track() {
   while :; do
     if cp "state/$runid-truth.json" "$run/flight/live-truth.json" 2>/dev/null &&
-       "${SSH[@]}" "cat ~/team_ws/split_sim_state/$runid-telemetry.jsonl" > "$run/flight/live-telemetry.jsonl" &&
+       "${SSH[@]}" "cat ~/team_ws/split_sim_state/$runid-telemetry.jsonl" > "$run/flight/.live-telemetry.jsonl" &&
+       mv "$run/flight/.live-telemetry.jsonl" "$run/flight/live-telemetry.jsonl" &&
        python3 split_record.py merge --truth "$run/flight/live-truth.json" --telemetry "$run/flight/live-telemetry.jsonl" --output "$run/flight/.live-track.json"; then
       mv "$run/flight/.live-track.json" "$run/flight/track.json"
     fi
@@ -145,7 +165,13 @@ live_track() {
   done
 }
 live_track > "$run/live-viewer.log" 2>&1 & live_pid=$!
+# Low-priority receive-only local data product, separate from the mirror/mission.
+bash "$launcher_dir/localization_worker.sh" "$run" --watch > "$run/localization-worker.log" 2>&1 & localization_pid=$!
 cleanup() {
+  if [[ -n "${localization_pid:-}" ]]; then
+    kill "$localization_pid" 2>/dev/null || true
+    wait "$localization_pid" 2>/dev/null || true
+  fi
   docker exec "$container" touch "$sensor_stop" || true
   wait "$sensor_pid" || true
   kill "$live_pid" 2>/dev/null || true
@@ -209,6 +235,9 @@ docker cp "$container:$px4path" "$run/px4"
 cp state/split-station.log "$run/station.log"
 "${SSH[@]}" 'docker exec drone19-split-sim tar -czf - -C /root/split_state logs' > "$run/jetson-node-logs.tgz"
 python3 course_runtime/review_run.py "$run"
+python3 run_comparison.py "${comparison[@]}"
+# Sealed audit uses final telemetry and actual archived ULog; failures preserve the grade.
+bash "$launcher_dir/localization_worker.sh" "$run" --once > "$run/localization-finalize.log" 2>&1 || echo 'Localization export failed; flight and grade remain preserved' >&2
 python3 export_run_videos.py --enqueue "$run" || echo 'Unable to start offline video export' >&2
 printf 'Evidence: %s\n' "$run"
 exit "$result"
