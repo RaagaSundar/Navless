@@ -263,7 +263,7 @@ class PX4TrajectoryTrackerCore:
         if not self.nav_zeroed and not self.router.primary_landed:
             rx, ry, rz = self.raw_pos_ned
             if math.hypot(rx, ry) <= 0.45 and abs(rz) <= 0.35:
-                expected_z_ned = -self.start_height_m
+                expected_z_ned = 0.0 if abs(self.launch_origin_enu[2]) > 1e-4 else -self.start_height_m
                 self.nav_zero_offset_ned = (rx, ry, rz - expected_z_ned)
                 self.telemetry.pos_ned = (
                     rx - self.nav_zero_offset_ned[0],
@@ -1142,6 +1142,19 @@ def run_ros2_node(argv=None) -> int:
         default=2.0,
         help="Seconds to verify stationary, valid, height-matched navigation and zero-tare before arming",
     )
+    parser.add_argument(
+        "--launch-origin",
+        type=float,
+        nargs=3,
+        metavar=("X", "Y", "Z"),
+        default=None,
+        help="Course ENU coordinates of PX4 local origin (e.g. -2.515 1.114 0.126 in FlyX Lab)",
+    )
+    parser.add_argument(
+        "--pilot-arms",
+        action="store_true",
+        help="Wait for external pilot/script to switch to Offboard and arm instead of auto-arming",
+    )
     args, unknown_args = parser.parse_known_args(argv)
     # Support `-p fly_home:=true` passed by master_sim/run_master.sh
     fly_home_arg = any("fly_home:=true" in str(u).lower() for u in unknown_args)
@@ -1177,6 +1190,11 @@ def run_ros2_node(argv=None) -> int:
     router = GlobalCourseRouter(cfg, grid)
     tracker = PX4TrajectoryTrackerCore(
         router,
+        launch_origin_enu=(
+            (float(args.launch_origin[0]), float(args.launch_origin[1]), float(args.launch_origin[2]))
+            if args.launch_origin is not None
+            else None
+        ),
         start_bearing_deg=args.start_bearing_deg,
         start_height_m=(args.start_height_m if args.skybeta_mode else 0.0),
         touch_and_go_fly_home=bool(args.touch_and_go and not args.stop_on_pad),
@@ -1242,7 +1260,7 @@ def run_ros2_node(argv=None) -> int:
             cam_intrinsics["height"] = float(msg.height) if msg.height > 0 else 0.0
 
     def on_depth(msg: Image) -> None:
-        if "fx" not in cam_intrinsics or tracker.telemetry.last_local_pos_time_s is None:
+        if (prior_loaded and not args.live_depth_mapping) or "fx" not in cam_intrinsics or tracker.telemetry.last_local_pos_time_s is None:
             return
         try:
             depth_m = decode_ros_depth_image(msg)
@@ -1265,7 +1283,9 @@ def run_ros2_node(argv=None) -> int:
             node.get_logger().warning(f"Depth decode warning: {err}")
 
     def on_pointcloud(msg: PointCloud2) -> None:
-        if tracker.telemetry.last_local_pos_time_s is None and tracker.last_localize_time_s is None:
+        if (prior_loaded and not args.live_depth_mapping) or (
+            tracker.telemetry.last_local_pos_time_s is None and tracker.last_localize_time_s is None
+        ):
             return
         pos_enu, yaw_enu = tracker.current_course_pose_enu(now_sec())
         pts_world = decode_ros_pointcloud2_optical(msg, pos_enu, yaw_enu, max_depth_m=2.80)
@@ -1420,15 +1440,16 @@ def run_ros2_node(argv=None) -> int:
     skybeta_pose_pub = node.create_publisher(PoseStamped, "/skybeta/setpoint/pose", 10)
     skybeta_twist_pub = node.create_publisher(TwistStamped, "/skybeta/setpoint/twist", 10)
 
-    def _send_nav_land(t_now: float, why: str) -> None:
+    prearm_stream_since_s: List[Optional[float]] = [None]
+    last_arm_offboard_cmd_s: List[float] = [-1e9]
+
+    def _send_vehicle_cmd(t_now: float, command: int, param1: float = 0.0, param2: float = 0.0) -> None:
         if cmd_pub is None or not args.approve_flight:
             return
-        if (t_now - last_nav_land_cmd_s[0]) < 1.0:
-            return
-        last_nav_land_cmd_s[0] = t_now
-        node.get_logger().warning(f"Sending VEHICLE_CMD_NAV_LAND: {why}")
         vc = VehicleCommand()
-        vc.command = int(getattr(VehicleCommand, "VEHICLE_CMD_NAV_LAND", 21))
+        vc.command = int(command)
+        vc.param1 = float(param1)
+        vc.param2 = float(param2)
         vc.target_system = 1
         vc.target_component = 1
         vc.source_system = 1
@@ -1436,6 +1457,15 @@ def run_ros2_node(argv=None) -> int:
         vc.from_external = True
         vc.timestamp = int(t_now * 1_000_000)
         cmd_pub.publish(vc)
+
+    def _send_nav_land(t_now: float, why: str) -> None:
+        if cmd_pub is None or not args.approve_flight:
+            return
+        if (t_now - last_nav_land_cmd_s[0]) < 1.0:
+            return
+        last_nav_land_cmd_s[0] = t_now
+        node.get_logger().warning(f"Sending VEHICLE_CMD_NAV_LAND: {why}")
+        _send_vehicle_cmd(t_now, int(getattr(VehicleCommand, "VEHICLE_CMD_NAV_LAND", 21)))
 
     def timer_callback() -> None:
         t_now = now_sec()
@@ -1500,6 +1530,18 @@ def run_ros2_node(argv=None) -> int:
         sp.timestamp = sample.timestamp_us
         setpoint_pub.publish(sp)
 
+        if not args.pilot_arms and sample.branch == "PREARM_STREAM":
+            if prearm_stream_since_s[0] is None:
+                prearm_stream_since_s[0] = t_now
+                node.get_logger().info("Pre-arm navigation zeroed & settled; streaming setpoints for 1.0 s before Offboard/Arm...")
+            elif (t_now - prearm_stream_since_s[0]) >= 1.0 and (t_now - last_arm_offboard_cmd_s[0]) >= 1.0:
+                last_arm_offboard_cmd_s[0] = t_now
+                node.get_logger().info("Requesting PX4 Offboard mode and Arming...")
+                _send_vehicle_cmd(t_now, int(getattr(VehicleCommand, "VEHICLE_CMD_DO_SET_MODE", 176)), 1.0, 6.0)
+                _send_vehicle_cmd(t_now, int(getattr(VehicleCommand, "VEHICLE_CMD_COMPONENT_ARM_DISARM", 400)), 1.0, 0.0)
+        else:
+            prearm_stream_since_s[0] = None
+
     period_s = 1.0 / max(10.0, cfg.tracker_rate_hz)
     timer = node.create_timer(period_s, timer_callback)
     node.get_logger().info(
@@ -1509,10 +1551,15 @@ def run_ros2_node(argv=None) -> int:
 
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        if tracker.telemetry.arming_state == ARMING_STATE_ARMED:
+            for _ in range(5):
+                _send_vehicle_cmd(now_sec(), int(getattr(VehicleCommand, "VEHICLE_CMD_NAV_LAND", 21)))
+            node.get_logger().warning("Ctrl-C: VEHICLE_CMD_NAV_LAND sent.")
     finally:
         node.destroy_timer(timer)
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
     return 0
 
 

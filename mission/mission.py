@@ -43,6 +43,14 @@ def inside(p, fence):
     return all(lo[i] <= p[i] <= hi[i] for i in range(3))
 
 
+def turn_toward(current, target, max_step):
+    d = math.atan2(math.sin(target - current), math.cos(target - current))
+    if abs(d) <= max_step:
+        return target
+    return math.atan2(math.sin(current + math.copysign(max_step, d)),
+                      math.cos(current + math.copysign(max_step, d)))
+
+
 class Carrot:
     """Setpoint slides along the path at `speed`, but never more than `max_lead` ahead of the drone."""
 
@@ -87,6 +95,15 @@ class Carrot:
     def done(self, drone, accept):
         return self.i == len(self.path) - 1 and dist(drone, self.p) < accept
 
+    def heading(self, fallback=0.0):
+        """Local NED yaw (atan2(east, north) = atan2(dy, dx)) of the current/next horizontal segment."""
+        for j in range(self.i, len(self.path) - 1):
+            dx = self.path[j + 1][0] - self.path[j][0]
+            dy = self.path[j + 1][1] - self.path[j][1]
+            if math.hypot(dx, dy) > 1e-3:
+                return math.atan2(dy, dx)
+        return fallback
+
 
 def load_route(path, launch, heading):
     with open(path) as f:
@@ -125,7 +142,7 @@ def check(route, fence_margin):
 
 # ---------- ROS node ----------
 
-STALE_S = 0.5
+STALE_S = {"pos": 0.5, "status": 1.5, "land": 2.5}
 RATE_HZ = 30.0
 PREARM_SETTLE_S = 2.0
 
@@ -173,7 +190,7 @@ def run(route, a):
 
         def fresh(self):
             now = self.get_clock().now()
-            return all(k in self.t and (now - self.t[k]).nanoseconds < STALE_S * 1e9 for k in ("status", "pos", "land"))
+            return all(k in self.t and (now - self.t[k]).nanoseconds < STALE_S[k] * 1e9 for k in STALE_S)
 
         def raw_pos(self):
             m = self.msg["pos"]
@@ -288,7 +305,10 @@ def run(route, a):
                 if here[2] <= route[0][2] + 0.20:
                     self.state = "FLY"
             elif s == "FLY":
-                self.publish_sp(self.carrot.step(here, 1.0 / RATE_HZ))
+                sp_next = self.carrot.step(here, 1.0 / RATE_HZ)
+                if not a.no_face_travel:
+                    self.yaw = turn_toward(self.yaw, self.carrot.heading(self.yaw), a.max_yaw_rate / RATE_HZ)
+                self.publish_sp(sp_next)
                 if self.carrot.done(here, a.accept):
                     self.state, self.ticks = "HOVER", 0
             elif s == "HOVER":
@@ -299,10 +319,13 @@ def run(route, a):
     rclpy.init(args=a.ros_args)
     node = Mission()
     try:
-        deadline = node.get_clock().now().nanoseconds + 30e9
+        deadline = None
         while not node.preflight_ok():
             rclpy.spin_once(node, timeout_sec=0.1)
-            if node.get_clock().now().nanoseconds > deadline:
+            now_ns = node.get_clock().now().nanoseconds
+            if now_ns > 0 and deadline is None:
+                deadline = now_ns + int(30e9)
+            if deadline is not None and now_ns > deadline:
                 print("Preflight failed: need 2.0 s of fresh status/position/land-detected, valid stationary estimator, landed, disarmed.")
                 print({k: (k in node.msg) for k in ("status", "pos", "land")})
                 return 1
@@ -343,6 +366,8 @@ def main():
     ap.add_argument("--max-lead", type=float, default=0.6, help="m setpoint may lead the drone")
     ap.add_argument("--accept", type=float, default=0.15, help="m to call the final point reached")
     ap.add_argument("--fence-margin", type=float, default=0.5, help="m beyond route bbox before abort")
+    ap.add_argument("--max-yaw-rate", type=float, default=1.40, help="rad/s yaw rate limit when facing travel")
+    ap.add_argument("--no-face-travel", action="store_true", help="keep fixed takeoff yaw instead of facing travel")
     argv = sys.argv[1:]
     ros_args = []
     if "--ros-args" in argv:
