@@ -54,7 +54,7 @@ try:                                    # the drone's own centring maths (tube/t
 except Exception:                       # noqa: BLE001
     tube_offset = None
 # navless_course.launch.py's tube_node settings, so the page shows what the drone would publish.
-TUBE_GATE = dict(min_range=0.15, max_range=1.3, left_mount=0.075, right_mount=0.075,
+TUBE_GATE = dict(min_range=0.18, max_range=1.3, left_mount=0.075, right_mount=0.075,
                  expected_width=1.45, width_tol=0.15)
 HEIGHT_AIM_M = 0.05     # PX4 vs VIO height on the ground: green below this...
 HEIGHT_LIMIT_M = 0.15   # ...red from here (navless_nav's prearm_height_tol_m, PR #14)

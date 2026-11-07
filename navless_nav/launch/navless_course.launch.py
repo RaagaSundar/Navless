@@ -76,7 +76,9 @@ ARGUMENTS = [
      "fusion (/mapping/validated_odometry if PX4 is fed through Koji's gate)"),
     ('tof', 'true', 'run the side ToF driver'),
     ('tube', 'true', 'run tube_node (needs tof)'),
-    ('tof_min_range_m', '0.15', 'tube_node: reject closer readings (raise until a hand-spun prop never shows)'),
+    # The prop tips reach 0.1625 m past each sensor face (0.475 m wide with props, sensors 0.075 m
+    # out): anything closer is the drone's own prop, or a wall the props already touch.
+    ('tof_min_range_m', '0.18', 'tube_node: reject closer readings (raise until a hand-spun prop never shows)'),
     ('relay', 'false', 'run the read-only dashboard relay (TCP 8775)'),
     ('relay_img_hz', '0.0', 'relay camera thumbnails per second; keep 0 in flight'),
 ]

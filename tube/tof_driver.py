@@ -24,7 +24,12 @@ Install once:  pip3 install smbus2 VL53L1X
   add --left-offset-mm A --right-offset-mm B to correct each sensor after a wall test
 
 Pair with tube_node using the mount offset (sensor face to centreline):
-  python3 tube/tube_node.py --ros-args -p left_mount:=0.075 -p right_mount:=0.075 -p min_range:=0.15
+  python3 tube/tube_node.py --ros-args -p left_mount:=0.075 -p right_mount:=0.075 -p min_range:=0.18
+
+The view reports each side against the props, not the sensor: the drone is 0.475 m wide with props,
+so the prop tips reach PROP_REACH_M = 0.1625 m past each sensor face. "props +x cm" is how far the
+prop tips are from what that sensor sees; CLOSE under 10 cm, HIT when they would touch (or the
+sensor is seeing the drone's own prop).
 """
 import argparse
 import math
@@ -36,11 +41,14 @@ from collections import deque
 
 LEFT_BUS, RIGHT_BUS = 7, 1
 ADDR = 0x29
-VIEW_MIN_M, VIEW_MAX_M = 0.15, 1.30   # only for the terminal view; tube_node has its own limits
 FOV_RAD = math.radians(27)            # the whole 16x16 SPAD array (see open_sensor)
 BUDGET_US, PERIOD_MS = 100000, 105    # 100 ms per measurement, ~10 Hz
 MEDIAN_OF = 3                         # each side publishes the median of its last 3 valid readings
 MOUNT_X, MOUNT_Y, MOUNT_Z = -0.019, 0.075, -0.060   # body FLU, metres: 19 mm behind centre, plate edge, below props
+PROP_TIP_Y = 0.2375                   # centreline to prop tip: the drone is 0.475 m wide with props
+PROP_REACH_M = PROP_TIP_Y - MOUNT_Y   # 0.1625: how far the prop tips reach past each sensor face
+CLOSE_M = 0.10                        # view: CLOSE once a wall is this near the prop tips
+VIEW_MAX_M = 1.30                     # view: tube_node's max_range (short mode)
 
 
 def mm_to_range(mm):
@@ -50,9 +58,20 @@ def mm_to_range(mm):
     return mm / 1000.0
 
 
+def side_status(m):
+    """(label, props text) for one side's reading m in metres (inf = nothing seen), judged at the prop
+    tips: HIT when they would touch what the sensor sees, CLOSE within CLOSE_M of it, else OK."""
+    if math.isinf(m):
+        return "none ", "nothing seen  "
+    if m > VIEW_MAX_M:
+        return "far  ", "past 1.3 m    "
+    gap = m - PROP_REACH_M
+    return ("HIT  " if gap < 0 else "CLOSE" if gap < CLOSE_M else "OK   "), f"props {gap * 100:+5.1f} cm"
+
+
 def view_text(L, R, hz):
     """One frame of the terminal view. L, R in metres (inf = no return)."""
-    ok = lambda m: VIEW_MIN_M <= m <= VIEW_MAX_M
+    ok = lambda m: PROP_REACH_M <= m <= VIEW_MAX_M     # usable for the tube offset (tube_node rejects closer)
 
     def bar(m, flip=False, width=40):
         s = "?" * 3 + " " * (width - 3) if not ok(m) else "#" * int(m / VIEW_MAX_M * width)
@@ -61,6 +80,10 @@ def view_text(L, R, hz):
 
     def cm(m):
         return "   --" if math.isinf(m) else f"{m * 100:5.1f}"
+
+    def side(name, m, flip=False):
+        label, props = side_status(m)
+        return f"  {name:5s} {cm(m)} cm  {label}  {props}  [{bar(m, flip)}]\n"
 
     if ok(L) and ok(R):
         off = (L - R) / 2                     # same sign as tube_node: + = centreline is to the drone's LEFT
@@ -73,8 +96,9 @@ def view_text(L, R, hz):
         centre, offtxt, width = "      (need both sensors valid)          ", "   n/a", "   n/a"
     return (f"\x1b[2J\x1b[H"
             f"  Navless side ToF   {hz:4.1f} Hz      (Ctrl+C to stop)\n\n"
-            f"  LEFT   {cm(L)} cm  {'OK ' if ok(L) else 'BAD'} [{bar(L, flip=True)}]\n"
-            f"  RIGHT  {cm(R)} cm  {'OK ' if ok(R) else 'BAD'} [{bar(R)}]\n\n"
+            + side("LEFT", L, flip=True) + side("RIGHT", R) +
+            f"  props = gap from the prop tips (they reach {PROP_REACH_M * 100:.1f} cm past each sensor); "
+            f"CLOSE under {CLOSE_M * 100:.0f} cm\n\n"
             f"  width L+R  {width}\n"
             f"  offset     {offtxt}   (+ = tube centre is to the drone's left)\n\n"
             f"  left wall [{centre}] right wall\n")
