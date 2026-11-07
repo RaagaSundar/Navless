@@ -7,6 +7,8 @@ source ./prepare_split.sh
 if [[ "${1:-}" == --approve-prepared && $# == 2 ]]; then approve_prepared "$2"; exit; fi
 [[ $# == 1 && ( "$1" == --approve-flight || "$1" == --prepare-flight ) ]] || { echo 'Usage: run_split_course.sh --prepare-flight | --approve-prepared RUN_ID | --approve-flight'; exit 2; }
 launch_mode="$1"
+yaw_policy="${SPLIT_YAW_POLICY:-first-exterior}"
+case "$yaw_policy" in first-exterior|window-forward) ;; *) echo "unreviewed split yaw policy" >&2; exit 2;; esac
 # Kernel-owned lock is released on exit, including interruption.
 if [[ "${SPLIT_FLIGHT_LOCK_HELD:-}" != 1 ]]; then
   exec python3 -c 'import fcntl,os,sys
@@ -39,6 +41,7 @@ cp course_runtime/sources.sha256 "$run/sources.sha256"
 height_profile="$(docker exec "$container" printenv SPLIT_HEIGHT_PROFILE 2>/dev/null || echo range)"
 case "$height_profile" in range|ev-terrain) ;; *) echo 'unreviewed height configuration' >&2; exit 2;; esac
 printf '%s\n' "$height_profile" > "$run/height-profile"
+printf '%s\n' "$yaw_policy" > "$run/yaw-profile"
 cp state/assets/dh_quad_stereo.sdf "$run/simulated-vehicle.sdf"
 if [[ -f state/render-profile.json ]]; then
   cp state/render-profile.json "$run/renderer-source.json"
@@ -72,7 +75,7 @@ import json,sys
 from pathlib import Path
 p=Path(sys.argv[1]); estimator='NVIDIA cuVSLAM stereo + 250Hz body IMU GPU' if sys.argv[2]=='stereo-imu' else 'NVIDIA cuVSLAM stereo-only GPU'
 (p/'platform.json').write_text(json.dumps(dict(renderer_host='Mac',px4_host='Mac',estimator_host='Jetson',onboard_host='Jetson',estimator=estimator,setup_status='preparing' if sys.argv[3]=='--prepare-flight' else 'ready',verified=sys.argv[3]!='--prepare-flight'),indent=2)+'\n')
-(p/'settings.json').write_text(json.dumps(dict(label='NVIDIA SIM',estimator=estimator,height_profile=(p/'height-profile').read_text().strip(),ros_domain=219,gazebo_partition='drone19_split',route=json.loads((p/'flight/planned-route.json').read_text())['route_type'],start_bearing_deg=0,takeoff_height_m=json.loads((p/'flight/planned-route.json').read_text())['waypoints_enu'][0][2],cruise_m_s=.40,max_lead_m=.18,takeoff_vertical_lead_m=None,max_lat_accel_m_s2=.12,max_sagitta_m=.015,yaw_policy='first-exterior',yaw_rate_deg_s=10,navigation_source='PX4 fused local position from NVIDIA stereo VO, body IMU and range',hardware_qualification=False),indent=2)+'\n')
+(p/'settings.json').write_text(json.dumps(dict(label='NVIDIA SIM',estimator=estimator,height_profile=(p/'height-profile').read_text().strip(),ros_domain=219,gazebo_partition='drone19_split',route=json.loads((p/'flight/planned-route.json').read_text())['route_type'],start_bearing_deg=0,takeoff_height_m=json.loads((p/'flight/planned-route.json').read_text())['waypoints_enu'][0][2],cruise_m_s=.40,max_lead_m=.18,takeoff_vertical_lead_m=None,max_lat_accel_m_s2=.12,max_sagitta_m=.015,yaw_policy=(p/'yaw-profile').read_text().strip(),yaw_rate_deg_s=10,navigation_source='PX4 fused local position from NVIDIA stereo VO, body IMU and range',hardware_qualification=False),indent=2)+'\n')
 PY
 # Freeze exactly the reviewed manifest, excluding later staged planner work.
 python3 - "$run/sources.sha256" > "$run/archive-files.txt" <<'PYFILES'
@@ -182,7 +185,7 @@ refresh_recorder() {
 }
 refresh_recorder > "$run/recorder-readiness.log" 2>&1 & recorder_gate_pid=$!
 result=0
-"${SSH[@]}" "docker exec drone19-split-sim bash -lc 'export SKYBETA_UNDERLAY_ONLY=1; source /usr/local/bin/skybeta_env.sh; python3 /root/split_state/course_runtime/mission.py $launch_mode --px4-localization --height-profile $height_profile --qualified-astar --yaw-policy first-exterior --route /root/split_state/course_runtime/astar-route.json --preflight-observe 30 --recorder-token $token_path --run-id $runid --duration 180 --wall-timeout 600'" > "$run/flight/mission.log" 2>&1 || result=$?
+"${SSH[@]}" "docker exec drone19-split-sim bash -lc 'export SKYBETA_UNDERLAY_ONLY=1; source /usr/local/bin/skybeta_env.sh; python3 /root/split_state/course_runtime/mission.py $launch_mode --px4-localization --height-profile $height_profile --qualified-astar --yaw-policy $yaw_policy --route /root/split_state/course_runtime/astar-route.json --preflight-observe 30 --recorder-token $token_path --run-id $runid --duration 180 --wall-timeout 600'" > "$run/flight/mission.log" 2>&1 || result=$?
 kill "$recorder_gate_pid" 2>/dev/null || true
 wait "$recorder_gate_pid" 2>/dev/null || true
 sed -n '1,/requesting Offboard/p' "$run/flight/mission.log" > "$run/preflight.log"

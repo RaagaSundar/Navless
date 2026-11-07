@@ -48,7 +48,7 @@ class FusedNavigationGate:
         self.resets=None
         self.coast_since=None
 
-    def evaluate(self,p,now,vision_stamp,vision_ned,vision_yaw,flags,flags_stamp,aligned_pose=None):
+    def evaluate(self,p,now,vision_stamp,vision_ned,vision_yaw,flags,flags_stamp,aligned_pose=None,measured_conditional_range=False):
         def fail(reason):
             self.ready_since=None
             return 'reject' if self.initialized else 'waiting',reason
@@ -80,7 +80,9 @@ class FusedNavigationGate:
         if vision_stamp is None or not 0<=now-vision_stamp<=1.0:return fail('vision-age brake bound1.0s exceeded')
         flags_fresh=flags is not None and flags_stamp is not None and 0<=now-flags_stamp<=1.5
         if not flags_fresh:return fail('PX4 fusion-status stale')
-        if not bool(getattr(flags,'cs_rng_hgt',False)):
+        if not bool(getattr(flags,'cs_rng_hgt',False)) and not (
+                measured_conditional_range and self.registered_split_frame is not None
+                and flags.cs_ev_hgt and flags.cs_baro_hgt and not flags.cs_baro_fault):
             return fail('measured range height fusion inactive')
         if any(bool(getattr(flags,k,False)) for k in ('cs_rng_fault','cs_rng_stuck','cs_fake_hgt','fs_bad_acc_vertical')):
             return fail('range/vertical estimator integrity fault')

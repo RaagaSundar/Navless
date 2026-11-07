@@ -1,0 +1,12 @@
+{
+  "same_stamp_pairs": 84,
+  "exact_cm_matches": 84,
+  "first_sim_s": 7.544,
+  "last_sim_s": 10.532,
+  "matched_range_cm": [
+    2,
+    3,
+    4,
+    5
+  ]
+}

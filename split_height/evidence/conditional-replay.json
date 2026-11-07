@@ -1,0 +1,26 @@
+[
+  {
+    "t": 133.0,
+    "result": [
+      true,
+      false,
+      "range height and terrain updates active"
+    ]
+  },
+  {
+    "t": 134.62,
+    "result": [
+      true,
+      true,
+      "fresh measured window step; conditional range update temporarily suspended"
+    ]
+  },
+  {
+    "t": 136.16,
+    "result": [
+      true,
+      false,
+      "range height and terrain updates active"
+    ]
+  }
+]
