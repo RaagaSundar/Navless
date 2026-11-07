@@ -178,7 +178,13 @@ class Carrot:
         return min(self.limits[self.index], self.limits[nxt])
 
     def step(self, drone, dt):
-        if math.dist(drone, self.point) > self.lead_limit():
+        if math.dist(drone, self.point) > self.max_lead:
+            return self.point
+        limit = self.lead_limit()
+        # The turn cap is about the horizontal cut, so measure it in x/y: a
+        # height offset (PX4 may hold height up to ~0.2 m off odom) must not
+        # exceed a small cap and stall the carrot in a tight turn.
+        if limit < self.max_lead and math.dist(drone[:2], self.point[:2]) > limit:
             return self.point
         return self.advance(self.speed_here() * max(0.0, dt))
 

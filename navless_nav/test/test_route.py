@@ -162,6 +162,20 @@ def test_sagitta_cap_reduces_the_cut_inside_a_turn():
     assert off > 0.06 and on < 0.04 and on < off / 2, (off, on)
 
 
+def test_sagitta_cap_is_horizontal_so_a_height_offset_cannot_stall_it():
+    # Review of #20: PX4 can hold height up to ~0.2 m off odom; with a 3D
+    # check, a 0.18 m offset exceeds a ~0.16 m cap and the carrot never moves.
+    path = _l_turn(0.32)
+    c = Carrot(path, speed=0.5, max_lead=0.6, max_sagitta=0.04)
+    for _ in range(4000):
+        p = c.point
+        drone = (p[0], p[1], p[2] - 0.18)        # on the path, 0.18 m low
+        c.step(drone, 0.05)
+        if c.at_end:
+            break
+    assert c.at_end
+
+
 def test_turn_radius_is_measured():
     path = _arc(0.5)
     r = turn_radii(path)

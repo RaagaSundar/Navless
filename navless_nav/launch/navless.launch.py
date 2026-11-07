@@ -42,7 +42,7 @@ ARGUMENTS = [
     ('cruise_speed_mps', '0.5', 'carrot speed along the route, m/s'),
     ('max_lead_m', '0.6', 'how far the carrot may run ahead of the drone, m'),
     ('max_turn_sagitta_m', '0.0',
-     'shrink the carrot lead in tight turns so the chord cuts inside by at most this, m; 0 = off'),
+     'shrink the carrot lead in tight turns so the drone cuts inside by at most this, m; 0 = off'),
     ('max_lat_accel_mps2', '0.25',
      'slow through bends: speed <= sqrt(this * radius); 0 = off'),
     ('net_margin_m', '0.4', 'keep setpoints this far inside the net, m'),
