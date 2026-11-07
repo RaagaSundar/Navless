@@ -1,5 +1,5 @@
 [Unit]
-Description=Team 19 hand-carried stereo SLAM and read-only map viewer
+Description=Team (skybeta-11) hand-carried stereo SLAM and read-only map viewer
 After=skybeta-stack.service
 Requires=skybeta-stack.service
 

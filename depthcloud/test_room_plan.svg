@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 589 660" font-family="sans-serif" font-size="10">
+<rect width="100%" height="100%" fill="#fff"/>
+<line x1="30.0" y1="30" x2="30.0" y2="630.0" stroke="#eee"/>
+<text x="30.0" y="644.0" text-anchor="middle" fill="#888">0</text>
+<line x1="118.2" y1="30" x2="118.2" y2="630.0" stroke="#eee"/>
+<text x="118.2" y="644.0" text-anchor="middle" fill="#888">5</text>
+<line x1="206.5" y1="30" x2="206.5" y2="630.0" stroke="#eee"/>
+<text x="206.5" y="644.0" text-anchor="middle" fill="#888">10</text>
+<line x1="294.7" y1="30" x2="294.7" y2="630.0" stroke="#eee"/>
+<text x="294.7" y="644.0" text-anchor="middle" fill="#888">15</text>
+<line x1="382.9" y1="30" x2="382.9" y2="630.0" stroke="#eee"/>
+<text x="382.9" y="644.0" text-anchor="middle" fill="#888">20</text>
+<line x1="471.2" y1="30" x2="471.2" y2="630.0" stroke="#eee"/>
+<text x="471.2" y="644.0" text-anchor="middle" fill="#888">25</text>
+<line x1="559.4" y1="30" x2="559.4" y2="630.0" stroke="#eee"/>
+<text x="559.4" y="644.0" text-anchor="middle" fill="#888">30</text>
+<line x1="30" y1="630.0" x2="559.4" y2="630.0" stroke="#eee"/>
+<text x="24" y="633.0" text-anchor="end" fill="#888">0</text>
+<line x1="30" y1="541.8" x2="559.4" y2="541.8" stroke="#eee"/>
+<text x="24" y="544.8" text-anchor="end" fill="#888">5</text>
+<line x1="30" y1="453.5" x2="559.4" y2="453.5" stroke="#eee"/>
+<text x="24" y="456.5" text-anchor="end" fill="#888">10</text>
+<line x1="30" y1="365.3" x2="559.4" y2="365.3" stroke="#eee"/>
+<text x="24" y="368.3" text-anchor="end" fill="#888">15</text>
+<line x1="30" y1="277.1" x2="559.4" y2="277.1" stroke="#eee"/>
+<text x="24" y="280.1" text-anchor="end" fill="#888">20</text>
+<line x1="30" y1="188.8" x2="559.4" y2="188.8" stroke="#eee"/>
+<text x="24" y="191.8" text-anchor="end" fill="#888">25</text>
+<line x1="30" y1="100.6" x2="559.4" y2="100.6" stroke="#eee"/>
+<text x="24" y="103.6" text-anchor="end" fill="#888">30</text>
+<rect x="30" y="30" width="529.4" height="600.0" fill="none" stroke="#333" stroke-width="2"/>
+<circle cx="30" cy="630.0" r="4" fill="#d33"/>
+<text x="36" y="624.0" fill="#d33">origin</text>
+<text x="294.7" y="656.0" text-anchor="middle">x (ft) →</text>
+<polygon points="82.9,475.6 188.8,475.6 188.8,431.5 82.9,431.5" fill="#c8875a" fill-opacity="0.75" stroke="#333" stroke-width="0.7"/>
+<text x="135.9" y="456.5" text-anchor="middle" fill="#111">T_r1c1</text>
+<polygon points="188.8,475.6 294.7,475.6 294.7,431.5 188.8,431.5" fill="#c8875a" fill-opacity="0.75" stroke="#333" stroke-width="0.7"/>
+<text x="241.8" y="456.5" text-anchor="middle" fill="#111">T_r1c2</text>
+<polygon points="400.6,475.6 506.5,475.6 506.5,431.5 400.6,431.5" fill="#c8875a" fill-opacity="0.75" stroke="#333" stroke-width="0.7"/>
+<text x="453.5" y="456.5" text-anchor="middle" fill="#111">T_r1c3</text>
+<polygon points="82.9,369.7 188.8,369.7 188.8,325.6 82.9,325.6" fill="#c8875a" fill-opacity="0.75" stroke="#333" stroke-width="0.7"/>
+<text x="135.9" y="350.6" text-anchor="middle" fill="#111">T_r2c1</text>
+<polygon points="188.8,369.7 294.7,369.7 294.7,325.6 188.8,325.6" fill="#c8875a" fill-opacity="0.75" stroke="#333" stroke-width="0.7"/>
+<text x="241.8" y="350.6" text-anchor="middle" fill="#111">T_r2c2</text>
+<polygon points="400.6,369.7 506.5,369.7 506.5,325.6 400.6,325.6" fill="#c8875a" fill-opacity="0.75" stroke="#333" stroke-width="0.7"/>
+<text x="453.5" y="350.6" text-anchor="middle" fill="#111">T_r2c3</text>
+<polygon points="82.9,263.8 188.8,263.8 188.8,219.7 82.9,219.7" fill="#c8875a" fill-opacity="0.75" stroke="#333" stroke-width="0.7"/>
+<text x="135.9" y="244.8" text-anchor="middle" fill="#111">T_r3c1</text>
+<polygon points="188.8,263.8 294.7,263.8 294.7,219.7 188.8,219.7" fill="#c8875a" fill-opacity="0.75" stroke="#333" stroke-width="0.7"/>
+<text x="241.8" y="244.8" text-anchor="middle" fill="#111">T_r3c2</text>
+<polygon points="400.6,263.8 506.5,263.8 506.5,219.7 400.6,219.7" fill="#c8875a" fill-opacity="0.75" stroke="#333" stroke-width="0.7"/>
+<text x="453.5" y="244.8" text-anchor="middle" fill="#111">T_r3c3</text>
+<polygon points="82.9,157.9 188.8,157.9 188.8,113.8 82.9,113.8" fill="#c8875a" fill-opacity="0.75" stroke="#333" stroke-width="0.7"/>
+<text x="135.9" y="138.9" text-anchor="middle" fill="#111">T_r4c1</text>
+<polygon points="188.8,157.9 294.7,157.9 294.7,113.8 188.8,113.8" fill="#c8875a" fill-opacity="0.75" stroke="#333" stroke-width="0.7"/>
+<text x="241.8" y="138.9" text-anchor="middle" fill="#111">T_r4c2</text>
+<polygon points="400.6,157.9 506.5,157.9 506.5,113.8 400.6,113.8" fill="#c8875a" fill-opacity="0.75" stroke="#333" stroke-width="0.7"/>
+<text x="453.5" y="138.9" text-anchor="middle" fill="#111">T_r4c3</text>
+</svg>

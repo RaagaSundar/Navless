@@ -51,6 +51,7 @@ def _get_base_grid(cfg: PlannerConfig) -> OccupancyGrid3D:
             inflation_radius_m=cfg.obstacle_inflation_m,
         )
         g.load_prior_from_obj(OBJ_PATH)
+        g.build_soft_clearance_cost()
         _BASE_GRID = g
     return _BASE_GRID
 
@@ -66,6 +67,7 @@ def _clone_grid(src: OccupancyGrid3D, cfg: PlannerConfig) -> OccupancyGrid3D:
     g.inflated_grid[:] = src.inflated_grid
     g.detected_concentric_pad = src.detected_concentric_pad
     g.detected_launch_mark_xy = src.detected_launch_mark_xy
+    g._soft_cost_cache = {k: v.copy() for k, v in src._soft_cost_cache.items()}
     return g
 
 

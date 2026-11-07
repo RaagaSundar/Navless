@@ -42,6 +42,10 @@ ARGUMENTS = [
     ('net_margin_m', '0.4', 'keep setpoints this far inside the net, m'),
     ('land_at_end', 'true', 'land on the route end (the pad) and disarm'),
     ('land_speed_mps', '0.3', 'descent rate onto the pad, m/s'),
+    ('fly_home', 'false',
+     'after the pad landing, the next arming flies back over the wall to '
+     'the launch mark and lands there'),
+    ('home_altitude_m', '2.03', 'fly-home hop height above the floor, m'),
     ('competitor', 'true', 'also start the course node'),
 ]
 
@@ -52,7 +56,8 @@ MISSION_PARAMS = ('takeoff_altitude_m', 'arrival_radius_m', 'takeoff_timeout_s',
                   'route_file', 'start_bearing_deg', 'start_height_m',
                   'cruise_speed_mps', 'max_lead_m', 'max_lat_accel_mps2',
                   'net_margin_m',
-                  'land_at_end', 'land_speed_mps')
+                  'land_at_end', 'land_speed_mps', 'fly_home',
+                  'home_altitude_m')
 
 
 def generate_launch_description():

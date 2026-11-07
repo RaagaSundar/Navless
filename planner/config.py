@@ -78,7 +78,7 @@ class PlannerConfig:
     local_window_size_m: Tuple[float, float, float] = (6.0, 6.0, 2.0)
     global_map_bounds_min_m: Tuple[float, float, float] = (-3.1, -3.1, 0.0)
     global_map_bounds_max_m: Tuple[float, float, float] = (3.1, 3.1, 2.6)
-    obstacle_inflation_m: float = 0.22  # 0.22 - 0.28 m safety inflation for 6x6 m course
+    obstacle_inflation_m: float = 0.30  # >= 0.30 m horizontal inflation for 0.475 m airframe + localization margin
 
     # Goal sequencer & replanning settings (Step 2 & Goal 3)
     acceptance_radius_m: float = 0.40

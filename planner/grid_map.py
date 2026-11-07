@@ -149,13 +149,17 @@ class OccupancyGrid3D:
         self.add_aabb_obstacle((bmin_x, inner, z_lo), (bmax_x, bmax_y, z_hi))
 
     def _build_spherical_offsets(self, radius_m: float) -> np.ndarray:
-        r_vox = int(math.ceil(radius_m / self.resolution))
-        if r_vox <= 0:
+        """Build quadrotor-shaped (cylindrical XY = radius_m, vertical Z = min(radius_m, 0.15 m)) inflation offsets."""
+        r_xy = int(math.ceil(radius_m / self.resolution))
+        if r_xy <= 0:
             return np.zeros((1, 3), dtype=np.int32)
-        rng = np.arange(-r_vox, r_vox + 1, dtype=np.int32)
-        gx, gy, gz = np.meshgrid(rng, rng, rng, indexing="ij")
-        dist_sq = (gx * self.resolution) ** 2 + (gy * self.resolution) ** 2 + (gz * self.resolution) ** 2
-        mask = dist_sq <= (radius_m + 1e-6) ** 2
+        z_rad = min(radius_m, 0.15)
+        r_z = int(math.ceil(z_rad / self.resolution))
+        rng_xy = np.arange(-r_xy, r_xy + 1, dtype=np.int32)
+        rng_z = np.arange(-r_z, r_z + 1, dtype=np.int32)
+        gx, gy, gz = np.meshgrid(rng_xy, rng_xy, rng_z, indexing="ij")
+        dist_xy_sq = (gx * self.resolution) ** 2 + (gy * self.resolution) ** 2
+        mask = (dist_xy_sq <= (radius_m + 1e-6) ** 2) & (np.abs(gz * self.resolution) <= z_rad + 1e-6)
         return np.stack([gx[mask], gy[mask], gz[mask]], axis=-1)
 
     def world_to_voxel(self, point_m: np.ndarray | Tuple[float, float, float]) -> Tuple[int, int, int]:
@@ -189,7 +193,6 @@ class OccupancyGrid3D:
         """Inflate a batch of (N, 3) occupied voxel indices into self.inflated_grid."""
         if voxel_indices.size == 0:
             return
-        self._soft_cost_cache.clear()
         nx, ny, nz = self.shape
         for dx, dy, dz in self._inflation_offsets:
             ix = voxel_indices[:, 0] + dx
@@ -197,6 +200,14 @@ class OccupancyGrid3D:
             iz = voxel_indices[:, 2] + dz
             valid = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny) & (iz >= 0) & (iz < nz)
             self.inflated_grid[ix[valid], iy[valid], iz[valid]] = True
+
+        # Incrementally update cached soft clearance cost fields for small live depth batches
+        if self._soft_cost_cache:
+            if voxel_indices.shape[0] <= 600:
+                for buf_r, cost_arr in self._soft_cost_cache.items():
+                    self._apply_soft_clearance_voxels(cost_arr, voxel_indices, buf_r)
+            else:
+                self._soft_cost_cache.clear()
 
     def rebuild_inflation(self) -> None:
         """Recompute inflated_grid from scratch using raw_grid."""
@@ -376,9 +387,14 @@ class OccupancyGrid3D:
         if idx.size == 0:
             return 0
 
-        self.raw_grid[idx[:, 0], idx[:, 1], idx[:, 2]] = True
-        self._inflate_voxels(idx)
-        return int(idx.shape[0])
+        new_mask = ~self.raw_grid[idx[:, 0], idx[:, 1], idx[:, 2]]
+        new_idx = idx[new_mask]
+        if new_idx.size == 0:
+            return 0
+
+        self.raw_grid[new_idx[:, 0], new_idx[:, 1], new_idx[:, 2]] = True
+        self._inflate_voxels(new_idx)
+        return int(new_idx.shape[0])
 
     def update_from_depth_image(
         self,
@@ -426,6 +442,21 @@ class OccupancyGrid3D:
         z_w = pos[2] + z_flu
 
         pts_world = np.stack([x_w, y_w, z_w], axis=-1)
+        # Filter out floor hits (z < 0.12 m) and above-wall/net grazing hits (z > 1.70 m or outside ±2.85 m)
+        # so VIO altitude/attitude drift during over-wall fly-home never spawns phantom obstacles at z ~ 2 m.
+        in_course_z = (pts_world[:, 2] >= 0.12) & (pts_world[:, 2] <= 1.70)
+        if (
+            self.bounds_min[0] <= -3.0
+            and self.bounds_min[1] <= -3.0
+            and self.bounds_max[0] >= 3.0
+            and self.bounds_max[1] >= 3.0
+        ):
+            in_course_xy = (np.abs(pts_world[:, 0]) <= 2.85) & (np.abs(pts_world[:, 1]) <= 2.85)
+            pts_world = pts_world[in_course_z & in_course_xy]
+        else:
+            pts_world = pts_world[in_course_z]
+        if pts_world.size == 0:
+            return 0
         return self.insert_point_cloud(pts_world, sensor_origin_m=pos)
 
     def obstacle_repulsion_gradient(
@@ -653,6 +684,25 @@ class OccupancyGrid3D:
         )
         return win_center, (float(normal[0]), float(normal[1])), approach_pt, exit_pt
 
+    def _apply_soft_clearance_voxels(
+        self,
+        cost: np.ndarray,
+        occ: np.ndarray,
+        buffer_radius_m: float,
+    ) -> None:
+        offsets = self._build_spherical_offsets(buffer_radius_m)
+        nx, ny, nz = self.shape
+        for dx, dy, dz in offsets:
+            dist = math.sqrt((dx * self.resolution) ** 2 + (dy * self.resolution) ** 2 + (dz * self.resolution) ** 2)
+            if dist <= self.inflation_radius or dist > buffer_radius_m:
+                continue
+            penalty = float(2.5 * ((buffer_radius_m - dist) / max(buffer_radius_m - self.inflation_radius, 0.05)) ** 2)
+            ix = occ[:, 0] + dx
+            iy = occ[:, 1] + dy
+            iz = occ[:, 2] + dz
+            valid = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny) & (iz >= 0) & (iz < nz)
+            np.maximum.at(cost, (ix[valid], iy[valid], iz[valid]), penalty)
+
     def build_soft_clearance_cost(self, buffer_radius_m: float = 0.55) -> np.ndarray:
         """Build a 3D soft cost field (in [0, 3.0]) that penalizes proximity to walls.
 
@@ -667,18 +717,7 @@ class OccupancyGrid3D:
         if occ.size == 0:
             self._soft_cost_cache[key] = cost
             return cost
-        offsets = self._build_spherical_offsets(buffer_radius_m)
-        nx, ny, nz = self.shape
-        for dx, dy, dz in offsets:
-            dist = math.sqrt((dx * self.resolution) ** 2 + (dy * self.resolution) ** 2 + (dz * self.resolution) ** 2)
-            if dist <= self.inflation_radius or dist > buffer_radius_m:
-                continue
-            penalty = float(2.5 * ((buffer_radius_m - dist) / max(buffer_radius_m - self.inflation_radius, 0.05)) ** 2)
-            ix = occ[:, 0] + dx
-            iy = occ[:, 1] + dy
-            iz = occ[:, 2] + dz
-            valid = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny) & (iz >= 0) & (iz < nz)
-            np.maximum.at(cost, (ix[valid], iy[valid], iz[valid]), penalty)
+        self._apply_soft_clearance_voxels(cost, occ, buffer_radius_m)
         self._soft_cost_cache[key] = cost
         return cost
 
