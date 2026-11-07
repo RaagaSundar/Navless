@@ -48,9 +48,10 @@ except Exception:                       # noqa: BLE001 - optional; the page says
 IN = 0.0254
 HALF = 3.048
 LAUNCH = (-2.5146, 0.9144)
-# base_link -> camera mount when the drone's static TF never arrives: the hardware checklist's
-# typical mount (CAMERA_X 0.10, Z -0.02, PITCH +0.35 rad = ~20 deg nose-down), not a measured one.
-DEFAULT_CAM = ((0.10, 0.0, -0.02), (0.0, 0.17408, 0.0, 0.98473))
+# base_link -> camera mount when the drone's static TF never arrives: the mount measured on a
+# sister airframe (hardware_slam/README: 0.1053, 0, 0.0304 m FLU, no rotation). skybeta-11's own
+# drone.env value arrives through the relay's static TF and wins.
+DEFAULT_CAM = ((0.1053, 0.0, 0.0304), (0.0, 0.0, 0.0, 1.0))
 # The mount TF (oak_parent_frame) is the camera body; cuVSLAM's view is the left eye, half the
 # 7.5 cm baseline to the left (the stack's TF: base_link -> left optical = mount + (0, 0.038, 0)).
 LEFT_EYE = (0.0, 0.0375, 0.0)
@@ -261,6 +262,8 @@ canvas{width:100%;height:auto;display:block;border-radius:6px;background:#000}
 .node{font-size:22px;font-weight:700;letter-spacing:.02em;margin:2px 0 10px}
 dl{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;margin:0;font-variant-numeric:tabular-nums}dt{color:var(--muted)}dd{margin:0}
 .key{display:flex;gap:12px;font-size:12px;color:var(--muted);margin-top:6px}.key b{display:inline-block;width:18px;height:3px;vertical-align:middle;margin-right:4px}
+.pre{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:6px 16px}.pre div{display:flex;gap:8px;align-items:baseline}
+.pre b{width:16px;flex:none;text-align:center}.pre span{color:var(--muted);font-size:12px}
 </style></head><body>
 <header><h1>Navless live</h1><span id="run" class="pill">sim run: off</span><span id="drone" class="pill">drone: off</span>
 <span id="vio" class="pill">VIO ?</span><span id="arm" class="pill">disarmed</span>
@@ -274,6 +277,7 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;margin:0;font-varian
 <div class="key"><span><b style="background:var(--sim)"></b>simulated ToF beam</span><span><b style="background:var(--real)"></b>real ToF beam</span><span><b style="background:#3ecf8e"></b>trail / setpoint</span></div></section>
 <section class="card"><h2>Mission &amp; sensors</h2><div class="node" id="node">-</div>
 <div class="tof" id="tof"></div><dl id="info"></dl></section>
+<section class="card" style="grid-column:1/-1"><h2>Pre-flight checks (real drone)</h2><div id="pre" class="pre"></div></section>
 </main>
 <script>
 const cv=document.getElementById('map'),g=cv.getContext('2d');let C=null,trail=[],pose_src=null;
@@ -318,8 +322,43 @@ document.getElementById('info').innerHTML=`<dt>pose from</dt><dd>${s.pose_src||'
 <dt>heading</dt><dd>${s.world?(90-s.yaw_enu*57.2958).toFixed(0)+'° from north':'—'}</dd><dt>speed</dt><dd>${s.speed==null?'—':s.speed.toFixed(2)+' m/s'}</dd>
 <dt>setpoint</dt><dd>${f(s.setpoint)}</dd><dt>sim ToF</dt><dd>${s.tof_sim_note}</dd><dt>real ToF</dt><dd>${s.tof_real_note}</dd>
 <dt>placed by</dt><dd>${s.placement}</dd><dt>camera mount</dt><dd>${s.cam_source}</dd><dt>sim camera</dt><dd>${s.camera_hz.toFixed(0)} Hz</dd>`;
+document.getElementById('pre').innerHTML=(s.preflight||[]).map(([n,ok,d])=>`<div><b style="color:${ok===true?'var(--ok)':ok===false?'var(--bad)':'var(--warn)'}">${ok===true?'✓':ok===false?'✗':'?'}</b><div>${n}<br><span>${d}</span></div></div>`).join('');
 draw(s);}catch(e){pill('run','dashboard offline','var(--bad)');}setTimeout(poll,150);}poll();
 </script></body></html>"""
+
+
+def preflight_checks(fd, real_cam):
+    """Pre-flight checklist from the real drone's latest frame: (name, ok, detail) with ok None
+    for 'not known yet'. ok False on anything that should stop an arming."""
+    if fd is None:
+        return [("drone relay", False, "no fresh frame from the drone (relay not running / no network)")]
+    out = [("drone relay", True, f"frame {fd.get('age', 0) or 0:.2f} s old")]
+    vo = fd.get("vo_state")
+    out.append(("VIO tracking", vo == 1, {1: "tracking", 2: "LOST", 0: "unknown"}.get(vo, "no status")))
+    out.append(("PX4 link", fd.get("px4_link") is True, "flight_interface sees PX4" if fd.get("px4_link")
+                else "flight_interface has no PX4 data (FC powered? agent up?)"))
+    out.append(("disarmed, on the ground", (not fd.get("armed")) and fd.get("landed") is True,
+                f"armed={fd.get('armed')} landed={fd.get('landed')}"))
+    le, p = fd.get("local_enu"), fd.get("p")
+    if le is None or p is None:
+        out.append(("PX4 height = VIO height", None, "no PX4 local position yet"))
+    else:
+        dz = le[2] - p[2]
+        out.append(("PX4 height = VIO height", abs(dz) < 0.05,
+                    f"PX4 z - VIO z = {dz:+.3f} m (must be within 5 cm; if not, restart the stack on the ground)"))
+        dxy = math.hypot(le[0] - p[0], le[1] - p[1])
+        out.append(("PX4 x/y = VIO x/y", dxy < 0.15 if dxy < 1.0 else False, f"{dxy:.3f} m apart"))
+    tof = fd.get("tof")
+    for side in ("left", "right"):
+        r = None if tof is None else tof.get(side)
+        out.append((f"ToF {side}", None if tof is None else (r is not None and 0.04 < r < 1.3),
+                    "no /tube ranges (driver not running or sensor not answering)" if tof is None
+                    else ("no return" if r is None else f"{r * 100:.1f} cm")))
+    out.append(("camera mount TF", fd.get("cam") is not None,
+                "from the drone" if fd.get("cam") else "not received (dashboard uses a fallback mount)"))
+    out.append(("camera thumbnails", True if real_cam else None,
+                "streaming" if real_cam else "off (relay img_hz 0) or not yet received"))
+    return out
 
 
 def host_port(text, default_port):
@@ -408,7 +447,8 @@ def main():
               "vo_state": None, "armed": False, "offboard": False, "cam_source": "waiting", "real_cam": False,
               "tof_sim": None, "tof_real": None,
               "tof_sim_note": "course model raycast" if side_ranges_q else "dh/tof.py not available yet",
-              "tof_real_note": "waiting", "placement": "power-up pose (launch mark, nose north)"}
+              "tof_real_note": "waiting", "placement": "power-up pose (launch mark, nose north)",
+              "preflight": []}
     status_lock = threading.Lock()
     cmap = json.dumps(course_map(a.route))
 
@@ -534,7 +574,9 @@ def main():
                               setpoint=None if sp is None else [round(v, 3) for v in sp],
                               vo_state=f.get("vo_state"), armed=f.get("armed"), offboard=f.get("offboard"),
                               tof_sim=tof_sim,
-                              cam_source="drone's static TF" if cam else "typical mount (not measured)")
+                              cam_source="drone's static TF" if cam else "sister airframe's measured mount")
+        with status_lock:
+            status["preflight"] = preflight_checks(fd, status["real_cam"])
         time.sleep(1 / 30)
 
 
