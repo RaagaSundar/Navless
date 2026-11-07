@@ -93,7 +93,7 @@ echo "== live state (drone on the launch mark)"
 vo=$(ctr "timeout 5 ros2 topic echo --once /visual_slam/status --field vo_state" | head -1)
 [[ "$vo" == 1 ]] && pass "cuVSLAM tracking (vo_state 1)" \
   || fail "cuVSLAM vo_state is '${vo:-no message}'" "check the camera and the slam window; don't arm without tracking"
-hz=$(ctr "timeout 6 ros2 topic hz /visual_slam/tracking/odometry" | sed -n 's/average rate: //p' | tail -1)
+hz=$(ctr "timeout 12 ros2 topic hz /visual_slam/tracking/odometry" | sed -n 's/average rate: //p' | tail -1)
 awk -v h="${hz:-0}" 'BEGIN { exit !(h >= 20) }' && pass "odometry at ${hz} Hz" \
   || fail "odometry at '${hz:-0}' Hz (want ~30)" "check cuVSLAM and CPU load"
 state=$(ctr "timeout 4 ros2 topic echo --once /skybeta/state --field data" | head -1)
