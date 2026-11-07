@@ -154,6 +154,23 @@ The ICP only moves along directions the visible surfaces actually pin down. A vi
 
 Self-test options: `trials=`, `range=`, `perturb=` (0.4 is about frame-to-frame tracking; 1.0 is a rough manual reset), `points=`, `clutter=` (unmodelled points as a fraction of model points; 1.0 is about a crowded room), and `icp.kernel=`, `icp.c=`, `icp.schedule=` for experiments.
 
+## Walk test: does it know where it is on the real course? (`walk_test.py`)
+
+**Only if walking the drone through the course is allowed. Props OFF.** You set the drone down on spots whose positions are known (the launch mark, the six corners of the taped floor line, the tube's mouths and middle, the landing pad centre), nose along the direction of travel, and press Enter. The script takes the median of the localizer's last 2 s of `/team/localize/base_pose` there and compares it with the true spot. It does the same for **cuVSLAM odometry alone**, anchored on the launch mark, so the result shows whether matching against the course model beats plain odometry drift. `python3 walk_test.py --list` prints the checkpoints.
+
+1. Put the drone on the launch mark, nose north. Restart the stack (it re-zeroes odometry) and keep the drone still.
+2. Start `stereo_cloud.py` (3 Hz) and `cloud_localize.py` as above, in their own `docker exec -d` shells.
+3. Start the walk test in an interactive shell, still on the mark:
+   ```bash
+   docker exec -it skybeta-stack bash -lc "source skybeta_env.sh; python3 /root/team_ws/src/dronehacks/walk_test.py --course /root/team_ws/src/Navless/gazebo_sim/course/course_v3.json"
+   ```
+4. Press Enter for checkpoint 0 (the launch mark) straight away. That also anchors the odometry-only comparison.
+5. Carry the drone at a steady walk, roughly along the route, facing the direction of travel, and put it down on each checkpoint. Wait 3 s, press Enter. `s` skips a checkpoint, `b` goes back one, `q` finishes. A live line every 2 s shows the status, fit, current estimate and distance to the next checkpoint. Watch `http://<drone>:8082/` too.
+
+It writes `results.json`, `track.csv` and `plan.svg` (top view: walls, checkpoints, localizer track in blue, odometry-only in grey) to `~/team_ws/walk_tests/<time>/` on the drone. The summary prints both errors per checkpoint, plus how much of the walk was `tracking` / `weak` / `odometry` / `lost`. Placing by hand is only good to about ±3 cm, so anything under about 5 cm is as good as this test can show. `checked = NO` means the pose there came from odometry only, not a course match (expected in the dark tube).
+
+`python3 walk_test.py --selftest` runs a synthetic walk with no ROS, to check the maths and the output files.
+
 ## Stand-in course .obj for testing
 
 `scene_to_obj.js` turns tape measurements into an .obj, so localization can be tested before we have the real course. `test_room.json` is our 30 x 34 x 9 ft hackathon room with its 12 tables: 4 rows, each made of two tables joined end to end, an aisle, then one table, all running along the 30 ft wall. Positions are **scaled from a sketch** until someone measures them.
