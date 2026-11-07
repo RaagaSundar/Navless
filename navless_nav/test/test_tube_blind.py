@@ -95,13 +95,6 @@ def test_blind_carry_keeps_moving_through_the_tube_then_stops():
     assert lose_vio(node, px4, pos, 1.0) == 0.0 and node.carrot.point == q
 
 
-def test_blind_carry_can_go_faster_through_the_tube():
-    node, px4, pos = fly_to_tube(blind_carry=True, blind_carry_speed_mps=1.0,
-                                 blind_carry_lead_m=1.2)
-    moved = lose_vio(node, px4, pos, 1.0)
-    assert 0.85 < moved <= 1.0 + 1e-9                  # vs ~0.5 m at the route's speed
-
-
 def last_pose(node):
     poses = [m for topic, m in h.SENT if topic == cm.POSE_TOPIC]
     m = poses[-1]

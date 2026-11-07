@@ -172,13 +172,6 @@ PARAMETERS = (
     ('blind_carry', False),
     ('blind_carry_max_s', 4.0),
     ('blind_zone_margin_m', 0.4),
-    # While carrying blind: carrot speed and lead, 0 = the route's own
-    # (cruise_speed_mps with bend limits, max_lead_m). PX4's dead reckoning
-    # degrades fast (SITL: 0.07 m off after 1 s, 0.41 m after 2 s), so a
-    # quicker transit of the straight tube can matter; PX4 flies about
-    # MPC_XY_P x lead, i.e. ~1.1 m/s at a 1.2 m lead with stock gains.
-    ('blind_carry_speed_mps', 0.0),
-    ('blind_carry_lead_m', 0.0),
 )
 
 
@@ -230,8 +223,6 @@ class CourseMission(Node):
                                ).lower() in ('true', '1')
         self.blind_max_s = param('blind_carry_max_s')
         self.blind_margin = param('blind_zone_margin_m')
-        self.blind_speed = param('blind_carry_speed_mps')
-        self.blind_lead = param('blind_carry_lead_m')
         self.blind_since = None     # start of the current VIO loss in ROUTE
         self.blind_carrying = False
         self.loss_point = None      # odom position when that loss began
@@ -588,7 +579,9 @@ class CourseMission(Node):
                 self.loss_point = self.position     # where VIO was lost
             px4 = self.blind_carry_position(now)
             if px4 is not None:
-                point = self.blind_step(px4, dt)
+                # at the route's own speed: a faster carry (1.0 m/s, 1.2 m
+                # lead) drifted 49 cm and touched the tube in Gazebo
+                point = self.carrot.step(px4, dt)
             elif self.odom_still_arriving():
                 # cuVSLAM reports lost but keeps publishing: its pose may be
                 # frozen, and PX4 fusing it. Against a pinned estimate a
@@ -664,19 +657,6 @@ class CourseMission(Node):
         not count): cuVSLAM may be repeating a frozen pose."""
         return (self.blind_since is not None and self.odom_at is not None
                 and self.odom_at > self.blind_since + 0.1)
-
-    def blind_step(self, px4, dt):
-        """Carrot step while carrying blind, paced by PX4's own position.
-        With blind_carry_speed_mps / blind_carry_lead_m at 0 this is exactly
-        Carrot.step(px4, dt)."""
-        if not (self.blind_speed > 0.0 or self.blind_lead > 0.0):
-            return self.carrot.step(px4, dt)
-        lead = self.blind_lead if self.blind_lead > 0.0 else self.max_lead
-        if math.dist(px4, self.carrot.point) > lead:
-            return self.carrot.point
-        speed = (self.blind_speed if self.blind_speed > 0.0
-                 else self.carrot.speed_here())
-        return self.carrot.advance(speed * max(0.0, dt))
 
     def set_carrying(self, carrying, why):
         if carrying == self.blind_carrying:
