@@ -3,7 +3,7 @@
   "local_window_size_m": [6.0, 6.0, 2.0],
   "global_map_bounds_min_m": [-3.1, -3.1, 0.0],
   "global_map_bounds_max_m": [3.1, 3.1, 2.6],
-  "obstacle_inflation_m": 0.30,
+  "obstacle_inflation_m": 0.28,
   "acceptance_radius_m": 0.4,
   "window_inspect_distance_m": 1.0,
   "window_confidence_threshold": 0.8,
@@ -11,7 +11,7 @@
   "replan_period_s": 1.0,
   "tracker_rate_hz": 30.0,
   "fast_mode": false,
-  "fast_mode_multiplier": 1.3,
+  "fast_mode_multiplier": 2.25,
   "enable_fly_home": true,
   "checkpoints": {
     "start_pad": [-2.515, 0.914, 0.85],

@@ -121,6 +121,7 @@ class OccupancyGrid3D:
         self.detected_concentric_pad: Optional[ConcentricPadTarget] = None
         self.detected_launch_mark_xy: Optional[Tuple[float, float]] = None
         self._soft_cost_cache: Dict[float, np.ndarray] = {}
+        self._features_cache: Dict[Tuple[float, float], DetectedCourseFeatures] = {}
 
         # If this grid covers the 20x20 ft course arena, permanently bake in the perimeter net border
         # because the thin mesh net at x,y = ±3.048 m is invisible to the OAK-D stereo depth sensor.
@@ -135,7 +136,7 @@ class OccupancyGrid3D:
     def add_arena_net_border(
         self,
         arena_half_extent_m: float = 3.048,
-        net_inward_pad_m: float = 0.06,
+        net_inward_pad_m: float = 0.02,
     ) -> None:
         """Permanently mark the outer perimeter net (x, y = ±3.048 m) as solid walls in the grid.
 
@@ -210,6 +211,7 @@ class OccupancyGrid3D:
             self.inflated_grid[ix[valid], iy[valid], iz[valid]] = True
 
         # Incrementally update cached soft clearance cost fields for small live depth batches
+        self._features_cache.clear()
         if self._soft_cost_cache:
             if voxel_indices.shape[0] <= 600:
                 for buf_r, cost_arr in self._soft_cost_cache.items():
@@ -220,6 +222,7 @@ class OccupancyGrid3D:
     def rebuild_inflation(self) -> None:
         """Recompute inflated_grid from scratch using raw_grid."""
         self._soft_cost_cache.clear()
+        self._features_cache.clear()
         self.inflated_grid.fill(False)
         occ = np.argwhere(self.raw_grid)
         self._inflate_voxels(occ)
@@ -345,17 +348,23 @@ class OccupancyGrid3D:
         """
         vertices: List[Tuple[float, float, float]] = []
         faces: List[Tuple[int, int, int]] = []
+        net_faces: List[bool] = []
+        current_group = ""
         for raw_line in Path(path).read_text(encoding="utf-8", errors="ignore").splitlines():
             line = raw_line.strip()
-            if line.startswith("v "):
+            if line.startswith("g "):
+                current_group = line[2:].strip()
+            elif line.startswith("v "):
                 parts = line.split()
                 if len(parts) >= 4:
                     vertices.append((float(parts[1]), float(parts[2]), float(parts[3])))
             elif line.startswith("f "):
                 parts = line.split()[1:]
                 idxs = [int(p.split("/")[0]) - 1 for p in parts if p]
+                is_net = current_group.startswith("Net ")
                 for i in range(1, len(idxs) - 1):
                     faces.append((idxs[0], idxs[i], idxs[i + 1]))
+                    net_faces.append(is_net)
 
         if not vertices:
             return 0
@@ -366,11 +375,24 @@ class OccupancyGrid3D:
         if np.any(floor_mask):
             self.detect_concentric_pad_from_floor_points(v_arr[floor_mask])
 
-        valid_v = (v_arr[:, 2] > min_obstacle_z_m) & (v_arr[:, 2] < max_obstacle_z_m)
+        used_v_mask = np.ones(len(v_arr), dtype=bool)
+        f_arr = np.asarray(faces, dtype=np.int32) if faces else None
+        if f_arr is not None:
+            used_v_mask[:] = False
+            used_v_mask[np.clip(f_arr.ravel(), 0, len(v_arr) - 1)] = True
+            net_f_mask = np.asarray(net_faces, dtype=bool)
+            if np.any(net_f_mask):
+                net_v_idxs = np.unique(np.clip(f_arr[net_f_mask].ravel(), 0, len(v_arr) - 1))
+                for vi in net_v_idxs:
+                    if abs(v_arr[vi, 0]) > 2.95:
+                        v_arr[vi, 0] = math.copysign(3.048, v_arr[vi, 0])
+                    if abs(v_arr[vi, 1]) > 2.95:
+                        v_arr[vi, 1] = math.copysign(3.048, v_arr[vi, 1])
+
+        valid_v = used_v_mask & (v_arr[:, 2] > min_obstacle_z_m) & (v_arr[:, 2] < max_obstacle_z_m)
         sampled_batches: List[np.ndarray] = [v_arr[valid_v]]
 
-        if faces:
-            f_arr = np.asarray(faces, dtype=np.int32)
+        if f_arr is not None:
             v0 = v_arr[f_arr[:, 0]]
             v1 = v_arr[f_arr[:, 1]]
             v2 = v_arr[f_arr[:, 2]]
@@ -827,6 +849,9 @@ class OccupancyGrid3D:
         cruise_z_m: float = 0.85,
     ) -> DetectedCourseFeatures:
         """Automatically discover Tunnel entrance/exit and Window aperture from the 3D voxel map."""
+        cache_key = (round(float(standoff_distance_m), 4), round(float(cruise_z_m), 4))
+        if cache_key in self._features_cache:
+            return self._features_cache[cache_key]
         # 1. Detect tunnel from overhead arch structure (1.74m <= z <= 1.95m) with clear interior
         iz_arch_0 = max(0, int(math.floor((1.74 - self.bounds_min[2]) / self.resolution)))
         iz_arch_1 = min(self.shape[2] - 1, int(math.ceil((1.95 - self.bounds_min[2]) / self.resolution)))
@@ -842,9 +867,12 @@ class OccupancyGrid3D:
                 self.bounds_min[:2][None, :]
                 + (tunnel_cols.astype(np.float64) + 0.5) * self.resolution
             )
-            tun_x = float(0.5 * (np.min(xy_tun[:, 0]) + np.max(xy_tun[:, 0])))
-            tun_y_max = float(np.max(xy_tun[:, 1]))
-            tun_y_min = float(np.min(xy_tun[:, 1]))
+            tun_x = float(np.median(xy_tun[:, 0]))
+            in_tun_x = np.abs(xy_tun[:, 0] - tun_x) <= 0.45
+            xy_tun_core = xy_tun[in_tun_x] if np.any(in_tun_x) else xy_tun
+            tun_x = float(0.5 * (np.min(xy_tun_core[:, 0]) + np.max(xy_tun_core[:, 0])))
+            tun_y_max = float(np.max(xy_tun_core[:, 1]))
+            tun_y_min = float(np.min(xy_tun_core[:, 1]))
             tunnel_entry = (tun_x, tun_y_max + 0.35, cruise_z_m)
             tunnel_mid = (tun_x, 0.5 * (tun_y_max + tun_y_min), cruise_z_m)
             tunnel_exit = (tun_x, tun_y_min - 0.40, cruise_z_m)
@@ -866,7 +894,7 @@ class OccupancyGrid3D:
             win_approach = None
             win_exit = None
 
-        return DetectedCourseFeatures(
+        res = DetectedCourseFeatures(
             tunnel_entry_m=tunnel_entry,
             tunnel_mid_m=tunnel_mid,
             tunnel_exit_m=tunnel_exit,
@@ -877,6 +905,8 @@ class OccupancyGrid3D:
             concentric_pad=self.detected_concentric_pad,
             launch_mark_xy_m=self.detected_launch_mark_xy,
         )
+        self._features_cache[cache_key] = res
+        return res
 
     def detect_concentric_pad_from_floor_points(
         self,

@@ -43,8 +43,12 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--no-fly-home", action="store_true")
     ap.add_argument("--max-s", type=float, default=240.0)
-    ap.add_argument("--prior", type=Path, default=ROOT / "gazebo_sim/models/dh_course/meshes/course_visual.obj")
-    ap.add_argument("--planner", choices=("nmpc", "ego"), default=None, help="short-term planner (default: config)")
+    default_prior = (
+        ROOT / "dronehacks-course-asbuilt.obj"
+        if (ROOT / "dronehacks-course-asbuilt.obj").exists()
+        else ROOT / "gazebo_sim/models/dh_course/meshes/course_visual.obj"
+    )
+    ap.add_argument("--prior", type=Path, default=default_prior)
     ap.add_argument("--speed", type=float, default=None, help="maze/chicane cruise speed override, as px4_bridge_node --speed")
     ap.add_argument("--kp-pos", type=float, default=0.95, help="PX4 position gain MPC_XY_P (the old stand-in used 3.4)")
     ap.add_argument("--fast-mode", action="store_true", help="as px4_bridge_node --fast-mode")
@@ -58,8 +62,6 @@ def main() -> int:
         cfg.maze_profile = replace(cfg.maze_profile, v_max=a.speed)
         cfg.tunnel_profile = replace(cfg.tunnel_profile, v_max=min(a.speed, cfg.tunnel_profile.v_max))
         cfg.chicane_profile = replace(cfg.chicane_profile, v_max=a.speed)
-    if a.planner:
-        cfg.short_term_planner = a.planner
     grid = OccupancyGrid3D(bounds_min_m=cfg.global_map_bounds_min_m, bounds_max_m=cfg.global_map_bounds_max_m,
                            resolution_m=cfg.voxel_resolution_m, inflation_radius_m=cfg.obstacle_inflation_m,
                            local_window_m=cfg.local_window_size_m)

@@ -66,7 +66,7 @@ class SafetyConfig:
     fly_home_z_min_m: float = 1.85
     fly_home_z_max_m: float = 2.30
     arena_half_extent_xy_m: float = 3.048  # 20x20 ft perimeter net cage (±3.048 m)
-    net_keepout_margin_m: float = 0.39     # Hard keep-out margin from invisible perimeter net (|x|,|y| <= 2.658 m)
+    net_keepout_margin_m: float = 0.25     # Hard keep-out margin from perimeter net (|x|,|y| <= 2.798 m for as-built M1/M3 north crossings)
 
 
 @dataclass
@@ -78,7 +78,7 @@ class PlannerConfig:
     local_window_size_m: Tuple[float, float, float] = (6.0, 6.0, 2.0)
     global_map_bounds_min_m: Tuple[float, float, float] = (-3.1, -3.1, 0.0)
     global_map_bounds_max_m: Tuple[float, float, float] = (3.1, 3.1, 2.6)
-    obstacle_inflation_m: float = 0.30  # >= 0.30 m horizontal inflation for 0.475 m airframe + localization margin
+    obstacle_inflation_m: float = 0.28  # 0.28 m horizontal inflation (leaves 0.585 m as-built north passages open at y=2.75 m)
 
     # Goal sequencer & replanning settings (Step 2 & Goal 3)
     acceptance_radius_m: float = 0.40
@@ -87,7 +87,6 @@ class PlannerConfig:
     max_window_plan_time_ms: float = 100.0
     replan_period_s: float = 1.00  # Re-check route every 1.0 second
     tracker_rate_hz: float = 30.0  # 30-50 Hz PX4 TrajectorySetpoint streaming
-    short_term_planner: str = "ego"  # "ego" (EGO B-spline default) or "nmpc" (Receding-Horizon 3D MPCC/NMPC)
     fast_mode: bool = False
     fast_mode_multiplier: float = 2.25
     enable_fly_home: bool = True
@@ -141,9 +140,8 @@ class PlannerConfig:
             max_window_plan_time_ms=raw.get("max_window_plan_time_ms", 100.0),
             replan_period_s=raw.get("replan_period_s", 1.00),
             tracker_rate_hz=raw.get("tracker_rate_hz", 30.0),
-            short_term_planner=str(raw.get("short_term_planner", "nmpc")),
             fast_mode=raw.get("fast_mode", False),
-            fast_mode_multiplier=raw.get("fast_mode_multiplier", 1.30),
+            fast_mode_multiplier=raw.get("fast_mode_multiplier", 2.25),
             enable_fly_home=raw.get("enable_fly_home", True),
             checkpoints=cp,
             safety=safety,

@@ -1,14 +1,18 @@
-"""Interactive 3D WebGL + Live Physics/VIO/OAK-D Depth Simulation Viewer for DroneHacks 2026.
+"""Interactive 3D WebGL + PX4-Autopilot Mission & Live OAK-D Depth Simulation Viewer for DroneHacks 2026.
 
 Serves an interactive 3D Three.js visualizer on http://localhost:8090 that:
-- Renders the actual `dronehacks-course-v3.obj` 3D arena (walls, dark tunnel, window cutout,
-  boulders, launch mark, and landing pad).
-- Runs our real `GlobalCourseRouter` + `PX4TrajectoryTrackerCore` + `QuadrotorPhysicsAndVIOSim`
-  + `RaycastOakDDepthCamera` in real time or pre-recorded telemetry steps, streaming:
-  - True 3D physical drone pose & velocity (with 2nd-order PD control, drag, lag, and wind)
+- Renders the actual `Navless/dronehacks-course-asbuilt.obj` 3D arena (phone-LiDAR measured walls
+  M1, M2, M3, A1, C1 confirmed in the net room, plus dark tunnel, window cutout, boulders, launch mark,
+  and concentric landing pad).
+- Runs our real `GlobalCourseRouter` + `PX4TrajectoryTrackerCore.step_px4_mission` + `QuadrotorPhysicsAndVIOSim`
+  (with PX4 `MPC_XY_P = 0.95` position loop gain, Offboard setpoint priming, `VEHICLE_CMD_DO_SET_MODE`,
+  `VEHICLE_CMD_COMPONENT_ARM_DISARM`, `ALIGN` centering, and `VEHICLE_CMD_NAV_LAND` auto-disarm)
+  + `RaycastOakDDepthCamera`, streaming:
+  - True 3D physical drone pose & velocity (with PX4 `MPC_XY_P = 0.95`, 2nd-order PD, drag, lag, and wind)
   - Drifted/noisy VIO estimated pose (shown as a translucent ghost frame)
+  - Live minimum wall clearance (`min_clearance_cm`) against the as-built course mesh
   - Live OAK-D `16UC1` depth camera ray hits & newly discovered obstacle voxels
-  - Active EGO B-spline trajectory & mid-flight collision-avoidance replans
+  - Active EGO B-spline (default) or 12-step 3D NMPC trajectory & mid-flight replans
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ import json
 import math
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
 import numpy as np
@@ -28,7 +32,11 @@ from planner.fsm_router import CourseStage, GlobalCourseRouter
 from planner.grid_map import OccupancyGrid3D
 from planner.px4_bridge_node import (
     ARMING_STATE_ARMED,
+    NAVIGATION_STATE_AUTO_LAND,
     NAVIGATION_STATE_OFFBOARD,
+    VEHICLE_CMD_COMPONENT_ARM_DISARM,
+    VEHICLE_CMD_DO_SET_MODE,
+    VEHICLE_CMD_NAV_LAND,
     PX4TrajectoryTrackerCore,
 )
 from tests.test_ros2_gazebo_sim import QuadrotorPhysicsAndVIOSim, RaycastOakDDepthCamera
@@ -36,17 +44,25 @@ from tests.test_ros2_gazebo_sim import QuadrotorPhysicsAndVIOSim, RaycastOakDDep
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OBJ_PATH = (
-    REPO_ROOT / "dronehacks-course-v3.obj"
-    if (REPO_ROOT / "dronehacks-course-v3.obj").exists()
-    else REPO_ROOT.parent / "dronehacks-course-v3.obj"
+    REPO_ROOT / "dronehacks-course-asbuilt.obj"
+    if (REPO_ROOT / "dronehacks-course-asbuilt.obj").exists()
+    else (
+        REPO_ROOT / "dronehacks-course-v3.obj"
+        if (REPO_ROOT / "dronehacks-course-v3.obj").exists()
+        else REPO_ROOT.parent / "dronehacks-course-v3.obj"
+    )
 )
 
+DISARMED, POSCTL = 1, 2
+SPAWN_ENU = (-2.515, 1.114, 0.067)  # FlyX lab spawn (body origin standing on the floor)
+CONTACT_M = 0.20  # body centre closer than this to raw occupied voxels counts as contact (7" props)
 
 _BASE_GRID: OccupancyGrid3D | None = None
+_BASE_OCC_M: np.ndarray | None = None
 
 
 def _get_base_grid(cfg: PlannerConfig) -> OccupancyGrid3D:
-    global _BASE_GRID
+    global _BASE_GRID, _BASE_OCC_M
     if _BASE_GRID is None:
         g = OccupancyGrid3D(
             bounds_min_m=cfg.global_map_bounds_min_m,
@@ -57,6 +73,8 @@ def _get_base_grid(cfg: PlannerConfig) -> OccupancyGrid3D:
         g.load_prior_from_obj(OBJ_PATH)
         g.build_soft_clearance_cost()
         g.build_soft_clearance_cost(0.55)
+        occ = np.argwhere(g.raw_grid)
+        _BASE_OCC_M = (occ + 0.5) * g.resolution + g.bounds_min
         _BASE_GRID = g
     return _BASE_GRID
 
@@ -75,18 +93,19 @@ def _clone_grid(src: OccupancyGrid3D, cfg: PlannerConfig) -> OccupancyGrid3D:
     g.detected_concentric_pad = src.detected_concentric_pad
     g.detected_launch_mark_xy = src.detected_launch_mark_xy
     g._soft_cost_cache = {k: v.copy() for k, v in src._soft_cost_cache.items()}
+    g._features_cache = dict(src._features_cache)
     return g
 
 
 def run_simulation_episode(
     *,
     fast_mode: bool = True,
-    spawn_unmapped_boulder: bool = True,
+    spawn_unmapped_boulder: bool = False,
     block_window: bool = False,
-    planner_mode: str = "ego",
+    kp_pos: float = 0.95,
 ) -> Dict:
-    """Execute a complete closed-loop physics + noisy VIO + raycasted depth episode and return telemetry."""
-    cfg = PlannerConfig(fast_mode=fast_mode, short_term_planner=planner_mode)
+    """Execute a closed-loop PX4-Autopilot (`step_px4_mission`) + noisy VIO + OAK-D depth episode."""
+    cfg = PlannerConfig(fast_mode=fast_mode)
     base_grid = _get_base_grid(cfg)
     planner_grid = _clone_grid(base_grid, cfg)
     initial_raw = planner_grid.raw_grid.copy()
@@ -94,9 +113,9 @@ def run_simulation_episode(
 
     unmapped_boxes: List[Dict] = []
     if spawn_unmapped_boulder:
-        # Place an unmapped discrepancy boulder across the inside corner of the tunnel exit -> window turn
-        # so the initial preloaded spline hits it and dynamically replans a wider arc through the Window!
-        bmin, bmax = (1.35, -1.68, 0.0), (1.65, -1.38, 1.45)
+        # Place an unmapped discrepancy boulder between the tunnel exit and window approach on the as-built course
+        # (south-west of C1's south end at (1.52, -1.14)) so OAK-D depth discovers it and replans around it!
+        bmin, bmax = (0.85, -1.95, 0.0), (1.10, -1.70, 1.45)
         truth_grid.add_aabb_obstacle(bmin, bmax)
         unmapped_boxes.append({"min": list(bmin), "max": list(bmax), "label": "Unmapped Boulder (Map Discrepancy)"})
 
@@ -108,47 +127,47 @@ def run_simulation_episode(
             truth_grid.add_aabb_obstacle(wmin, wmax)
             unmapped_boxes.append({"min": list(wmin), "max": list(wmax), "label": "Blocked Window Panel (Map Discrepancy)"})
 
-    router = GlobalCourseRouter(cfg, planner_grid)
-    tracker = PX4TrajectoryTrackerCore(router, lookahead_s=0.35)
-    start_ground = (cfg.checkpoints.start_pad[0], cfg.checkpoints.start_pad[1], 0.05)
-    phys = QuadrotorPhysicsAndVIOSim(start_ground, tracker.launch_origin_enu, seed=42)
-    depth_cam = RaycastOakDDepthCamera(seed=101)
+    occ = np.argwhere(truth_grid.raw_grid)
+    occ_m = (occ + 0.5) * truth_grid.resolution + truth_grid.bounds_min
 
-    dt = 0.08
+    router = GlobalCourseRouter(cfg, planner_grid)
+    tracker = PX4TrajectoryTrackerCore(router, launch_origin_enu=SPAWN_ENU, prearm_settle_s=2.0)
+    phys = QuadrotorPhysicsAndVIOSim(SPAWN_ENU, SPAWN_ENU, seed=7)
+    phys.kp_pos = float(kp_pos)  # PX4 MPC_XY_P = 0.95 default
+    depth_cam = RaycastOakDDepthCamera(seed=101)
+    has_discrepancy = bool(spawn_unmapped_boulder or block_window)
+
+    dt = 1.0 / 30.0
+    max_steps = int(140.0 / dt)
     frames: List[Dict] = []
     active_spline_pts: List[List[float]] = []
+    depth_hits_world: List[List[float]] = []
 
-    # Physical Landing -> Disarm -> Re-arm sequence state at Primary Landing Pad & Final Start Pad
-    pad_sequence_state = "NONE"  # NONE -> LANDING_PAD_DESCEND -> LANDING_PAD_DISARMED -> DONE
-    pad_disarm_ticks = 0
-    pad_descend_z_sp = cfg.checkpoints.landing_pad[2]
-    home_sequence_state = "NONE"  # NONE -> HOME_PAD_DESCEND -> HOME_PAD_DISARMED -> DONE
-    home_disarm_ticks = 0
-    home_descend_z_sp = cfg.checkpoints.fly_home_altitude_m
+    armed = False
+    nav = POSCTL
+    landed_since: Optional[float] = None
+    last_sp_t = -1e9
+    stream_since: Optional[float] = None
+    sp = None
+    min_clear = 9.9
+    cur_clear = 9.9
 
-    for step_i in range(1350):
-        sim_t = round(step_i * dt, 3)
-        meas_pos_ned, meas_vel_ned, meas_yaw_ned = phys.observe_noisy_vio_ned(dt)
-        est_enu = ned_to_enu_pos(meas_pos_ned, origin_enu=tracker.launch_origin_enu)
-        est_yaw_enu = wrap_pi(0.5 * math.pi - meas_yaw_ned)
+    for step_i in range(max_steps):
+        t = round(step_i * dt, 3)
+        p_ned, v_ned, hdg = phys.observe_noisy_vio_ned(dt)
+        est_enu = ned_to_enu_pos(p_ned, origin_enu=tracker.launch_origin_enu)
+        est_yaw_enu = wrap_pi(0.5 * math.pi - hdg)
+        z = float(phys.true_pos_enu[2])
+        on_ground = z <= SPAWN_ENU[2] + 0.03 and float(np.linalg.norm(phys.true_vel_enu)) < 0.15
 
-        tracker.update_local_position(
-            sim_t,
-            float(meas_pos_ned[0]),
-            float(meas_pos_ned[1]),
-            float(meas_pos_ned[2]),
-            float(meas_vel_ned[0]),
-            float(meas_vel_ned[1]),
-            float(meas_vel_ned[2]),
-            float(meas_yaw_ned),
-            True,
-            True,
-        )
-        tracker.update_vehicle_status(sim_t, ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD)
+        tracker.update_local_position(t, *p_ned, *v_ned, hdg, True, True)
+        tracker.update_vehicle_status(t, ARMING_STATE_ARMED if armed else DISARMED, nav)
+        tracker.update_landed(t, on_ground)
         tracker.update_estimator_health(True)
 
-        depth_hits_world: List[List[float]] = []
-        if step_i % 3 == 0:
+        # Live OAK-D 16UC1 depth raycasting when testing unmapped obstacle or blocked window discrepancies
+        new_vox_discovered = False
+        if has_discrepancy and armed and z > 0.45 and step_i % 6 == 0:
             raw_bytes = depth_cam.render_16uc1_mm(truth_grid, phys.true_pos_enu, phys.true_yaw_enu)
             depth_m = (
                 np.frombuffer(raw_bytes, dtype=np.uint16)
@@ -156,7 +175,7 @@ def run_simulation_episode(
                 .astype(np.float32)
                 * 0.001
             )
-            planner_grid.update_from_depth_image(
+            added = planner_grid.update_from_depth_image(
                 depth_m,
                 depth_cam.fx,
                 depth_cam.fy,
@@ -165,186 +184,105 @@ def run_simulation_episode(
                 est_enu,
                 est_yaw_enu,
             )
-            diff_vox = np.argwhere(planner_grid.raw_grid & ~initial_raw)
-            if diff_vox.size > 0:
-                centers = planner_grid.bounds_min + (diff_vox.astype(np.float64) + 0.5) * planner_grid.resolution
-                depth_hits_world = np.round(centers[:: max(1, len(centers) // 120)], 3).tolist()
+            if added > 0:
+                diff_vox = np.argwhere(planner_grid.raw_grid & ~initial_raw)
+                if diff_vox.size > 0:
+                    centers = planner_grid.bounds_min + (diff_vox.astype(np.float64) + 0.5) * planner_grid.resolution
+                    depth_hits_world = np.round(centers[:: max(1, len(centers) // 120)], 3).tolist()
+                    new_vox_discovered = True
 
-        # Check if we just reached the Landing Pad hover point and need to Land -> Disarm -> Re-arm before Fly-Home
-        if (
-            pad_sequence_state == "NONE"
-            and router.stage in (CourseStage.STAGE_5_LANDING_PAD, CourseStage.STAGE_6_FLY_HOME)
-        ):
-            lp = np.asarray(cfg.checkpoints.landing_pad, dtype=np.float64)
-            if float(np.linalg.norm(est_enu[:2] - lp[:2])) <= 0.32:
-                pad_sequence_state = "LANDING_PAD_DESCEND"
-                pad_descend_z_sp = float(phys.true_pos_enu[2])
+        cmd = tracker.step_px4_mission(t)
+        if cmd.setpoint is not None:
+            sp = cmd.setpoint
+            if t - last_sp_t > 0.5:
+                stream_since = t
+            last_sp_t = t
 
-        px4_state = "ARMED (OFFBOARD)"
-        armed_flag = True
-        stage_label = router.stage.value
+        for c, p1, _p2 in cmd.commands:  # PX4 Offboard / Arm / NAV_LAND command handling
+            if c == VEHICLE_CMD_DO_SET_MODE and stream_since is not None and t - stream_since >= 0.5:
+                nav = NAVIGATION_STATE_OFFBOARD
+            elif c == VEHICLE_CMD_COMPONENT_ARM_DISARM:
+                armed = p1 > 0.5
+            elif c == VEHICLE_CMD_NAV_LAND and armed:
+                nav = NAVIGATION_STATE_AUTO_LAND
 
-        if pad_sequence_state == "LANDING_PAD_DESCEND":
-            # Controlled two-stage vertical descent onto the Landing Pad surface (z = 0.05 m):
-            # - Above z = 0.35 m: descend at 0.38 m/s
-            # - Below z = 0.35 m (Ground-effect flare): slow down to 0.18 m/s soft touchdown
-            vz_rate = 0.38 if phys.true_pos_enu[2] > 0.35 else 0.18
-            pad_descend_z_sp = max(0.05, pad_descend_z_sp - vz_rate * dt)
-            lp_carrot_enu = np.array([cfg.checkpoints.landing_pad[0], cfg.checkpoints.landing_pad[1], pad_descend_z_sp])
-            lp_carrot_ned = enu_to_ned_pos(lp_carrot_enu, origin_enu=tracker.launch_origin_enu)
-            phys.step_physics(dt, sim_t, lp_carrot_ned, (0.0, 0.0, vz_rate), meas_yaw_ned, vz_rate + 0.15)
-            sp_enu = lp_carrot_enu
-            stage_label = "STAGE_5_LANDING"
-            px4_state = "LANDING (FLARE)" if phys.true_pos_enu[2] <= 0.35 else "LANDING (NAV_LAND)"
-            reason = "descending_to_landing_pad_controlled_flare"
-            if phys.true_pos_enu[2] <= 0.065 and float(np.linalg.norm(phys.true_pos_enu[:2] - lp_carrot_enu[:2])) <= 0.15:
-                phys.true_pos_enu[2] = 0.05
-                phys.true_vel_enu[:] = 0.0
-                phys.true_acc_enu[:] = 0.0
-                pad_sequence_state = "LANDING_PAD_DISARMED"
-                pad_disarm_ticks = 0
+        if nav == NAVIGATION_STATE_OFFBOARD and t - last_sp_t > 0.5:  # Offboard loss failsafe
+            nav = NAVIGATION_STATE_AUTO_LAND
 
-        elif pad_sequence_state == "LANDING_PAD_DISARMED":
-            # Hold disarmed on the Landing Pad for ~1.1 s, then re-arm and trigger Stage 6 Fly-Home climb!
-            pad_disarm_ticks += 1
-            phys.true_pos_enu[2] = 0.05
+        if not armed:
             phys.true_vel_enu[:] = 0.0
-            phys.true_acc_enu[:] = 0.0
             sp_enu = phys.true_pos_enu.copy()
-            if pad_disarm_ticks <= 12:
-                armed_flag = False
-                stage_label = "STAGE_5_DISARMED_ON_PAD"
-                px4_state = "DISARMED (LANDING PAD)"
-                reason = "landed_and_disarmed_on_primary_pad"
+        elif nav == NAVIGATION_STATE_AUTO_LAND:
+            phys.step_physics(dt, t, (p_ned[0], p_ned[1], p_ned[2] + 0.5), (0.0, 0.0, 0.5), hdg, 0.6)
+            sp_enu = np.array([est_enu[0], est_enu[1], max(SPAWN_ENU[2], est_enu[2] - 0.5)], dtype=np.float64)
+            if on_ground:
+                landed_since = t if landed_since is None else landed_since
+                if t - landed_since > 1.0:
+                    armed, nav, landed_since = False, POSCTL, None
             else:
-                armed_flag = True
-                stage_label = "STAGE_5_REARM_TAKEOFF"
-                px4_state = "RE-ARMED (OFFBOARD)"
-                reason = "rearmed_on_landing_pad_for_fly_home"
-                if pad_disarm_ticks >= 16:
-                    pad_sequence_state = "DONE"
-                    router.stage = CourseStage.STAGE_6_FLY_HOME
-                    router.primary_landed = True
-                    router.step(sim_t, est_enu, force_replan=True)
-                    if router.active_spline is not None:
-                        active_spline_pts = np.round(router.active_spline.sample_points(30), 3).tolist()
-
-        elif home_sequence_state == "HOME_PAD_DESCEND":
-            # Controlled two-stage vertical descent onto the Start Pad surface (z = 0.05 m) after crossing the wall:
-            # - Above z = 0.35 m: descend at 0.45 m/s (avoiding Vortex Ring State propwash drop)
-            # - Below z = 0.35 m (Ground-effect flare): slow down to 0.18 m/s soft touchdown
-            vz_rate = 0.45 if phys.true_pos_enu[2] > 0.35 else 0.18
-            home_descend_z_sp = max(0.05, home_descend_z_sp - vz_rate * dt)
-            hp_carrot_enu = np.array([cfg.checkpoints.start_pad[0], cfg.checkpoints.start_pad[1], home_descend_z_sp])
-            hp_carrot_ned = enu_to_ned_pos(hp_carrot_enu, origin_enu=tracker.launch_origin_enu)
-            phys.step_physics(dt, sim_t, hp_carrot_ned, (0.0, 0.0, vz_rate), meas_yaw_ned, vz_rate + 0.15)
-            sp_enu = hp_carrot_enu
-            stage_label = "STAGE_6_LANDING_HOME"
-            px4_state = "LANDING (FLARE)" if phys.true_pos_enu[2] <= 0.35 else "LANDING (START PAD)"
-            reason = "descending_to_start_pad_controlled_flare"
-            if phys.true_pos_enu[2] <= 0.065 and float(np.linalg.norm(phys.true_pos_enu[:2] - hp_carrot_enu[:2])) <= 0.18:
-                phys.true_pos_enu[2] = 0.05
-                phys.true_vel_enu[:] = 0.0
-                phys.true_acc_enu[:] = 0.0
-                home_sequence_state = "HOME_PAD_DISARMED"
-                home_disarm_ticks = 0
-
-        elif home_sequence_state == "HOME_PAD_DISARMED":
-            home_disarm_ticks += 1
-            phys.true_pos_enu[2] = 0.05
-            phys.true_vel_enu[:] = 0.0
-            phys.true_acc_enu[:] = 0.0
-            sp_enu = phys.true_pos_enu.copy()
-            armed_flag = False
-            stage_label = "MISSION_COMPLETE"
-            px4_state = "DISARMED (START PAD)"
-            reason = "mission_complete_landed_and_disarmed"
-
+                landed_since = None
+        elif nav == NAVIGATION_STATE_OFFBOARD and sp is not None:
+            vel = tuple(0.0 if not math.isfinite(v) else v for v in sp.velocity_ned)
+            phys.step_physics(dt, t, tracker.to_px4_frame(sp.position_ned), vel, sp.yaw_ned, 1.2)
+            sp_enu = ned_to_enu_pos(sp.position_ned, origin_enu=tracker.launch_origin_enu)
         else:
-            # Pure online perception + 3D A* + EGO B-spline replanning:
-            # Do NOT pass any ground-truth external_window_confidence cheat — the planner starts
-            # with the preloaded course.obj prior and discovers both the Unmapped Boulder and any
-            # Blocked Window Panel purely through live raycasted OAK-D depth updates!
-            sample, reason = tracker.sample_setpoint(
-                sim_t,
-                external_window_confidence=None,
+            phys.step_physics(dt, t, tuple(p_ned), (0.0, 0.0, 0.0), hdg, 1.2)
+            sp_enu = est_enu.copy()
+
+        if phys.true_pos_enu[2] <= SPAWN_ENU[2] and phys.true_vel_enu[2] < 0.0:
+            phys.true_pos_enu[2] = SPAWN_ENU[2]
+            phys.true_vel_enu[:] = 0.0
+
+        if armed and z > 0.25:
+            cur_clear = float(np.min(np.linalg.norm(occ_m - phys.true_pos_enu, axis=1)))
+            if cur_clear < min_clear:
+                min_clear = cur_clear
+
+        if router.active_spline is not None and (step_i % 6 == 0 or not active_spline_pts):
+            active_spline_pts = np.round(router.active_spline.sample_points(110), 3).tolist()
+
+        if step_i % 2 == 0 or cmd.state in ("DONE", "ABORT"):
+            speed_mps = float(np.linalg.norm(phys.true_vel_enu))
+            vio_err_cm = float(np.linalg.norm(est_enu - phys.true_pos_enu) * 100.0)
+            nav_label = (
+                "OFFBOARD"
+                if nav == NAVIGATION_STATE_OFFBOARD
+                else ("AUTO_LAND" if nav == NAVIGATION_STATE_AUTO_LAND else "POSCTL")
             )
-            # If router just jumped to STAGE_6_FLY_HOME before our pad landing sequence ran, intercept it!
-            if pad_sequence_state == "NONE" and router.stage == CourseStage.STAGE_6_FLY_HOME:
-                pad_sequence_state = "LANDING_PAD_DESCEND"
-                pad_descend_z_sp = max(0.05, float(phys.true_pos_enu[2]) - 0.38 * dt)
-                lp_carrot_enu = np.array([cfg.checkpoints.landing_pad[0], cfg.checkpoints.landing_pad[1], pad_descend_z_sp])
-                lp_carrot_ned = enu_to_ned_pos(lp_carrot_enu, origin_enu=tracker.launch_origin_enu)
-                phys.step_physics(dt, sim_t, lp_carrot_ned, (0.0, 0.0, 0.38), meas_yaw_ned, 0.50)
-                sp_enu = lp_carrot_enu
-                stage_label = "STAGE_5_LANDING"
-                px4_state = "LANDING (NAV_LAND)"
-                reason = "descending_to_landing_pad_controlled_flare"
-            elif router.stage == CourseStage.MISSION_COMPLETE and home_sequence_state == "NONE":
-                home_sequence_state = "HOME_PAD_DESCEND"
-                home_descend_z_sp = max(0.05, float(phys.true_pos_enu[2]) - 0.45 * dt)
-                hp_carrot_enu = np.array([cfg.checkpoints.start_pad[0], cfg.checkpoints.start_pad[1], home_descend_z_sp])
-                hp_carrot_ned = enu_to_ned_pos(hp_carrot_enu, origin_enu=tracker.launch_origin_enu)
-                phys.step_physics(dt, sim_t, hp_carrot_ned, (0.0, 0.0, 0.45), meas_yaw_ned, 0.60)
-                sp_enu = hp_carrot_enu
-                stage_label = "STAGE_6_LANDING_HOME"
-                px4_state = "LANDING (START PAD)"
-                reason = "descending_to_start_pad_controlled_flare"
-            elif sample is not None:
-                if router.active_spline is not None:
-                    active_spline_pts = np.round(router.active_spline.sample_points(120), 3).tolist()
-                prof = router.profile_for_stage(router.stage)
-                phys.step_physics(
-                    dt,
-                    sim_t,
-                    sample.position_ned,
-                    sample.velocity_ned,
-                    sample.yaw_ned,
-                    prof.v_max,
-                )
-                sp_enu = ned_to_enu_pos(sample.position_ned, origin_enu=tracker.launch_origin_enu)
-                stage_label = router.stage.value
-            else:
-                sp_enu = phys.true_pos_enu
+            px4_state = f"{cmd.state} ({'ARMED ' + nav_label if armed else 'DISARMED'})"
 
-        speed_mps = float(np.linalg.norm(phys.true_vel_enu))
-        vio_err_cm = float(np.linalg.norm(est_enu - phys.true_pos_enu) * 100.0)
-        nmpc_pts = None
-        nmpc_ms = 0.0
-        if tracker.last_nmpc_rollout is not None and cfg.short_term_planner == "nmpc":
-            nmpc_pts = np.round(tracker.last_nmpc_rollout.positions_enu, 3).tolist()
-            nmpc_ms = round(float(tracker.last_nmpc_rollout.solve_time_ms), 2)
+            frames.append(
+                {
+                    "t": t,
+                    "stage": router.stage.value,
+                    "px4_state": px4_state,
+                    "armed": armed,
+                    "branch": router.selected_branch,
+                    "reason": cmd.reason,
+                    "true_enu": [round(float(x), 4) for x in phys.true_pos_enu],
+                    "true_yaw": round(float(phys.true_yaw_enu), 4),
+                    "vio_enu": [round(float(x), 4) for x in est_enu],
+                    "sp_enu": [round(float(x), 4) for x in sp_enu],
+                    "speed_mps": round(speed_mps, 3),
+                    "vio_err_cm": round(vio_err_cm, 2),
+                    "clearance_cm": round(float(cur_clear if cur_clear < 9.0 else min_clear) * 100.0, 1),
+                    "min_clearance_cm": round(float(min_clear if min_clear < 9.0 else 0.0) * 100.0, 1),
+                    "spline": active_spline_pts if (step_i % 6 == 0 or cmd.reason != "tracking_active_spline") else None,
+                    "discovered_voxels": depth_hits_world if new_vox_discovered else None,
+                }
+            )
 
-        frames.append(
-            {
-                "t": sim_t,
-                "stage": stage_label,
-                "px4_state": px4_state,
-                "armed": armed_flag,
-                "branch": router.selected_branch,
-                "reason": reason,
-                "true_enu": [round(float(x), 4) for x in phys.true_pos_enu],
-                "true_yaw": round(float(phys.true_yaw_enu), 4),
-                "vio_enu": [round(float(x), 4) for x in est_enu],
-                "sp_enu": [round(float(x), 4) for x in sp_enu],
-                "speed_mps": round(speed_mps, 3),
-                "vio_err_cm": round(vio_err_cm, 2),
-                "nmpc_ms": nmpc_ms,
-                "nmpc_horizon": nmpc_pts,
-                "spline": active_spline_pts if (step_i % 3 == 0 or reason != "tracking_active_spline") else None,
-                "discovered_voxels": depth_hits_world if depth_hits_world else None,
-            }
-        )
-
-        if home_sequence_state == "HOME_PAD_DISARMED" and home_disarm_ticks >= 10:
+        if cmd.state in ("DONE", "ABORT"):
             break
 
     return {
-        "planner_mode": planner_mode,
         "fast_mode": fast_mode,
+        "obj_file": OBJ_PATH.name,
         "spawn_unmapped_boulder": spawn_unmapped_boulder,
         "block_window": block_window,
         "total_time_s": frames[-1]["t"] if frames else 0.0,
+        "min_clearance_cm": round(float(min_clear if min_clear < 9.0 else 0.0) * 100.0, 1),
+        "pass_mission": bool(tracker.px4_state == "DONE" and min_clear >= CONTACT_M),
         "selected_branch": router.selected_branch,
         "unmapped_boxes": unmapped_boxes,
         "frames": frames,
@@ -355,18 +293,18 @@ HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>DroneHacks 2026 — Live 3D EGO-Planner + Physics + VIO/Depth Simulator</title>
+  <title>DroneHacks 2026 — EGO-Planner + PX4-Autopilot Sim (As-Built Course)</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #0b0f19; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; overflow: hidden; }
     #canvas-container { width: 100vw; height: 100vh; }
     #hud {
-      position: absolute; top: 16px; left: 16px; width: 360px;
-      background: rgba(15, 23, 42, 0.88); border: 1px solid #334155;
+      position: absolute; top: 16px; left: 16px; width: 380px;
+      background: rgba(15, 23, 42, 0.90); border: 1px solid #334155;
       border-radius: 12px; padding: 16px; backdrop-filter: blur(8px);
       box-shadow: 0 10px 25px rgba(0,0,0,0.5);
     }
-    h1 { font-size: 16px; font-weight: 700; color: #38bdf8; margin-bottom: 10px; }
+    h1 { font-size: 15px; font-weight: 700; color: #38bdf8; margin-bottom: 10px; }
     .row { display: flex; justify-content: space-between; font-size: 13px; margin: 5px 0; }
     .label { color: #94a3b8; }
     .val { font-family: monospace; font-weight: 600; color: #f8fafc; }
@@ -400,12 +338,13 @@ HTML_PAGE = """<!DOCTYPE html>
 <body>
   <div id="canvas-container"></div>
   <div id="hud">
-    <h1>DroneHacks 2026 — 3D Sim (EGO + NMPC)</h1>
+    <h1>DroneHacks 2026 — EGO-Planner + PX4-Autopilot Sim</h1>
+    <div class="row"><span class="label">Course Mesh:</span><span class="val" id="val-obj">dronehacks-course-asbuilt.obj</span></div>
     <div class="row"><span class="label">Sim Time:</span><span class="val" id="val-t">0.00 s</span></div>
-    <div class="row"><span class="label">Short-Term Planner:</span><span class="val badge badge-win" id="val-planner">EGO B-Spline</span></div>
-    <div class="row"><span class="label">PX4 Arm/Mode:</span><span class="val badge badge-win" id="val-px4">ARMED (OFFBOARD)</span></div>
+    <div class="row"><span class="label">PX4 Mission State:</span><span class="val badge badge-win" id="val-px4">PREFLIGHT</span></div>
     <div class="row"><span class="label">FSM Stage:</span><span class="val badge badge-stage" id="val-stage">LOADING...</span></div>
     <div class="row"><span class="label">Chicane Branch:</span><span class="val badge badge-win" id="val-branch">PENDING</span></div>
+    <div class="row"><span class="label">Min Wall Clearance:</span><span class="val badge badge-win" id="val-clear">-</span></div>
     <div class="row"><span class="label">Planner Event:</span><span class="val" id="val-reason">-</span></div>
     <div class="row"><span class="label">True Speed:</span><span class="val" id="val-speed">0.00 m/s</span></div>
     <div class="row"><span class="label">True ENU (m):</span><span class="val" id="val-pos">(0, 0, 0)</span></div>
@@ -418,23 +357,23 @@ HTML_PAGE = """<!DOCTYPE html>
         <button id="btn-cam">Follow Cam: OFF</button>
       </div>
       <input type="range" id="timeline" min="0" max="100" value="0" />
-      <div style="font-size:12px; color:#94a3b8; margin-top:4px;">Short-Term Planner Mode:</div>
+      <div style="font-size:12px; color:#94a3b8; margin-top:4px;">Speed Profile (PX4 MPC_XY_P = 0.95):</div>
       <div class="btn-group">
-        <button id="mode-ego" class="active">EGO B-Spline (Default)</button>
-        <button id="mode-nmpc">Receding-Horizon 3D NMPC</button>
+        <button id="speed-fast" class="active">Fast Mode (1.35 m/s)</button>
+        <button id="speed-norm">Standard FlyX (0.60 m/s)</button>
       </div>
-      <div style="font-size:12px; color:#94a3b8; margin-top:4px;">Scenario Presets (runs live Python physics + 3D A*):</div>
+      <div style="font-size:12px; color:#94a3b8; margin-top:4px;">PX4-Autopilot Sim Scenario (As-Built Scan):</div>
       <div class="btn-group">
-        <button id="preset-win" class="active">Window + Unmapped Boulder</button>
+        <button id="preset-asbuilt" class="active">As-Built Course (Window)</button>
         <button id="preset-gateb">Blocked Window -> Gate B</button>
+        <button id="preset-boulder">As-Built + Unmapped Obstacle</button>
       </div>
     </div>
 
     <div class="legend">
-      <div><span class="dot" style="background:#22d3ee;"></span>True Physical Drone (2nd-Order PX4 + Wind)</div>
-      <div><span class="dot" style="background:#facc15;"></span>12-Step 3D NMPC Receding Horizon Rollout</div>
+      <div><span class="dot" style="background:#22d3ee;"></span>True Physical Drone (PX4 MPC_XY_P=0.95 + Wind)</div>
       <div><span class="dot" style="background:#f43f5e;"></span>Noisy/Drifted VIO Estimate (No GPS)</div>
-      <div><span class="dot" style="background:#4ade80;"></span>Active Guiding B-Spline Trajectory</div>
+      <div><span class="dot" style="background:#4ade80;"></span>Active EGO B-Spline Trajectory</div>
       <div><span class="dot" style="background:#fb923c;"></span>Live OAK-D Discovered Obstacle Voxels</div>
     </div>
   </div>
@@ -448,7 +387,7 @@ HTML_PAGE = """<!DOCTYPE html>
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0b0f19);
 
-    // Note: Course ENU has +X East, +Y North, +Z Up. We set THREE Object3D.DEFAULT_UP to (0,0,1).
+    // Course ENU has +X East, +Y North, +Z Up.
     THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
 
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 50);
@@ -497,20 +436,25 @@ HTML_PAGE = """<!DOCTYPE html>
     netWire.position.set(0, 0, 1.2);
     scene.add(netWire);
 
-    // Load actual dronehacks-course-v3.obj mesh
+    // Load actual Navless/dronehacks-course-asbuilt.obj mesh
     const loader = new OBJLoader();
     loader.load('/course.obj', (obj) => {
       obj.traverse((child) => {
         if (child.isMesh) {
+          const nm = ((child.name || '') + ' ' + (child.parent ? child.parent.name || '' : '')).toLowerCase();
+          if (nm.includes('net ')) {
+            child.visible = false;
+            return;
+          }
           child.material = new THREE.MeshStandardMaterial({
             color: 0x64748b,
             transparent: true,
-            opacity: 0.48,
+            opacity: 0.52,
             roughness: 0.6,
             side: THREE.DoubleSide
           });
           const edges = new THREE.EdgesGeometry(child.geometry, 25);
-          const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x94a3b8, transparent: true, opacity: 0.35 }));
+          const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x94a3b8, transparent: true, opacity: 0.40 }));
           child.add(line);
         }
       });
@@ -548,12 +492,6 @@ HTML_PAGE = """<!DOCTYPE html>
     const splineLine = new THREE.Line(splineGeom, splineMat);
     scene.add(splineLine);
 
-    // 12-Step NMPC Receding Horizon rollout line (Gold)
-    const nmpcMat = new THREE.LineBasicMaterial({ color: 0xfacc15, linewidth: 4 });
-    const nmpcGeom = new THREE.BufferGeometry();
-    const nmpcLine = new THREE.Line(nmpcGeom, nmpcMat);
-    scene.add(nmpcLine);
-
     // Unmapped obstacle group & discovered OAK-D voxels group
     const unmappedGroup = new THREE.Group();
     scene.add(unmappedGroup);
@@ -564,28 +502,34 @@ HTML_PAGE = """<!DOCTYPE html>
     let frameIdx = 0;
     let playing = true;
     let followCam = false;
+    let currentFastMode = true;
+    let currentBoulder = false;
     let currentBlockWindow = false;
-    let currentPlanner = 'ego';
     let lastTick = performance.now();
 
     const timeline = document.getElementById('timeline');
     const btnPlay = document.getElementById('btn-play');
     const btnRestart = document.getElementById('btn-restart');
     const btnCam = document.getElementById('btn-cam');
-    const modeNmpc = document.getElementById('mode-nmpc');
-    const modeEgo = document.getElementById('mode-ego');
-    const presetWin = document.getElementById('preset-win');
+    const speedFast = document.getElementById('speed-fast');
+    const speedNorm = document.getElementById('speed-norm');
+    const presetAsbuilt = document.getElementById('preset-asbuilt');
     const presetGateB = document.getElementById('preset-gateb');
+    const presetBoulder = document.getElementById('preset-boulder');
 
-    async function loadScenario(blockWindow, plannerMode = currentPlanner) {
+    async function loadScenario(fastMode = currentFastMode, boulder = currentBoulder, blockWindow = currentBlockWindow) {
+      currentFastMode = fastMode;
+      currentBoulder = boulder;
       currentBlockWindow = blockWindow;
-      currentPlanner = plannerMode;
       document.getElementById('val-stage').textContent = 'SIMULATING...';
-      const res = await fetch(`/api/sim?fast_mode=1&boulder=1&block_window=${blockWindow ? 1 : 0}&planner=${plannerMode}`);
+      const res = await fetch(`/api/sim?fast_mode=${fastMode ? 1 : 0}&boulder=${boulder ? 1 : 0}&block_window=${blockWindow ? 1 : 0}`);
       episode = await res.json();
       frameIdx = 0;
       timeline.max = Math.max(0, episode.frames.length - 1);
       timeline.value = 0;
+      if (episode.obj_file) {
+        document.getElementById('val-obj').textContent = episode.obj_file;
+      }
 
       // Render unmapped ground-truth boxes
       unmappedGroup.clear();
@@ -618,15 +562,6 @@ HTML_PAGE = """<!DOCTYPE html>
       if (f.spline) {
         splineGeom.setFromPoints(f.spline.map(p => new THREE.Vector3(p[0], p[1], p[2])));
       }
-      if (f.nmpc_horizon && f.nmpc_horizon.length > 1) {
-        nmpcGeom.setFromPoints(f.nmpc_horizon.map(p => new THREE.Vector3(p[0], p[1], p[2] + 0.02)));
-      } else {
-        nmpcGeom.setFromPoints([]);
-      }
-      const plEl = document.getElementById('val-planner');
-      if (plEl) {
-        plEl.textContent = currentPlanner === 'nmpc' ? `3D NMPC (${(f.nmpc_ms || 0).toFixed(1)} ms)` : 'EGO B-Spline';
-      }
       if (f.discovered_voxels) {
         voxGroup.clear();
         const vGeom = new THREE.BoxGeometry(0.09, 0.09, 0.09);
@@ -647,7 +582,14 @@ HTML_PAGE = """<!DOCTYPE html>
       const px4El = document.getElementById('val-px4');
       if (px4El) {
         px4El.textContent = f.px4_state || 'ARMED (OFFBOARD)';
-        px4El.className = 'val badge ' + (f.armed === false ? 'badge-disarmed' : (f.px4_state && f.px4_state.includes('LANDING') ? 'badge-gateb' : 'badge-win'));
+        px4El.className = 'val badge ' + (f.armed === false ? 'badge-disarmed' : (f.px4_state && f.px4_state.includes('LAND') ? 'badge-gateb' : 'badge-win'));
+      }
+      const clEl = document.getElementById('val-clear');
+      if (clEl) {
+        const mc = episode.min_clearance_cm || f.min_clearance_cm || 0;
+        const passTxt = episode.pass_mission ? 'PASS' : 'WARN';
+        clEl.textContent = `${mc.toFixed(1)} cm (${passTxt} >= 20 cm)`;
+        clEl.className = 'val badge ' + (mc >= 20.0 ? 'badge-win' : 'badge-disarmed');
       }
       bodyMesh.material.color.setHex(f.armed === false ? 0xf59e0b : 0x22d3ee);
       document.getElementById('val-stage').textContent = f.stage;
@@ -675,21 +617,25 @@ HTML_PAGE = """<!DOCTYPE html>
       frameIdx = parseInt(e.target.value, 10);
       applyFrame(frameIdx);
     };
-    modeNmpc.onclick = () => {
-      modeNmpc.classList.add('active'); modeEgo.classList.remove('active');
-      loadScenario(currentBlockWindow, 'nmpc');
+    speedFast.onclick = () => {
+      speedFast.classList.add('active'); speedNorm.classList.remove('active');
+      loadScenario(true, currentBoulder, currentBlockWindow);
     };
-    modeEgo.onclick = () => {
-      modeEgo.classList.add('active'); modeNmpc.classList.remove('active');
-      loadScenario(currentBlockWindow, 'ego');
+    speedNorm.onclick = () => {
+      speedNorm.classList.add('active'); speedFast.classList.remove('active');
+      loadScenario(false, currentBoulder, currentBlockWindow);
     };
-    presetWin.onclick = () => {
-      presetWin.classList.add('active'); presetGateB.classList.remove('active');
-      loadScenario(false, currentPlanner);
+    presetAsbuilt.onclick = () => {
+      presetAsbuilt.classList.add('active'); presetGateB.classList.remove('active'); presetBoulder.classList.remove('active');
+      loadScenario(currentFastMode, false, false);
     };
     presetGateB.onclick = () => {
-      presetGateB.classList.add('active'); presetWin.classList.remove('active');
-      loadScenario(true, currentPlanner);
+      presetGateB.classList.add('active'); presetAsbuilt.classList.remove('active'); presetBoulder.classList.remove('active');
+      loadScenario(currentFastMode, false, true);
+    };
+    presetBoulder.onclick = () => {
+      presetBoulder.classList.add('active'); presetAsbuilt.classList.remove('active'); presetGateB.classList.remove('active');
+      loadScenario(currentFastMode, true, false);
     };
 
     window.addEventListener('resize', () => {
@@ -698,11 +644,11 @@ HTML_PAGE = """<!DOCTYPE html>
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    loadScenario(false);
+    loadScenario(true, false, false);
 
     function animate(now) {
       requestAnimationFrame(animate);
-      if (playing && episode && episode.frames.length > 0 && (now - lastTick) >= 65) {
+      if (playing && episode && episode.frames.length > 0 && (now - lastTick) >= 50) {
         lastTick = now;
         frameIdx = (frameIdx + 1) % episode.frames.length;
         timeline.value = frameIdx;
@@ -748,16 +694,14 @@ class SimViewerHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/sim":
             qs = parse_qs(parsed.query)
             fast = qs.get("fast_mode", ["1"])[0] == "1"
-            boulder = qs.get("boulder", ["1"])[0] == "1"
+            boulder = qs.get("boulder", ["0"])[0] == "1"
             block_win = qs.get("block_window", ["0"])[0] == "1"
-            planner_mode = qs.get("planner", ["ego"])[0]
-            key = f"{planner_mode}_{fast}_{boulder}_{block_win}"
+            key = f"ego_{fast}_{boulder}_{block_win}"
             if key not in self._cache:
                 ep = run_simulation_episode(
                     fast_mode=fast,
                     spawn_unmapped_boulder=boulder,
                     block_window=block_win,
-                    planner_mode=planner_mode,
                 )
                 self._cache[key] = json.dumps(ep).encode("utf-8")
             body = self._cache[key]
@@ -775,17 +719,15 @@ def main(port: int = 8090) -> None:
     import threading
 
     def _warm() -> None:
-        for pm in ("ego", "nmpc"):
-            for bw in (False, True):
-                key = f"{pm}_True_True_{bw}"
-                if key not in SimViewerHandler._cache:
-                    ep = run_simulation_episode(
-                        fast_mode=True,
-                        spawn_unmapped_boulder=True,
-                        block_window=bw,
-                        planner_mode=pm,
-                    )
-                    SimViewerHandler._cache[key] = json.dumps(ep).encode("utf-8")
+        for fm in (True, False):
+            key = f"ego_{fm}_False_False"
+            if key not in SimViewerHandler._cache:
+                ep = run_simulation_episode(
+                    fast_mode=fm,
+                    spawn_unmapped_boulder=False,
+                    block_window=False,
+                )
+                SimViewerHandler._cache[key] = json.dumps(ep).encode("utf-8")
 
     threading.Thread(target=_warm, daemon=True).start()
     server = HTTPServer(("0.0.0.0", port), SimViewerHandler)

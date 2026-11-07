@@ -51,7 +51,6 @@ from .frames import (
 )
 from .fsm_router import CourseStage, GlobalCourseRouter
 from .grid_map import OccupancyGrid3D
-from .nmpc import NMPCRollout
 
 
 # Standard PX4 VehicleStatus constants
@@ -189,7 +188,6 @@ class PX4TrajectoryTrackerCore:
         self.carrot_t: float = 0.0
         self.last_carrot_spline: Optional[UniformBspline] = None
         self.last_carrot_time_s: Optional[float] = None
-        self.last_nmpc_rollout: Optional[NMPCRollout] = None
         self.touch_and_go_fly_home = bool(touch_and_go_fly_home)
         self.prearm_settle_s = float(prearm_settle_s)
         self.prearm_height_tol_m = float(prearm_height_tol_m)
@@ -816,28 +814,6 @@ class PX4TrajectoryTrackerCore:
         vel_enu = spline.evaluate_velocity(t_eval) * turn_factor
         t_yaw = max(0.0, t_eval - 0.15)
         raw_yaw_enu = spline.evaluate_yaw(t_yaw, fallback_yaw=current_yaw_enu)
-
-        # Receding-Horizon 3D NMPC / MPCC short-term trajectory optimization from live (pos_enu, vel_enu)
-        if str(getattr(self.config, "short_term_planner", "nmpc")).lower() == "nmpc" and hasattr(self.router, "nmpc"):
-            if new_spline:
-                self.router.nmpc._warm_U = None
-            drone_vel_enu = ned_to_enu_vel(self.telemetry.vel_ned, convention=self.frame_convention)
-            rollout = self.router.nmpc.solve_short_horizon(
-                drone_pos_enu,
-                drone_vel_enu,
-                current_yaw_enu,
-                spline,
-                t_eval,
-                profile,
-                z_min_override=z_min_clamp,
-                xy_limit_m=xy_fence,
-                max_lead_m=effective_lead_m,
-            )
-            self.last_nmpc_rollout = rollout
-            pos_enu = rollout.target_pos_enu
-            vel_enu = rollout.target_vel_enu
-            raw_yaw_enu = rollout.target_yaw_enu
-
         yaw_enu = self._rate_limit_yaw_enu(now_s, raw_yaw_enu)
 
         # If inside STAGE_3_TUNNEL and fresh `/tube/offset` is available, blend lateral centering nudge
@@ -1635,19 +1611,11 @@ def run_ros2_node(argv=None) -> int:
         default=None,
         help="Optional override for horizontal stage cruise speed v_max (m/s)",
     )
-    parser.add_argument(
-        "--planner",
-        choices=("ego", "nmpc"),
-        default=None,
-        help="Short-term trajectory planner mode: 'ego' (EGO B-spline, default) or 'nmpc' (3D Receding-Horizon MPCC/NMPC)",
-    )
     args, unknown_args = parser.parse_known_args(argv)
     # Support `-p fly_home:=true` passed by master_sim/run_master.sh
     fly_home_arg = any("fly_home:=true" in str(u).lower() for u in unknown_args)
 
     cfg = PlannerConfig.from_json(args.config) if args.config.exists() else PlannerConfig()
-    if args.planner is not None:
-        cfg.short_term_planner = str(args.planner)
     if args.fast_mode:
         cfg.fast_mode = True
     if args.speed is not None and args.speed > 0.0:
@@ -1669,7 +1637,9 @@ def run_ros2_node(argv=None) -> int:
     )
     prior_loaded = False
     default_json = Path(__file__).resolve().parent / "config" / "prior_course_map.json"
-    default_obj = Path(__file__).resolve().parent.parent / "dronehacks-course-v3.obj"
+    asbuilt_obj = Path(__file__).resolve().parent.parent / "dronehacks-course-asbuilt.obj"
+    v3_obj = Path(__file__).resolve().parent.parent / "dronehacks-course-v3.obj"
+    default_obj = asbuilt_obj if asbuilt_obj.exists() else v3_obj
     prior_path = (
         args.prior
         if (args.prior and args.prior.exists())

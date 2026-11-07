@@ -26,7 +26,6 @@ from .bspline import EgoBsplineOptimizer, UniformBspline
 from .config import PlannerConfig, StageProfile
 from .frames import clamp_altitude_enu, enu_to_ned_pos
 from .grid_map import OccupancyGrid3D, WindowInspectResult
-from .nmpc import NonlinearMPCPlanner
 
 
 class CourseStage(str, Enum):
@@ -62,18 +61,12 @@ class GlobalCourseRouter:
         self,
         config: PlannerConfig,
         grid: OccupancyGrid3D,
-        optimizer: Optional[EgoBsplineOptimizer | NonlinearMPCPlanner] = None,
+        optimizer: Optional[EgoBsplineOptimizer] = None,
     ) -> None:
         self.config = config
         self.grid = grid
-        self.nmpc = NonlinearMPCPlanner(grid)
         self.ego_optimizer = EgoBsplineOptimizer(grid)
-        if optimizer is not None:
-            self.optimizer = optimizer
-        elif str(getattr(config, "short_term_planner", "nmpc")).lower() == "nmpc":
-            self.optimizer = self.nmpc
-        else:
-            self.optimizer = self.ego_optimizer
+        self.optimizer = optimizer if optimizer is not None else self.ego_optimizer
 
         self.stage: CourseStage = CourseStage.STAGE_1_MAZE
         self.selected_branch: str = "PENDING"

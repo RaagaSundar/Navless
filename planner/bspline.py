@@ -382,8 +382,8 @@ class EgoBsplineOptimizer:
 
             for i in range(3, n_ctrl - 3):
                 candidate = ctrl[i] - grad[i]
-                candidate[0] = float(np.clip(candidate[0], self.grid.bounds_min[0] + 0.42, self.grid.bounds_max[0] - 0.42))
-                candidate[1] = float(np.clip(candidate[1], self.grid.bounds_min[1] + 0.42, self.grid.bounds_max[1] - 0.42))
+                candidate[0] = float(np.clip(candidate[0], self.grid.bounds_min[0] + 0.30, self.grid.bounds_max[0] - 0.30))
+                candidate[1] = float(np.clip(candidate[1], self.grid.bounds_min[1] + 0.30, self.grid.bounds_max[1] - 0.30))
                 candidate[2] = float(np.clip(candidate[2], profile.z_min_enu, profile.z_max_enu))
                 if not self.grid.is_occupied(candidate, inflated=True):
                     ctrl[i] = candidate
