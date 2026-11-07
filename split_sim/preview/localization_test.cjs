@@ -95,3 +95,15 @@ Object.assign(context, {
   assert(source.includes("$('localization-live').checked=false;playing=false"), 'scrubbing exits live latest');
   console.log('PASS: four sources, exact values/origin/time, no future samples, map rejection, invalid frames/flags, video/cursor preservation');
 })().catch(error => { console.error(error); process.exitCode = 1; });
+// Publication lag can move the live comparison cursor only within fresh joint
+// coverage; a missing/invalid/outage source must never trigger an old rewind.
+context.joint = new Map(['truth','raw_nvidia','admitted_vo','px4_fused'].map(id => [id,[{t:20,drawable:true,valid:true}]]));
+assert.equal(vm.runInContext("jointlyCoveredTime(joint,22,['truth','raw_nvidia','admitted_vo','px4_fused']).t",context),20);
+assert.equal(vm.runInContext("jointlyCoveredTime(joint,40,['truth','raw_nvidia','admitted_vo','px4_fused']).t",context),null);
+context.joint.set('px4_fused',[{t:18,drawable:true,valid:true}]);
+assert.equal(vm.runInContext("jointlyCoveredTime(joint,22,['truth','raw_nvidia','admitted_vo','px4_fused']).t",context),null);
+assert.match(source,/localizationVisibility=new Map\(\)/,'all core source toggles default visible');
+assert.match(source,/if\(\$\('localization-trails'\)\.checked/,'split trail flush obeys trails toggle');
+assert.match(source,/data-source/,'source-tagged markers remain testable');
+assert.match(source,/raw_nvidia[\s\S]*?ring|raw_nvidia[\s\S]*?circle/,'raw marker has a separate glyph');
+console.log('PASS bounded joint snapshot lag, outage withholding and visible source defaults');

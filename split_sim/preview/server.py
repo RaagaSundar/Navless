@@ -167,7 +167,11 @@ def catalog():
             if live_phase:
                 activity = live_phase
                 state = live_phase['phase']
-        rows.append(dict(id=prefix + run.name, run_id=run.name, platform_label=label, platform=platform, status=state, grade=grade, observed_flight=flight,
+        bounded = read_json(run / 'm3-capture-result.json')
+        bounded_pass = flight and isinstance(bounded, dict) and bounded.get('capture_met_declared_goals') is True
+        if flight and isinstance(bounded, dict) and isinstance(bounded.get('capture_met_declared_goals'), bool):
+            state = 'bounded capture passed' if bounded_pass else 'bounded capture not met'
+        rows.append(dict(id=prefix + run.name, run_id=run.name, platform_label=label, platform=platform, status=state, grade=grade, observed_flight=flight, bounded_pass=bounded_pass,
                          course_pass=course_pass, kind=flight_kind, activity=activity, in_progress=bool(activity) and state.startswith(('in progress', 'preflight / in progress', 'flight / awaiting')), 
                          review=read_json(run / 'review.json'), has_track=track.exists(), track_file='flight/track.json',
                          files=[str(p.relative_to(run)) for p in files]))
@@ -179,13 +183,22 @@ def catalog():
                             grade=None, has_track=False, files=[]))
     return rows
 
+def api_json(value):
+    """Strict JSON at the browser boundary; preserve original receipt files."""
+    def finite(item):
+        if isinstance(item,float) and not math.isfinite(item): return None
+        if isinstance(item,dict): return {k:finite(v) for k,v in item.items()}
+        if isinstance(item,(list,tuple)): return [finite(v) for v in item]
+        return item
+    return json.dumps(finite(value),allow_nan=False).encode()
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = unquote(urlsplit(self.path).path)
         if path == '/api/runs':
-            return self.send(json.dumps(catalog()).encode(), 'application/json')
+            return self.send(api_json(catalog()), 'application/json')
         if path == '/api/tests':
-            return self.send(json.dumps(test_index.inventory(catalog())).encode(), 'application/json')
+            return self.send(api_json(test_index.inventory(catalog())), 'application/json')
         if path.startswith('/test-evidence/'):
             parts = path[len('/test-evidence/'):].split('/')
             target = test_index.resolve_file(parts[0], '/'.join(parts[1:])) if len(parts) > 1 else None

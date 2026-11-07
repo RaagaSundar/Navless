@@ -48,5 +48,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, 'all_tests_picker.js'), 'ut
   for (const id of ['bench:m3-wall-rotation', 'test:replay', 'flight:1', 'test:bench', 'bench:m3-wall-rotation', 'flight:2']) { await context.select(id); if (id.startsWith('test:')) { assert.equal(detail.hidden, false); assert.equal(ids['wall-bench'].hidden, true); assert.equal(right.hidden, true); } else { assert.equal(detail.hidden, true); assert.equal(visiblePanel.hidden, false, 'restore visible panel'); assert.equal(hiddenPanel.hidden, true, 'preserve already hidden panel'); assert.equal(section.hidden, id.startsWith('bench:')); assert.equal(right.hidden, id.startsWith('bench:')); } }
   assert.deepEqual(delegated, ['bench:m3-wall-rotation','flight:1','bench:m3-wall-rotation','flight:2']);
   assert.equal(context.runs.filter(r => r.test_record && (r.course_pass || r.observed_flight)).length, 0, 'passed bench/unit receipts cannot become flight passes');
+  const queue=context.allTestsPicker.queueSummary({assigned:['Q1'],next_available:'Q2',next_to_claim:null,trials:[{id:'Q1',name:'Synthetic assigned intent'},{id:'Q2',name:'Synthetic next intent'}]});
+  assert.equal(queue.assigned[0],'Q1 · Synthetic assigned intent');assert.equal(queue.next,'Q2 · Synthetic next intent');assert.equal(queue.claim,'Not recorded');
   console.log('all_tests_picker synthetic adapter checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

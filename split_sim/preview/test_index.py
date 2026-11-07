@@ -99,6 +99,10 @@ def _receipt(path):
     data = _read(path)
     if isinstance(data, dict):
         summary = next((data[k] for k in ('outcome', 'finding', 'conclusion', 'scope', 'description') if isinstance(data.get(k), str)), '')
+        if isinstance(data.get('capture_met_declared_goals'), bool):
+            return ('bounded goals met' if data['capture_met_declared_goals'] else 'bounded goals not met', summary, path.name)
+        if isinstance(data.get('clearance_and_contact_passed'), bool):
+            return ('clearance check passed' if data['clearance_and_contact_passed'] else 'clearance check failed', summary, path.name)
         if isinstance(data.get('passed'), bool):
             return ('passed check' if data['passed'] else 'failed check', summary, path.name)
         # Capture complete does not imply successful tracking or flight.
@@ -212,7 +216,7 @@ def build(run_rows=None):
         records.append(record)
         runkey='nvidia' if run['id'].startswith('nvidia:') else 'flyx' if run['id'].startswith('flyx:') else 'mac'
         runroot = RUN_ROOTS.get(runkey,ROOT / ('local_course/state/nvidia-runs' if runkey=='nvidia' else 'local_course/state/flyx-runs' if runkey=='flyx' else 'local_course/state/runs')) / run.get('run_id', run['id'])
-        labels={'localization-poses.json':'Localization replay', 'map-localization.json':'CAD / scan map comparison',
+        labels={'m3-capture-result.json':'Bounded M3 capture result','m3-physical-clearance.json':'Physical clearance check','m3-shadow-offline.json':'Offline M3 shadow replay','localization-poses.json':'Localization replay', 'map-localization.json':'CAD / scan map comparison',
                 'flight/imu-review.json':'Recorded inertial / fusion review','flight/range-review.json':'Recorded range review',
                 'flight/map-match-review.json':'Map matching review','texture-bench/metrics.json':'Fixed-pose texture comparison',
                 'flight/frame-rate-comparison.json':'Frame-rate review'}

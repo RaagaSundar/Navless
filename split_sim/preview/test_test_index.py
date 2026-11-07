@@ -42,6 +42,11 @@ class InventoryTests(unittest.TestCase):
         for value in ['../outside.txt','good/../../outside.txt','linked.txt','.env.json','good\\result.json','/good/result.json']:
             self.assertIsNone(index.resolve_file('fixture',value))
         self.assertIsNone(index.resolve_file('unknown','good/result.json'))
+    def test_bounded_result_is_scoped_not_course_pass(self):
+        a=self.write('bounded/m3-capture-result.json',json.dumps({'capture_met_declared_goals':True,'ordinary_full_course_grade_unchanged':{'passed':False}}))
+        self.assertEqual(index._receipt(a)[0],'bounded goals met')
+        b=self.write('physical/m3-physical-clearance.json',json.dumps({'clearance_and_contact_passed':True}))
+        self.assertEqual(index._receipt(b)[0],'clearance check passed')
     def test_mixed_results_preserved(self):
         self.write('group/passed-tests.txt','PASS: first check\n')
         self.write('group/failed-tests.txt','FAILED (failures=1)\n')

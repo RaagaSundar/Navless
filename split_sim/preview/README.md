@@ -195,8 +195,8 @@ trajectory gaps over 1s are not joined. The height plot uses registered course
 metres. Origin, units, status, source/cursor age and validity remain visible.
 Unknown/unregistered frames and rejected/ambiguous map results retain diagnostics
 but cannot place a marker on the course. Raw scan poses remain withheld without
-a qualified transform. Default raw VO trail is off to reduce clutter; source
-checkboxes select comparisons. Map studies are labelled offline/non-controller.
+a qualified transform. Raw VO, admitted VO, PX4 and truth are visible by default; source
+checkboxes control each comparison. Map studies are labelled offline/non-controller.
 
 Live latest updates actual track/source snapshots in place every3s, retaining
 video elements and replay selection. Playing video suspends cursor movement and
@@ -271,3 +271,18 @@ node split_sim/preview/map_geometry_test.cjs
 node split_sim/preview/test_comparison_ui.cjs
 python3 split_sim/preview/smoke.py
 ```
+
+The four core localization sources are visible by default with distinct co-located
+glyphs (truth dot, raw ring, admitted diamond, PX4 cross). `?t=48.6` selects
+recorded simulation seconds and disables live latest; the airborne comparison
+button selects only an actual armed, airborne sample with fresh joint coverage.
+Live latest can use a jointly covered snapshot up to 15 simulated seconds behind
+truth publication, labelled explicitly; it never bridges a source outage or
+unknown registration. Turning trails off also suppresses preceding split segments.
+
+Sealed `m3-capture-result.json` and `m3-physical-clearance.json` expose bounded
+experiment goals independently from the original full-course grade. A bounded
+capture pass never increments course-pass totals. Offline shadow results remain
+offline evidence, not a flight-control claim. Non-finite numeric evidence is
+returned as null in API catalogs so strict browsers can read other runs; original
+files and grading booleans remain unchanged.
