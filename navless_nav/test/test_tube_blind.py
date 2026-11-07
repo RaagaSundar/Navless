@@ -21,16 +21,19 @@ cm = h.course_mission
 TUBE_MOUTH_Y = 1.2192        # course frame: the tube's north mouth
 
 
-def step(node, px4, pos, vo_state=1, dt=0.1, frozen=None, moving=False):
+def step(node, px4, pos, vo_state=1, dt=0.1, frozen=None, moving=False, yaw=0.0):
     """One tick: odometry, state, and the point-mass drone. While lost
     (vo_state 2) odometry stops, or with `frozen` keeps repeating that pose,
-    or with `moving` keeps following the drone (IMU-propagated)."""
+    or with `moving` keeps following the drone (IMU-propagated). The drone
+    holds heading `yaw` (odom ENU)."""
     node.status_cb(types.SimpleNamespace(vo_state=vo_state))
     if vo_state != 2 or frozen is not None or moving:
         p = frozen if (vo_state == 2 and frozen is not None) else pos
         node.odometry_cb(types.SimpleNamespace(pose=types.SimpleNamespace(
-            pose=types.SimpleNamespace(position=types.SimpleNamespace(
-                x=p[0], y=p[1], z=p[2])))))
+            pose=types.SimpleNamespace(
+                position=types.SimpleNamespace(x=p[0], y=p[1], z=p[2]),
+                orientation=types.SimpleNamespace(
+                    x=0.0, y=0.0, z=math.sin(yaw / 2), w=math.cos(yaw / 2))))))
     px4['local_enu'] = list(pos)          # PX4's own estimate (perfect here)
     node.state_cb(types.SimpleNamespace(data=json.dumps(px4)))
     h.SENT.clear()

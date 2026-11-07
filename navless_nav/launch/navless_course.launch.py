@@ -10,9 +10,10 @@ COMPETITOR_PKG=navless_nav and COMPETITOR_LAUNCH=navless_course.launch.py.
                                       readings fit the tube's width
   mirror_relay (relay:=true)          read-only telemetry for the laptop dashboard, port 8775
 
-The ToF chain is recorded and shown on the dashboard, but course_mission does not steer on
-it yet: that waits until the sensors are proven on the real drone and the steering has
-flown in Gazebo with simulated ToF.
+The ToF chain is recorded and shown on the dashboard. course_mission steers on it only with
+tof_tube_centering:=true (off by default): in the tube it pulls the target toward the measured
+centre, at most 0.15 m from the route. Turn it on once both sensors are mounted, the bus-7
+sensor on the drone's left, and a hand over each one moves only its own side.
 
 Never start planner/px4_bridge_node.py or mission/mission.py alongside this: both are
 commanders too, and the drone gets exactly one.
@@ -67,6 +68,8 @@ ARGUMENTS = [
     ('relay', 'false', 'run the read-only dashboard relay (TCP 8775)'),
     ('relay_img_hz', '0.0', 'relay camera thumbnails per second; keep 0 in flight'),
     ('stereo_tube_centering', 'false', 'experimental stereo centering; simulation validation only'),
+    ('tof_tube_centering', 'false',
+     'steer toward the side ToF tube centre (needs tof and tube; check the sensors first)'),
     ('stereo_tube_cloud_topic', '/team/stereo/points', 'qualified calibrated stereo cloud'),
 ]
 
@@ -82,7 +85,8 @@ def generate_launch_description():
                           for n in ('route_file', 'start_bearing_deg', 'cruise_speed_mps',
                                     'max_lead_m', 'max_lat_accel_mps2', 'max_turn_sagitta_m',
                                     'odometry_topic', 'stereo_tube_centering',
-                                    'stereo_tube_cloud_topic', 'use_sim_time')}.items(),
+                                    'stereo_tube_cloud_topic', 'tof_tube_centering',
+                                    'use_sim_time')}.items(),
     )
     # VL53L1X: from the team image, or from ~/team_ws/pylibs (pip install --target) if it is there.
     pylibs = '/root/team_ws/pylibs'
@@ -97,7 +101,9 @@ def generate_launch_description():
              '-p', f'left_mount:={TOF_MOUNT_M}', '-p', f'right_mount:={TOF_MOUNT_M}',
              '-p', ['min_range:=', LaunchConfiguration('tof_min_range_m')],
              '-p', 'max_range:=1.3',                  # tof_driver runs VL53L1X short mode (~1.3 m)
-             '-p', f'expected_width:={TUBE_WIDTH_M}', '-p', 'width_tol:=0.15'],
+             '-p', f'expected_width:={TUBE_WIDTH_M}', '-p', 'width_tol:=0.15',
+             # its stamps are checked against course_mission's clock
+             '-p', ['use_sim_time:=', LaunchConfiguration('use_sim_time')]],
         output='screen', name='tube_node', condition=IfCondition(LaunchConfiguration('tube')))
     relay = Node(
         package='navless_nav', executable='mirror_relay', name='navless_mirror_relay',

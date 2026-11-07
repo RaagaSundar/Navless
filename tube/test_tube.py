@@ -23,4 +23,8 @@ assert tube_offset(0.3, math.inf, 0.1, 2.0) is None
 # width check: one side sees the tube exit gap -> dropped
 assert tube_offset(0.3, 0.3, 0.1, 2.0, expected_width=0.6) is not None
 assert tube_offset(0.3, 0.9, 0.1, 2.0, expected_width=0.6) is None
+# a pair counts as fresh for at least two of tof_driver's frames
+from tof_driver import PERIOD_MS  # noqa: E402
+from tube_node import STALE_S  # noqa: E402
+assert STALE_S >= 2 * PERIOD_MS / 1000
 print("ok")

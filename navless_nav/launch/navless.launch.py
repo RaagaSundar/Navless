@@ -75,6 +75,12 @@ ARGUMENTS = [
     ('stereo_tube_rate_mps', '0.10', 'maximum rate of stereo lateral target change, m/s'),
     ('stereo_tube_hold_s', '3.0', 'maximum age of observed centerline while SLAM remains healthy, s'),
     ('stereo_tube_cloud_topic', '/team/stereo/points', 'calibrated stereo cloud in camera optical frame'),
+    ('tof_tube_centering', 'false',
+     'in the tube, steer toward the centre the side ToF sensors measure (tube_node '
+     '/tube/offset); turn on only once both sensors are mounted and checked'),
+    ('tof_tube_max_shift_m', '0.15', 'largest ToF correction away from the route, m'),
+    ('tof_tube_rate_mps', '0.10', 'how fast the ToF correction may change, m/s'),
+    ('tof_tube_timeout_s', '0.3', 'drop the ToF correction once /tube/offset is this old, s'),
 ]
 
 # The stack's flight-interface package. Its name is fixed by the image.
@@ -91,7 +97,8 @@ MISSION_PARAMS = ('odometry_topic',     # the same source as flight_interface's
                   'home_altitude_m', 'home_climb_tol_m', 'home_arrival_radius_m',
                   'prearm_height_tol_m', 'prearm_settle_s',
                   'blind_carry', 'blind_carry_max_s', 'blind_zone_margin_m',
-                  'stereo_tube_centering', 'stereo_tube_max_shift_m', 'stereo_tube_rate_mps', 'stereo_tube_hold_s')
+                  'stereo_tube_centering', 'stereo_tube_max_shift_m', 'stereo_tube_rate_mps', 'stereo_tube_hold_s',
+                  'tof_tube_centering', 'tof_tube_max_shift_m', 'tof_tube_rate_mps', 'tof_tube_timeout_s')
 
 
 def generate_launch_description():
