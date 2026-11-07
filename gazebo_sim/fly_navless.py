@@ -368,6 +368,8 @@ def main():
                     help="report vo_state=2 between these seconds after takeover")
     ap.add_argument("--timeout", type=float, default=240.0, help="give up after this much sim time, s")
     ap.add_argument("--tag", default="")
+    ap.add_argument("--relay", type=int, default=0, metavar="PORT",
+                    help="stream the run live for gazebo_sim/mirror/mirror.py --run 127.0.0.1:PORT (0 = off)")
     a = ap.parse_args()
 
     os.environ["GZ_PARTITION"] = f"dh{a.instance}"     # before any gz Node exists
@@ -380,6 +382,10 @@ def main():
     OVERRIDES.setdefault("route_file", a.route)
     install_ros_standin()
     from navless_nav import course_mission                             # noqa: E402
+    from navless_nav.mirror_relay import FrameServer, make_frame       # noqa: E402
+    relay = FrameServer(a.relay, host="127.0.0.1") if a.relay else None
+    if relay is not None:
+        print(f"live stream for the dashboard on 127.0.0.1:{relay.port}", flush=True)
 
     course = json.load(open(os.path.join(HERE, "course", "course_v3.json")))
     stamp = time.strftime("%Y%m%d-%H%M%S") + "-navless" + (f"-{a.tag}" if a.tag else "")
@@ -445,6 +451,20 @@ def main():
             since = st - (fi.armed_at or 1e18)
             lost = bool(dropout and dropout[0] <= since < dropout[1])
             publish(STATUS_TOPIC, VisualSlamStatus(2 if lost else 1))
+            if relay is not None and relay.n_clients:
+                # The live dashboard (gazebo_sim/mirror/mirror.py --run): the drone's true pose in the
+                # power-up frame, what the node commands, and which state it is in.
+                w, x, y, z = q                                         # Gazebo body FLU -> world
+                hs, hc = math.sin(-yaw0 / 2), math.cos(-yaw0 / 2)
+                q_odom = (hc * x - hs * y, hc * y + hs * x,          # qz(-yaw0) * q_world, (x, y, z, w)
+                          hc * z + hs * w, hc * w - hs * z)
+                sp = None
+                if fi.mode == "position" and fi.target is not None:
+                    sp = fi.unrot(np.asarray(fi.target) - p0)
+                relay.send(make_frame(st, a.odom_delay, (qv, q_odom), 2 if lost else 1,
+                                      {"armed": px4.armed, "offboard_active": fi.offboard_active,
+                                       "nav_state_name": "OFFBOARD" if fi.offboard_active else "sim"},
+                                      sp, None, None, node.state))
 
         # 10 Hz: flight_interface state, the node's timer, then the interface's setpoint
         if st - t_fi >= 0.1:
@@ -488,6 +508,8 @@ def main():
 
     time.sleep(0.5)
     px4.close()
+    if relay is not None:
+        relay.close()
 
     # ---- summarise
     cols = ["sim_t", "t", "state", "sp_kind", "sp_x", "sp_y", "sp_z", "x", "y", "z", "tilt_deg", "yaw_enu",
