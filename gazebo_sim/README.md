@@ -46,8 +46,13 @@ way the drone does:
 
 - **Vision:** 30 Hz in an FRD frame anchored at the start pose. Each sample arrives after a random latency
   (lognormal, p50 60 ms, p95 106 ms) with 5 mm noise. PX4 fuses horizontal position and yaw only
-  (`EKF2_EV_CTRL` 9, `EKF2_EV_DELAY` 60). `DH_TUBE_BLACKOUT=1` cuts vision inside the dark tube and bumps the
-  reset counter when it returns.
+  (`EKF2_EV_CTRL` 9, `EKF2_EV_DELAY` 60). `DH_TUBE_BLACKOUT=stop` (or `1`) cuts vision inside the dark tube, below
+  its roof, and bumps the reset counter when it returns. `freeze` repeats the last tracked pose instead, which is
+  what PX4 would get if cuVSLAM republished it, since the drone's bridge forwards everything.
+  `DH_TUBE_RECOVER_DELAY=s` brings tracking back late. `DH_TUBE_RESET_JUMP=dx,dy,dz` (odom metres) or `resume`
+  (restart from the last tracked pose, as if the drone had not moved while blind) jumps the pose on recovery.
+  `fly_navless.py` reads the same variables and blinds the node's odometry identically (`vo_state` 2), so export
+  them once for both. Logic: `dh/tube.py`; checks: `dh/test_tube_blackout.py`.
 - **Height:** a downward laser rangefinder, 2.7 cm left of and 3.4 cm below the body origin, 0.02–4 m. It is
   ray-cast against the course, so it sees boulders, cradles and the floor. It's the height reference while low
   and slow (`EKF2_HGT_REF` 2, `EKF2_RNG_CTRL` 1), with the barometer behind it.
@@ -77,6 +82,28 @@ way the drone does:
 All runs were clean (no contacts, every checkpoint). Under the stock controller, liftoff comes about 4.8 s after
 arming (1 s spool-up, 3 s takeoff ramp, 12° takeoff tilt). The real flight node was also flown on this sim with
 `tools/export_route.py`'s route, and landed both times.
+
+**Gate B route.** `tools/export_route.py --route gate_b` writes `course/route_centreline_gate_b.json` (18.0 m),
+the chicane alternative to the window. Past the tube it turns on arcs centred on three wall ends: round C1's
+south end, up the chicane, west through Gate B, then round A1's south end to the pad.
+- **Planned nose-north clearance:** 17.4 cm to C1 and C2b, 17.7 cm to A1. The overall minimum is 16.6 cm, at
+  M1 in the maze it shares with the window route.
+- **One flight of the node** (`drone` profile, `--pilot modes`): it went through Gate B and landed 9.8 cm from
+  the pad, 48.0 s after arming, with no contacts.
+- **Flown clearance:** 10.0 cm from A1 and 12.2 cm from C2b. The node's carrot cuts the inside of those two turns.
+
+**Camera blind in the tube, node included** (`fly_navless.py`, `drone` profile, centreline route, `--pilot modes`).
+- **`DH_TUBE_BLACKOUT=stop`.** Today's node freezes its carrot when `vo_state` goes to 2, and PX4 dead-reckons.
+  Its estimate was 7 cm off after 1 s blind, 0.41 m after 2 s and 0.80 m after 2.5 s, so the hold wandered:
+  1. Out of the south end.
+  2. Back in on recovery: blind twice, for 3.1 s and 2.3 s.
+  3. Out of the north mouth, where an arm caught the tube's west rim. It sat there 1 m short of the carrot, with
+     PX4's estimate within 1 cm of truth, until the 20 s stall hold and a pilot landing.
+- **`freeze` with `DH_TUBE_RESET_JUMP=resume`.** It got through the tube: PX4, fed the frozen pose, kept flying
+  towards the frozen carrot. But restarting from the last tracked pose moved the rest of the route 1.52 m south,
+  into the south net.
+- **Both runs.** The node's odometry and PX4's vision lost and regained tracking together, and jumped by the same
+  amount: both processes computed the same 1.524 m.
 
 **Takeoff drift (worth checking on the real drone).** With the measured rotor layout and the centre of mass at
 the allocation origin, the front motors carry about 65% of the hover thrust. PX4's `THR_MDL_FAC` is 0 on the real

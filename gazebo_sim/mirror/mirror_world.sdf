@@ -1,0 +1,112 @@
+<?xml version="1.0"?>
+<!-- Live mirror of the real drone (mirror.py moves these models every frame; no physics, no PX4).
+     Same course, ground and lights as worlds/dronehacks.sdf. World frame: x = east, y = north, z = up,
+     origin = centre of the 20 x 20 ft net. -->
+<sdf version="1.9">
+  <world name="mirror">
+    <physics type="ode">
+      <max_step_size>0.01</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>100</real_time_update_rate>
+    </physics>
+    <gravity>0 0 0</gravity>
+    <scene>
+      <grid>false</grid>
+      <ambient>0.35 0.35 0.35 1</ambient>
+      <background>0.75 0.78 0.82 1</background>
+      <shadows>true</shadows>
+    </scene>
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.7 0.7 0.7 1</diffuse>
+      <specular>0.1 0.1 0.1 1</specular>
+      <direction>-0.4 0.3 -0.9</direction>
+    </light>
+    <light type="point" name="lamp_nw"><pose>-2 2 4 0 0 0</pose><diffuse>0.5 0.5 0.5 1</diffuse><attenuation><range>12</range><constant>0.5</constant><linear>0.05</linear></attenuation><cast_shadows>false</cast_shadows></light>
+    <light type="point" name="lamp_se"><pose>2 -2 4 0 0 0</pose><diffuse>0.5 0.5 0.5 1</diffuse><attenuation><range>12</range><constant>0.5</constant><linear>0.05</linear></attenuation><cast_shadows>false</cast_shadows></light>
+    <model name="ground">
+      <static>true</static>
+      <link name="link">
+        <visual name="v"><pose>0 0 -0.01 0 0 0</pose><geometry><plane><normal>0 0 1</normal><size>40 40</size></plane></geometry>
+          <material><ambient>0.45 0.45 0.45 1</ambient><diffuse>0.45 0.45 0.45 1</diffuse></material></visual>
+      </link>
+    </model>
+    <include><uri>model://dh_course</uri><name>dh_course</name><pose>0 0 0 0 0 0</pose></include>
+
+    <!-- The drone as the real VIO sees it. base_link (the flight controller's IMU) is the model origin. -->
+    <model name="mirror_drone">
+      <static>true</static>
+      <pose>-2.5146 0.9144 0.07 0 0 1.5708</pose>
+      <link name="body">
+        <visual name="body"><pose>0 0 0.005 0 0 0</pose><geometry><box><size>0.20 0.09 0.04</size></box></geometry>
+          <material><ambient>0.15 0.15 0.15 1</ambient><diffuse>0.15 0.15 0.15 1</diffuse></material></visual>
+        <visual name="camera"><pose>0.105 0 0.01 0 0 0</pose><geometry><box><size>0.022 0.097 0.03</size></box></geometry>
+          <material><ambient>0.1 0.1 0.4 1</ambient><diffuse>0.1 0.1 0.4 1</diffuse></material></visual>
+        <visual name="nose"><pose>0.12 0 0.03 0 0 0</pose><geometry><box><size>0.02 0.02 0.01</size></box></geometry>
+          <material><ambient>0.9 0.1 0.1 1</ambient><diffuse>0.9 0.1 0.1 1</diffuse></material></visual>
+        <visual name="prop_fl"><pose>0.08 0.16 0.03 0 0 0</pose><geometry><cylinder><radius>0.0775</radius><length>0.004</length></cylinder></geometry>
+          <transparency>0.5</transparency><material><ambient>0.2 0.6 0.9 1</ambient><diffuse>0.2 0.6 0.9 1</diffuse></material></visual>
+        <visual name="prop_fr"><pose>0.08 -0.16 0.03 0 0 0</pose><geometry><cylinder><radius>0.0775</radius><length>0.004</length></cylinder></geometry>
+          <transparency>0.5</transparency><material><ambient>0.2 0.6 0.9 1</ambient><diffuse>0.2 0.6 0.9 1</diffuse></material></visual>
+        <visual name="prop_rl"><pose>-0.15 0.14 0.03 0 0 0</pose><geometry><cylinder><radius>0.0775</radius><length>0.004</length></cylinder></geometry>
+          <transparency>0.5</transparency><material><ambient>0.9 0.6 0.2 1</ambient><diffuse>0.9 0.6 0.2 1</diffuse></material></visual>
+        <visual name="prop_rr"><pose>-0.15 -0.14 0.03 0 0 0</pose><geometry><cylinder><radius>0.0775</radius><length>0.004</length></cylinder></geometry>
+          <transparency>0.5</transparency><material><ambient>0.9 0.6 0.2 1</ambient><diffuse>0.9 0.6 0.2 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- What the drone would see: the stereo pair's left lens, moved to base_link * camera mount each frame.
+         OAK-D-S2 OV9282 at the stack's 1024x640 is ~80 deg horizontal; rendered here at 640x400. -->
+    <model name="mirror_cam">
+      <static>true</static>
+      <pose>-2.42 0.9144 0.08 0 0 1.5708</pose>
+      <link name="lens">
+        <sensor name="left" type="camera">
+          <topic>mirror/camera</topic>
+          <update_rate>15</update_rate>
+          <always_on>true</always_on>
+          <camera>
+            <horizontal_fov>1.396</horizontal_fov>
+            <image><width>640</width><height>400</height><format>R8G8B8</format></image>
+            <clip><near>0.03</near><far>15</far></clip>
+          </camera>
+        </sensor>
+      </link>
+    </model>
+
+    <!-- Last pose setpoint the team's node sent (hidden below the floor when there is none). -->
+    <model name="mirror_setpoint">
+      <static>true</static>
+      <pose>0 0 -1 0 0 0</pose>
+      <link name="l">
+        <visual name="v"><geometry><sphere><radius>0.04</radius></sphere></geometry><transparency>0.3</transparency>
+          <material><ambient>0.1 0.9 0.2 1</ambient><diffuse>0.1 0.9 0.2 1</diffuse><emissive>0.05 0.4 0.1 1</emissive></material></visual>
+      </link>
+    </model>
+
+    <gui fullscreen="0">
+      <plugin filename="MinimalScene" name="3D View">
+        <gz-gui><title>3D View</title><property type="bool" key="showTitleBar">false</property><property type="string" key="state">docked</property></gz-gui>
+        <engine>ogre2</engine>
+        <scene>scene</scene>
+        <ambient_light>0.4 0.4 0.4</ambient_light>
+        <background_color>0.75 0.78 0.82</background_color>
+        <camera_pose>-0.5 -7.5 6.5 0 0.72 1.5708</camera_pose>
+      </plugin>
+      <plugin filename="GzSceneManager" name="Scene Manager"><gz-gui><property key="resizable" type="bool">false</property><property key="width" type="double">5</property><property key="height" type="double">5</property><property key="state" type="string">floating</property><property key="showTitleBar" type="bool">false</property></gz-gui></plugin>
+      <plugin filename="InteractiveViewControl" name="Interactive view control"><gz-gui><property key="resizable" type="bool">false</property><property key="width" type="double">5</property><property key="height" type="double">5</property><property key="state" type="string">floating</property><property key="showTitleBar" type="bool">false</property></gz-gui></plugin>
+      <plugin filename="CameraTracking" name="Camera Tracking"><gz-gui><property key="resizable" type="bool">false</property><property key="width" type="double">5</property><property key="height" type="double">5</property><property key="state" type="string">floating</property><property key="showTitleBar" type="bool">false</property></gz-gui></plugin>
+      <plugin filename="ImageDisplay" name="Drone camera">
+        <gz-gui><title>Drone camera (simulated)</title><property type="string" key="state">docked</property></gz-gui>
+        <topic>mirror/camera</topic>
+      </plugin>
+    </gui>
+  </world>
+</sdf>
