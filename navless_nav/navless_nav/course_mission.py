@@ -15,7 +15,19 @@ States (10 Hz timer):
 
     WAIT_FOR_OFFBOARD  stream the current position. A setpoint from us in the
                        last second is one of flight_interface's conditions
-                       for taking over.
+                       for taking over. Pre-arm height check: we stream only
+                       once PX4's height (FI_NS/state `local_enu` z) has
+                       matched odom z for prearm_settle_s. PX4 can boot with
+                       its height ~0.6 m off (EKF2 parks the error in its
+                       terrain estimate, and with EV_CTRL 9 nothing pulls it
+                       back); flight_interface passes odom z to PX4 unchanged,
+                       so every setpoint would then be flown that far off.
+                       With no stream, flight_interface refuses the takeover
+                       and the pilot keeps Position.
+    REFUSED            Offboard came anyway while the heights disagreed (the
+                       stream had stopped less than flight_interface's
+                       setpoint timeout before the switch): descend in place
+                       with twist setpoints until PX4 disarms, never climb.
     TAKEOFF            climb straight up. PX4 disarms if we are not off the
                        ground 10 s after arming, so this starts on the first
                        tick of Offboard.
@@ -72,6 +84,12 @@ ODOM_TOPIC = '/visual_slam/tracking/odometry'
 
 IDLE_STATES = ('WAIT_FOR_OFFBOARD', 'PAUSED', 'DONE')
 
+# Pre-arm height check (see heights_agree): once passed, it holds until the
+# disagreement is this much past prearm_height_tol_m, or PX4 has sent no
+# height for PREARM_PX4_TIMEOUT_S.
+PREARM_HYSTERESIS_M = 0.05
+PREARM_PX4_TIMEOUT_S = 1.0
+
 PARAMETERS = (
     ('takeoff_altitude_m', 0.85),
     ('arrival_radius_m', 0.25),
@@ -106,6 +124,13 @@ PARAMETERS = (
     # over the wall to the launch mark and lands there.
     ('fly_home', False),
     ('home_altitude_m', 2.03),
+    # Pre-arm height check (see WAIT_FOR_OFFBOARD). Largest |PX4 z - odom z|
+    # we will take off with, m; 0 = off. Assumes flight_interface's
+    # anchor_setpoints is false (its default, and navless.launch.py's). The
+    # Gazebo stand-in reports PX4's height in world z, start_height_m above
+    # odom, hence the margin over the 0.07 m stand-in offset.
+    ('prearm_height_tol_m', 0.15),
+    ('prearm_settle_s', 2.0),     # ...and for this long without a break
 )
 
 
@@ -144,6 +169,13 @@ class CourseMission(Node):
         # Odom z of the hop: odom starts start_height_m above the floor.
         self.home_z = param('home_altitude_m') - param('start_height_m')
         self.going_home = False
+        self.prearm_tol = param('prearm_height_tol_m')
+        self.prearm_settle = param('prearm_settle_s')
+        self.px4_z = None           # PX4's last valid height (local_enu z)
+        self.px4_z_at = None
+        self.heights_agree_since = None
+        self.prearm_passed = False
+        self.prearm_warned_at = None
         self.frame = None          # (launch mark xy, start bearing) once known
         self.route = self.load_route(
             str(self.get_parameter('route_file').value),
@@ -222,6 +254,15 @@ class CourseMission(Node):
         self.offboard_active = bool(state.get('offboard_active', False))
         self.armed = bool(state.get('armed', False))
         self.landed = bool(state.get('landed', False))
+        local = state.get('local_enu')
+        try:
+            z = float(local[2])
+        except (TypeError, IndexError, ValueError):
+            z = None
+        if z is not None and math.isfinite(z):
+            # Keep the last valid height: one message without a position
+            # must not refuse a takeover (heights_agree checks its age).
+            self.px4_z, self.px4_z_at = z, self.now_s()
         if state.get('clamped'):
             self.info_once(
                 'clamped:' + ','.join(state['clamped']),
@@ -276,6 +317,56 @@ class CourseMission(Node):
         self.state = state
         self.state_since = self.now_s()
         self.target = target
+        if state == 'WAIT_FOR_OFFBOARD':
+            # Every arming (the fly_home re-arm on the pad too) re-checks.
+            self.heights_agree_since = None
+            self.prearm_passed = False
+
+    def heights_agree(self):
+        """Pre-arm check: PX4's height has matched odom z for prearm_settle_s."""
+        if self.prearm_tol <= 0.0:
+            self.info_once('prearm_off', 'pre-arm height check is OFF '
+                           '(prearm_height_tol_m 0).')
+            return True
+        now = self.now_s()
+        fresh = (self.px4_z is not None
+                 and now - self.px4_z_at <= PREARM_PX4_TIMEOUT_S)
+        dz = abs(self.px4_z - self.position[2]) if fresh else None
+        # Hysteresis: pass at prearm_height_tol_m held for prearm_settle_s;
+        # once passed, only a clear disagreement (PREARM_HYSTERESIS_M more)
+        # or no PX4 height for PREARM_PX4_TIMEOUT_S revokes it. Otherwise
+        # noise at the threshold or an arming transient can drop the stream
+        # just as the pilot switches, and the takeover becomes a REFUSED
+        # descent (Gazebo, simulated pilot arming at a 0.15 m boot offset).
+        limit = self.prearm_tol + (PREARM_HYSTERESIS_M if self.prearm_passed
+                                   else 0.0)
+        if dz is None or dz > limit:
+            self.heights_agree_since = None
+            self.prearm_passed = False
+            if (self.prearm_warned_at is None
+                    or now - self.prearm_warned_at >= 5.0):
+                self.prearm_warned_at = now
+                seen = ('no valid local position from PX4' if dz is None else
+                        f'PX4 height {self.px4_z:.2f} m vs odom '
+                        f'{self.position[2]:.2f} m: {dz:.2f} m apart')
+                self.get_logger().warn(
+                    f'pre-arm height check: {seen} (limit '
+                    f'{limit:.2f} m). Not streaming setpoints, so '
+                    'flight_interface will not take over. Keep the drone '
+                    'still on the floor; if it stays off, power-cycle the '
+                    'Pixhawk.')
+            return False
+        if self.heights_agree_since is None:
+            self.heights_agree_since = now
+        if now - self.heights_agree_since < self.prearm_settle:
+            return False
+        if not self.prearm_passed:
+            self.prearm_passed = True
+            self.prearm_warned_at = None
+            self.get_logger().info(
+                f'pre-arm height check passed: PX4 and odom agree to '
+                f'{dz:.2f} m. Streaming; ready for the arming.')
+        return True
 
     # -- state machine ---------------------------------------------------
     def tick(self):
@@ -313,8 +404,17 @@ class CourseMission(Node):
         getattr(self, '_state_' + self.state.lower())()
 
     def _state_wait_for_offboard(self):
+        ready = self.heights_agree()
         if not self.offboard_active:
-            self.send(*self.position, fence=False)
+            if ready:
+                self.send(*self.position, fence=False)
+            return
+        if not ready:
+            self.get_logger().error(
+                'Offboard came while PX4 height and odom disagree: not taking '
+                'off. Descending in place until PX4 disarms.')
+            self.goto('REFUSED', self.position)
+            self._state_refused()       # no tick without a setpoint
             return
         x, y, _ = self.position
         # Climb to the route's first point, so the route doesn't open with a
@@ -399,6 +499,11 @@ class CourseMission(Node):
         norm = math.hypot(ex, ey)
         scale = min(1.0, self.land_xy_max / norm) if norm > 0.0 else 0.0
         self.send_twist(ex * scale, ey * scale, -self.land_speed)
+
+    def _state_refused(self):
+        # Push down, never up: on the floor this is PX4's land detector, then
+        # its disarm. Ends like any lost Offboard: PAUSED, then waiting again.
+        self.send_twist(0.0, 0.0, -self.land_speed)
 
     def _state_done(self):
         pass
