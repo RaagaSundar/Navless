@@ -108,6 +108,13 @@ class OccupancyGrid3D:
         )
         # Raw occupancy: True where static prior or live depth obstacles exist
         self.raw_grid = np.zeros(self.shape, dtype=bool)
+        # Snapshot of static prior occupancy so live sensor discrepancies (raw_grid & ~prior_grid) can be tracked
+        self.prior_grid = np.zeros(self.shape, dtype=bool)
+        # 2-voxel (0.20 m) tolerance mask around prior walls so VIO/stereo jitter on known walls
+        # never thickens corridors, while genuine physical discrepancies (> 0.20 m or in window) are mapped live
+        self.prior_near_mask = np.zeros(self.shape, dtype=bool)
+        # Per-voxel hit accumulator for multi-ray / multi-frame live depth confirmation
+        self.live_hit_counts = np.zeros(self.shape, dtype=np.uint16)
         # Inflated occupancy: True within inflation_radius_m of any occupied voxel
         self.inflated_grid = np.zeros(self.shape, dtype=bool)
         self._inflation_offsets = self._build_spherical_offsets(self.inflation_radius)
@@ -269,6 +276,31 @@ class OccupancyGrid3D:
         if rebuild:
             self.rebuild_inflation()
 
+    def _update_prior_snapshot(self) -> None:
+        """Snapshot `prior_grid` and build a 2-voxel (0.20 m) VIO-jitter tolerance mask around static walls."""
+        self.prior_grid[:] = self.raw_grid
+        self.prior_near_mask.fill(False)
+        occ = np.argwhere(self.prior_grid)
+        if occ.size == 0:
+            return
+        nx, ny, nz = self.shape
+        for dx in (-2, -1, 0, 1, 2):
+            for dy in (-2, -1, 0, 1, 2):
+                for dz in (-1, 0, 1):
+                    ix = occ[:, 0] + dx
+                    iy = occ[:, 1] + dy
+                    iz = occ[:, 2] + dz
+                    valid = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny) & (iz >= 0) & (iz < nz)
+                    self.prior_near_mask[ix[valid], iy[valid], iz[valid]] = True
+        # Never mask out the central Window opening core so a blocked window discrepancy is always detected
+        wmin = self.world_to_voxel((-0.62, -2.52, 0.52))
+        wmax = self.world_to_voxel((-0.32, -2.02, 1.00))
+        self.prior_near_mask[
+            max(0, wmin[0]) : min(nx, wmax[0] + 1),
+            max(0, wmin[1]) : min(ny, wmax[1] + 1),
+            max(0, wmin[2]) : min(nz, wmax[2] + 1),
+        ] = False
+
     def load_prior_from_json(self, path: str | Path) -> None:
         """Pre-seed map from a JSON layout file containing `walls` (boxes) and `openings`."""
         data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -280,6 +312,7 @@ class OccupancyGrid3D:
             pts = np.asarray(data["points"], dtype=np.float64)
             self.insert_point_cloud(pts, sensor_origin_m=None)
         self.rebuild_inflation()
+        self._update_prior_snapshot()
 
     def load_prior_from_obj(
         self,
@@ -353,12 +386,31 @@ class OccupancyGrid3D:
                     sampled_batches.append(pts[z_ok])
 
         all_pts = np.vstack(sampled_batches)
-        return self.insert_point_cloud(all_pts, sensor_origin_m=None)
+        added = self.insert_point_cloud(all_pts, sensor_origin_m=None)
+        self._update_prior_snapshot()
+        return added
+
+    def get_discovered_discrepancy_points(
+        self,
+        *,
+        z_min_m: float = 0.15,
+        z_max_m: float = 1.70,
+    ) -> np.ndarray:
+        """Return (M, 3) world coordinates of occupied voxels discovered by live sensors that were not in the prior map."""
+        diff_mask = self.raw_grid & (~self.prior_grid)
+        if not np.any(diff_mask):
+            return np.zeros((0, 3), dtype=np.float64)
+        vox = np.argwhere(diff_mask)
+        pts = self.bounds_min + (vox.astype(np.float64) + 0.5) * self.resolution
+        keep = (pts[:, 2] >= z_min_m) & (pts[:, 2] <= z_max_m)
+        return pts[keep]
 
     def insert_point_cloud(
         self,
         points_world_m: np.ndarray,
         sensor_origin_m: Optional[np.ndarray | Tuple[float, float, float]] = None,
+        *,
+        min_live_hits: int = 1,
     ) -> int:
         """Insert 3D obstacle points into the local rolling window (or global grid if sensor_origin_m is None)."""
         pts = np.asarray(points_world_m, dtype=np.float64).reshape(-1, 3)
@@ -383,9 +435,26 @@ class OccupancyGrid3D:
             & (idx[:, 2] >= 0)
             & (idx[:, 2] < nz)
         )
-        idx = np.unique(idx[valid], axis=0)
+        idx_valid = idx[valid]
+        if idx_valid.size == 0:
+            return 0
+
+        if sensor_origin_m is not None and min_live_hits > 1:
+            uniq_idx, counts = np.unique(idx_valid, axis=0, return_counts=True)
+            cur = self.live_hit_counts[uniq_idx[:, 0], uniq_idx[:, 1], uniq_idx[:, 2]].astype(np.int32) + counts
+            self.live_hit_counts[uniq_idx[:, 0], uniq_idx[:, 1], uniq_idx[:, 2]] = np.minimum(65535, cur).astype(np.uint16)
+            confirmed = cur >= int(min_live_hits)
+            idx = uniq_idx[confirmed]
+        else:
+            idx = np.unique(idx_valid, axis=0)
         if idx.size == 0:
             return 0
+
+        if sensor_origin_m is not None:
+            not_wall_jitter = ~self.prior_near_mask[idx[:, 0], idx[:, 1], idx[:, 2]]
+            idx = idx[not_wall_jitter]
+            if idx.size == 0:
+                return 0
 
         new_mask = ~self.raw_grid[idx[:, 0], idx[:, 1], idx[:, 2]]
         new_idx = idx[new_mask]
@@ -409,6 +478,7 @@ class OccupancyGrid3D:
         stride: int = 8,
         min_depth_m: float = 0.30,
         max_depth_m: float = 3.50,
+        min_live_hits: int = 1,
     ) -> int:
         """Project a ROS depth image (`16UC1` converted to m or `32FC1` m) into the local voxel grid.
 
@@ -457,7 +527,7 @@ class OccupancyGrid3D:
             pts_world = pts_world[in_course_z]
         if pts_world.size == 0:
             return 0
-        return self.insert_point_cloud(pts_world, sensor_origin_m=pos)
+        return self.insert_point_cloud(pts_world, sensor_origin_m=pos, min_live_hits=min_live_hits)
 
     def obstacle_repulsion_gradient(
         self,

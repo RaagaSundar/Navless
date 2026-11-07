@@ -52,6 +52,7 @@ def _get_base_grid(cfg: PlannerConfig) -> OccupancyGrid3D:
         )
         g.load_prior_from_obj(OBJ_PATH)
         g.build_soft_clearance_cost()
+        g.build_soft_clearance_cost(0.55)
         _BASE_GRID = g
     return _BASE_GRID
 
@@ -64,6 +65,8 @@ def _clone_grid(src: OccupancyGrid3D, cfg: PlannerConfig) -> OccupancyGrid3D:
         inflation_radius_m=cfg.obstacle_inflation_m,
     )
     g.raw_grid[:] = src.raw_grid
+    g.prior_grid[:] = src.prior_grid
+    g.prior_near_mask[:] = src.prior_near_mask
     g.inflated_grid[:] = src.inflated_grid
     g.detected_concentric_pad = src.detected_concentric_pad
     g.detected_launch_mark_xy = src.detected_launch_mark_xy
@@ -86,17 +89,19 @@ def run_simulation_episode(
 
     unmapped_boxes: List[Dict] = []
     if spawn_unmapped_boulder:
-        bmin, bmax = (1.30, -1.75, 0.0), (1.70, -1.35, 1.45)
+        # Place an unmapped discrepancy boulder across the inside corner of the tunnel exit -> window turn
+        # so the initial preloaded spline hits it and dynamically replans a wider arc through the Window!
+        bmin, bmax = (1.35, -1.68, 0.0), (1.65, -1.38, 1.45)
         truth_grid.add_aabb_obstacle(bmin, bmax)
-        unmapped_boxes.append({"min": list(bmin), "max": list(bmax), "label": "Unmapped Boulder"})
+        unmapped_boxes.append({"min": list(bmin), "max": list(bmax), "label": "Unmapped Boulder (Map Discrepancy)"})
 
     if block_window:
         features = planner_grid.discover_course_features(standoff_distance_m=cfg.window_inspect_distance_m)
         if features.window_center_m is not None:
             wx, wy, wz = features.window_center_m
-            wmin, wmax = (wx - 0.15, wy - 0.30, wz - 0.30), (wx + 0.15, wy + 0.30, wz + 0.30)
+            wmin, wmax = (wx - 0.18, wy - 0.35, 0.15), (wx + 0.18, wy + 0.35, 1.35)
             truth_grid.add_aabb_obstacle(wmin, wmax)
-            unmapped_boxes.append({"min": list(wmin), "max": list(wmax), "label": "Blocked Window Panel"})
+            unmapped_boxes.append({"min": list(wmin), "max": list(wmax), "label": "Blocked Window Panel (Map Discrepancy)"})
 
     router = GlobalCourseRouter(cfg, planner_grid)
     tracker = PX4TrajectoryTrackerCore(router, lookahead_s=0.35)
@@ -251,9 +256,13 @@ def run_simulation_episode(
             reason = "mission_complete_landed_and_disarmed"
 
         else:
+            # Pure online perception + 3D A* + EGO B-spline replanning:
+            # Do NOT pass any ground-truth external_window_confidence cheat — the planner starts
+            # with the preloaded course.obj prior and discovers both the Unmapped Boulder and any
+            # Blocked Window Panel purely through live raycasted OAK-D depth updates!
             sample, reason = tracker.sample_setpoint(
                 sim_t,
-                external_window_confidence=(0.35 if block_window else 0.95),
+                external_window_confidence=None,
             )
             # If router just jumped to STAGE_6_FLY_HOME before our pad landing sequence ran, intercept it!
             if pad_sequence_state == "NONE" and router.stage == CourseStage.STAGE_6_FLY_HOME:

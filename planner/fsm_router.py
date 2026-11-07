@@ -196,12 +196,9 @@ class GlobalCourseRouter:
                 use_clearance_cost=(features.concentric_pad is not None),
                 goal_radius_m=(concentric_r if features.concentric_pad is not None else 0.0),
             )
-            if (
-                win_spline is not None
-                and elapsed_ms <= self.config.max_window_plan_time_ms
-                and self.optimizer.is_spline_collision_free(win_spline)
-            ):
-                return "WINDOW", win_spline, elapsed_ms, inspect_res, "window_confident_and_feasible"
+            if win_spline is not None and self.optimizer.is_spline_collision_free(win_spline):
+                if elapsed_ms <= self.config.max_window_plan_time_ms or float(current_pos_enu[1]) < -0.50:
+                    return "WINDOW", win_spline, elapsed_ms, inspect_res, "window_confident_and_feasible"
 
         # 3. Fallback: mask out the Window opening and let 3D A* + concentric-circle target field
         #    automatically discover the Gate B path around the chicane walls to the Concentric Pad!
@@ -321,7 +318,8 @@ class GlobalCourseRouter:
         spline_finished = False
         if self.active_spline is not None:
             t_rel = max(0.0, now_s - self.spline_start_time_s)
-            spline_blocked = not self.optimizer.is_spline_collision_free(self.active_spline, t_start=t_rel)
+            if (now_s - self.last_replan_time_s) >= 0.40:
+                spline_blocked = not self.optimizer.is_spline_collision_free(self.active_spline, t_start=t_rel)
             spline_finished = t_rel >= (self.active_spline.duration - 0.05)
 
         needs_new_spline = (

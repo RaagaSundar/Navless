@@ -159,6 +159,7 @@ class PX4TrajectoryTrackerCore:
         self.tube_offset_left_m: float = 0.0
         self.tube_width_m: float = 0.0
         self.last_localize_time_s: Optional[float] = None
+        self.last_localize_status_time_s: Optional[float] = None
         self.localized_pos_enu: Optional[Tuple[float, float, float]] = None
         self.localized_yaw_enu_rad: float = 0.0
         self.localize_status: str = "tracking"
@@ -177,11 +178,14 @@ class PX4TrajectoryTrackerCore:
         *,
         measured_x: float = 1.0,
         measured_y: float = 1.0,
+        now_s: Optional[float] = None,
     ) -> None:
         """Update status and measurement confidence from `/team/localize/status`."""
         if status:
             self.localize_status = str(status).strip().lower()
         self.localize_measured_xy = (float(measured_x), float(measured_y))
+        if now_s is not None:
+            self.last_localize_status_time_s = float(now_s)
 
     def update_localized_course_pose(
         self,
@@ -212,11 +216,13 @@ class PX4TrajectoryTrackerCore:
 
     def current_course_pose_enu(self, now_s: float) -> Tuple[np.ndarray, float]:
         """Return `(pos_enu, yaw_enu)` in the course frame, preferring `/team/localize/base_pose` when fresh and measured."""
-        status_ok = self.localize_status == "tracking" or (
-            self.localize_status == "weak"
-            and self.localize_measured_xy[0] >= 0.7
-            and self.localize_measured_xy[1] >= 0.7
+        status_fresh = (
+            self.last_localize_status_time_s is None
+            or (now_s - self.last_localize_status_time_s) <= 2.0
         )
+        # Only trust `/team/localize/base_pose` when status is `"tracking"` (high ICP fitness);
+        # `"weak"` frames in master_sim had 45-103 cm errors (@sim 1794067145).
+        status_ok = status_fresh and (self.localize_status == "tracking")
         if (
             self.localized_pos_enu is not None
             and self.last_localize_time_s is not None
@@ -340,17 +346,58 @@ class PX4TrajectoryTrackerCore:
             profile.z_max_enu,
             xy_limit_m=xy_fence,
         )
-        # Cap carrot lead distance so a lagging drone never sees a setpoint > max_lead_m ahead
-        if self.max_lead_m > 0.0 and decision.stage != CourseStage.STAGE_6_FLY_HOME:
+        # Curve-following carrot cap: if the spline point is > max_lead_m ahead of the drone,
+        # walk t_eval back along the B-spline curve and pause spline_start_time_s so the carrot
+        # stays ON the collision-free spline instead of cutting straight across maze/chicane corners!
+        if self.max_lead_m > 0.0:
             lead_vec = pos_enu - drone_pos_enu
             lead_dist = float(np.linalg.norm(lead_vec))
             if lead_dist > self.max_lead_m:
+                t_search_min = max(0.0, t_eval - 4.0)
+                ts_grid = np.linspace(t_search_min, t_eval, 17)
+                best_t = float(ts_grid[0])
+                best_d = 1e9
+                for tc in ts_grid:
+                    pc = clamp_altitude_enu(
+                        spline.evaluate_position(float(tc)),
+                        z_min_clamp,
+                        profile.z_max_enu,
+                        xy_limit_m=xy_fence,
+                    )
+                    dc = float(np.linalg.norm(pc - drone_pos_enu))
+                    if dc < best_d:
+                        best_d = dc
+                        best_t = float(tc)
+                t_lo, t_hi = best_t, t_eval
+                for _ in range(10):
+                    t_mid = 0.5 * (t_lo + t_hi)
+                    pm = clamp_altitude_enu(
+                        spline.evaluate_position(t_mid),
+                        z_min_clamp,
+                        profile.z_max_enu,
+                        xy_limit_m=xy_fence,
+                    )
+                    if float(np.linalg.norm(pm - drone_pos_enu)) <= self.max_lead_m:
+                        t_lo = t_mid
+                    else:
+                        t_hi = t_mid
+                t_eval = t_lo
+                self.router.spline_start_time_s = now_s - max(0.0, t_eval - self.lookahead_s)
                 pos_enu = clamp_altitude_enu(
-                    drone_pos_enu + (self.max_lead_m / lead_dist) * lead_vec,
+                    spline.evaluate_position(t_eval),
                     z_min_clamp,
                     profile.z_max_enu,
                     xy_limit_m=xy_fence,
                 )
+                lead_vec = pos_enu - drone_pos_enu
+                lead_dist = float(np.linalg.norm(lead_vec))
+                if lead_dist > self.max_lead_m:
+                    pos_enu = clamp_altitude_enu(
+                        drone_pos_enu + (self.max_lead_m / lead_dist) * lead_vec,
+                        z_min_clamp,
+                        profile.z_max_enu,
+                        xy_limit_m=xy_fence,
+                    )
         vel_enu = spline.evaluate_velocity(t_eval)
         raw_yaw_enu = spline.evaluate_yaw(t_eval, fallback_yaw=current_yaw_enu)
         yaw_enu = self._rate_limit_yaw_enu(now_s, raw_yaw_enu)
@@ -530,9 +577,11 @@ class PX4TrajectoryTrackerCore:
 
         if self.skybeta_state == "TAKEOFF":
             takeoff_z = float(self.config.checkpoints.start_pad[2])
-            target_enu = (float(self.launch_origin_enu[0]), float(self.launch_origin_enu[1]), takeoff_z)
-            if float(np.linalg.norm(pos_enu - np.asarray(target_enu, dtype=np.float64))) <= 0.25:
+            # Lean 0.20 m North up Corridor 1 during climb-out so PX4 tilt limit never drifts toward Barrier 1
+            target_enu = (float(self.launch_origin_enu[0]), float(self.launch_origin_enu[1]) + 0.20, takeoff_z)
+            if float(pos_enu[2]) >= (takeoff_z - 0.15) or float(np.linalg.norm(pos_enu - np.asarray(target_enu, dtype=np.float64))) <= 0.25:
                 self.skybeta_state = "ROUTE"
+                self.router.spline_start_time_s = now_s
             else:
                 target_odom = course_to_odom_pos(target_enu, launch_xy, self.start_bearing_deg, self.start_height_m)
                 yaw_quat = enu_yaw_to_odom_quat(self._rate_limit_yaw_enu(now_s, current_yaw_enu), self.start_bearing_deg)
@@ -747,7 +796,14 @@ def decode_ros_pointcloud2_optical(
     x_w = pos[0] + c * x_flu - s * y_flu
     y_w = pos[1] + s * x_flu + c * y_flu
     z_w = pos[2] + z_flu
-    return np.stack([x_w, y_w, z_w], axis=-1)
+    pts_world = np.stack([x_w, y_w, z_w], axis=-1)
+    in_course = (
+        (pts_world[:, 2] >= 0.15)
+        & (pts_world[:, 2] <= 1.70)
+        & (np.abs(pts_world[:, 0]) <= 2.85)
+        & (np.abs(pts_world[:, 1]) <= 2.85)
+    )
+    return pts_world[in_course]
 
 
 def run_ros2_node(argv=None) -> int:
@@ -794,12 +850,29 @@ def run_ros2_node(argv=None) -> int:
         action="store_true",
         help="Land and disarm on the Concentric Pad instead of touch-and-go Stage 6 Fly-Home",
     )
-    args = parser.parse_args(argv)
+    parser.add_argument(
+        "--touch-and-go",
+        action="store_true",
+        help="Perform 0.8 s touch-and-go on the Concentric Pad instead of full disarm + pilot re-arm",
+    )
+    parser.add_argument(
+        "--use-cloud-localize",
+        action="store_true",
+        help="Fuse /team/localize/base_pose corrections into the live course frame",
+    )
+    parser.add_argument(
+        "--live-depth-mapping",
+        action="store_true",
+        help="Insert live stereo depth/pointcloud into OccupancyGrid3D even when --prior mesh is loaded",
+    )
+    args, unknown_args = parser.parse_known_args(argv)
+    # Support `-p fly_home:=true` passed by master_sim/run_master.sh
+    fly_home_arg = any("fly_home:=true" in str(u).lower() for u in unknown_args)
 
     cfg = PlannerConfig.from_json(args.config) if args.config.exists() else PlannerConfig()
     if args.fast_mode:
         cfg.fast_mode = True
-    if args.stop_on_pad:
+    if args.stop_on_pad and not fly_home_arg:
         cfg.enable_fly_home = False
 
     grid = OccupancyGrid3D(
@@ -809,18 +882,20 @@ def run_ros2_node(argv=None) -> int:
         inflation_radius_m=cfg.obstacle_inflation_m,
         local_window_m=cfg.local_window_size_m,
     )
+    prior_loaded = False
     if args.prior and args.prior.exists():
         if args.prior.suffix.lower() == ".obj":
             grid.load_prior_from_obj(args.prior)
         else:
             grid.load_prior_from_json(args.prior)
+        prior_loaded = True
 
     router = GlobalCourseRouter(cfg, grid)
     tracker = PX4TrajectoryTrackerCore(
         router,
         start_bearing_deg=args.start_bearing_deg,
         start_height_m=(args.start_height_m if args.skybeta_mode else 0.0),
-        touch_and_go_fly_home=not args.stop_on_pad,
+        touch_and_go_fly_home=bool(args.touch_and_go and not args.stop_on_pad),
     )
 
     import rclpy
@@ -895,6 +970,8 @@ def run_ros2_node(argv=None) -> int:
                 cam_intrinsics["cy"] * sy,
                 pos_enu,
                 yaw_enu,
+                max_depth_m=2.80,
+                min_live_hits=2,
             )
         except ValueError as err:
             node.get_logger().warning(f"Depth decode warning: {err}")
@@ -903,9 +980,9 @@ def run_ros2_node(argv=None) -> int:
         if tracker.telemetry.last_local_pos_time_s is None and tracker.last_localize_time_s is None:
             return
         pos_enu, yaw_enu = tracker.current_course_pose_enu(now_sec())
-        pts_world = decode_ros_pointcloud2_optical(msg, pos_enu, yaw_enu)
+        pts_world = decode_ros_pointcloud2_optical(msg, pos_enu, yaw_enu, max_depth_m=2.80)
         if pts_world.size > 0:
-            grid.insert_point_cloud(pts_world, sensor_origin_m=pos_enu)
+            grid.insert_point_cloud(pts_world, sensor_origin_m=pos_enu, min_live_hits=2)
 
     def on_tube_offset(msg: PointStamped) -> None:
         tracker.update_tube_offset(now_sec(), float(msg.point.y), float(msg.point.z))
@@ -915,6 +992,8 @@ def run_ros2_node(argv=None) -> int:
     last_vslam_status_rx_s: List[float] = [-1e9]
 
     def _apply_localize_msg(msg: PoseStamped) -> None:
+        if prior_loaded and not args.use_cloud_localize:
+            return
         p = msg.pose.position
         q = msg.pose.orientation
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
@@ -940,6 +1019,7 @@ def run_ros2_node(argv=None) -> int:
                 str(st.get("status", "tracking")),
                 measured_x=float(meas.get("x", 1.0)),
                 measured_y=float(meas.get("y", 1.0)),
+                now_s=now_sec(),
             )
         except (ValueError, TypeError):
             pass
