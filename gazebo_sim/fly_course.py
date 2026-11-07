@@ -141,6 +141,11 @@ class PX4:
 
     def cmd(self, command, *params):
         p = list(params) + [0] * (7 - len(params))
+        # remember what was asked, so an ACK updates the state to THAT (not to an assumed Offboard / armed)
+        if command == mavutil.mavlink.MAV_CMD_DO_SET_MODE:
+            self._asked_mode = int(p[1])
+        elif command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM:
+            self._asked_arm = bool(p[0])
         self.m.mav.command_long_send(self.m.target_system, self.m.target_component, command, 0, *p)
 
     def poll(self):
@@ -161,10 +166,10 @@ class PX4:
                 self.yaw = msg.yaw
             elif t == "COMMAND_ACK" and msg.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
                 # acks arrive immediately; heartbeats can be up to a period late
-                if msg.command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM and not self.armed:
-                    self.armed = True
-                elif msg.command == mavutil.mavlink.MAV_CMD_DO_SET_MODE and self.main_mode != PX4_OFFBOARD:
-                    self.main_mode = PX4_OFFBOARD
+                if msg.command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM and getattr(self, "_asked_arm", None) is not None:
+                    self.armed = self._asked_arm
+                elif msg.command == mavutil.mavlink.MAV_CMD_DO_SET_MODE and getattr(self, "_asked_mode", None) is not None:
+                    self.main_mode = self._asked_mode
             elif t == "STATUSTEXT":
                 self.texts.append(msg.text)
                 print(f"  PX4: {msg.text}", flush=True)
