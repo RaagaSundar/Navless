@@ -116,6 +116,72 @@ def window_route(course_path=COURSE_JSON, z_maze=0.94, z_window=0.85):
     return wps, zones
 
 
+def gate_b_route(course_path=COURSE_JSON, z_maze=0.94, rho_c1=0.485, rho_a1=0.475, r_tube=None, r_room=None):
+    """Launch -> corridor -> maze -> Gate A -> tube -> round C1's south end -> chicane -> Gate B -> pad.
+
+    The window route as far as the tube. After it, the path turns round three wall ends on arcs centred on
+    them, and every straight leg is tangent to those circles:
+      - C1's south end, radius rho_c1, which also puts the chicane leg rho_c1 west of the C1 line;
+      - C2b's north end, radius = the rest of the 38 in between the C1 and C2 lines. The leg out of that turn
+        runs west through Gate B;
+      - A1's south end, radius rho_a1. The leg into it runs south, rho_a1 east of A1; the leg out of it heads
+        for the pad.
+    r_tube is the turn from the tube heading west, and r_room the turn from Gate B heading south. None (the
+    default) means the largest radius that fits beside the neighbouring fillets, so no arc gets shrunk.
+    The default radii balance nose-north clearance: 17.4 cm to C1, 17.4 cm to C2b and 17.7 cm to A1 (2 cm grid).
+    """
+    d = json.load(open(course_path))
+    head, zones = window_route(course_path, z_maze)
+    head = head[:[w.name for w in head].index("tube_turn") + 1]
+    walls = {w["name"]: w for w in d["walls"]}
+    M = lambda q: np.array(map_to_world(*q))
+    b = math.radians(walls["C1"]["bearing_deg"])
+    u = np.array([math.sin(b), math.cos(b)])                  # along the chicane walls (NNE)
+    nrm = np.array([math.cos(b), -math.sin(b)])               # across them, towards C1
+    t1, t2, t3 = M(walls["C1"]["start_in"]), M(walls["C2b"]["end_in"]), M(walls["A1"]["end_in"])
+    rho_c2 = float(nrm @ (t1 - t2)) - rho_c1                  # C2b's end gets what is left of the chicane width
+    tube = d["tunnel"]["footprint_in"]
+    x_tube = M(((tube["x_min"] + tube["x_max"]) / 2, 0))[0]
+    pad = M(d["landing_pad_in"]["center"])
+
+    def meet(p, dp, q, dq):                                   # intersection of two lines (point, direction)
+        k = np.linalg.solve(np.array([dp, -dq]).T, q - p)
+        return p + dp * k[0]
+
+    dv = t3 - pad                                             # tangent from the pad, passing south of A1's end
+    ang = math.atan2(dv[1], dv[0]) - math.asin(rho_a1 / np.linalg.norm(dv))
+    east, north = np.array([1.0, 0.0]), np.array([0.0, 1.0])
+    y_w, y_g, x_s = t1[1] - rho_c1, t2[1] + rho_c2, t3[0] + rho_a1
+    chicane = t1 - nrm * rho_c1                               # a point on the chicane leg
+    corners = [
+        ("tube_south", np.array([x_tube, y_w]), r_tube),
+        ("c1_end", meet(np.array([0.0, y_w]), east, chicane, u), rho_c1),
+        ("gate_b", meet(chicane, u, np.array([0.0, y_g]), east), rho_c2),
+        ("room_south", np.array([x_s, y_g]), r_room),
+        ("a1_end", meet(np.array([x_s, 0.0]), north, pad, np.array([math.cos(ang), math.sin(ang)])), rho_a1),
+    ]
+    # free radii: the largest whose tangent lengths fit on both neighbouring legs
+    pts = [np.array(head[-2].p[:2]), np.array(head[-1].p[:2])] + [q for _, q, _ in corners] + [pad]
+    rad = [0.0, head[-1].r] + [r for *_, r in corners] + [0.0]
+    lens = [float(np.linalg.norm(b_ - a_)) for a_, b_ in zip(pts[:-1], pts[1:])]
+    dirs = [(b_ - a_) / ln for a_, b_, ln in zip(pts[:-1], pts[1:], lens)]
+    tans = [0.0] + [math.tan(math.acos(float(np.clip(dirs[i - 1] @ dirs[i], -1, 1))) / 2)
+                    for i in range(1, len(pts) - 1)] + [0.0]
+    for i in range(2, len(pts) - 1):
+        if rad[i] is None:
+            rad[i] = 0.99 * min(lens[i - 1] - (rad[i - 1] or 0.0) * tans[i - 1],
+                                lens[i] - (rad[i + 1] or 0.0) * tans[i + 1]) / tans[i]
+    corners = [(n, q, rad[i + 2]) for i, (n, q, _) in enumerate(corners)]
+    wps = head + [Waypoint(n, (float(q[0]), float(q[1]), z_maze), r, yaw=0.0 if n == "tube_south" else None)
+                  for n, q, r in corners] + [
+        Waypoint("pad_above", (float(pad[0]), float(pad[1]), 0.35), 0.25),
+        Waypoint("pad", (float(pad[0]), float(pad[1]), GROUND_Z + 0.05), 0.0),
+    ]
+    # build_trajectory caps speed in zones["window"]: here that is the Gate B opening
+    zones = dict(zones, window=((float(t2[0]), float(y_g), z_maze), 0.55))
+    return wps, zones
+
+
 # ---------------------------------------------------------------------------------------- geometry
 def _fillet_path(wps, ds=0.01):
     """Polyline with circular fillets -> densely sampled points, unit tangents, curvature vectors."""

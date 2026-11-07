@@ -17,8 +17,12 @@ import json
 import math
 import os
 
+# realpath, not abspath: on the drone, team_build.sh runs `colcon build
+# --symlink-install`, which imports this package from team_ws/build/navless_nav/,
+# a symlink into the source. abspath keeps that link, so the repo would be
+# team_ws/build, no route file is found, and the node takes off and hovers.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))))
+    os.path.realpath(__file__))))
 
 NET_HALF_M = 3.048      # the 20 x 20 ft net; course origin at its floor centre
 
