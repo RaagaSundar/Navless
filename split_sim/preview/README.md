@@ -142,3 +142,46 @@ optional seeking uses the explicit `first_stamp_ns` or `start_sim_s` origin.
 Recent/live selections poll for newly finalized clips for at most ten minutes
 without replacing an existing player or moving the replay timestep. Older
 missing clips stay explicitly absent. Refresh manually after a later export.
+
+## Named runs and What changed
+
+Every experiment uses run-local `run-comparison.json` schema 1 (formal schema:
+`run-comparison.schema.json` alongside the writer). Required identity
+fields are `run_id` (the exact catalog ID, including `nvidia:`/`flyx:`), `name`,
+`kind` (`flight attempted`, `bench`, `replay`), and `baseline_id` (or null).
+`changes` is a list of `{field,before,after,evidence}`; evidence filenames belong
+to this run. `notes`, `confounds`, `source_sha256`, a seeded settings `snapshot`,
+and measured `telemetry` retain context. Labels never override independent grade.
+The same physical flight may have separate derived replay/localization artifacts;
+do not rename it as though a new flight happened.
+
+From the repository root (stdlib Python >=3.11):
+
+```bash
+python3 split_sim/run_comparison.py /path/to/run --name "Centered window · PX4 auto-land" --baseline /path/to/baseline
+```
+
+`--kind bench` or `--kind replay` labels other experiment types. The portable
+installation uses `split_sim/run_comparison.py` with the same arguments.
+`--annotations /path/to/annotations.json` can supply `name`, `notes`, `confounds`,
+and evidenced `changes`; it cannot alter run ID, baseline, kind, or schema. The
+writer does not run software or estimate results: it reads archived settings,
+scene hashes, planned-route data and actual arm/landed samples, and atomically
+writes metadata. Missing archived fields are “not archived”, not defaults. Equal
+recorded fields mean no recorded differences, not proof of identical software,
+measurements, startup state or physics. No baseline is selected automatically.
+
+Names appear in the archive and selected heading alongside the immutable ID.
+The prominent What changed section shows before → after, confounds and source
+links. Clicking an archived baseline overlays its track while preserving the
+selected run. Missing comparison metadata stays explicitly unknown.
+
+Offline comparison checks (no recording or hardware needed):
+
+```bash
+uv run --python 3.12 -m unittest discover -s split_sim -p test_run_comparison.py -v
+node split_sim/preview/test_comparison_ui.cjs
+```
+
+Node is needed only for this optional small UI test; the server and writer use
+Python's standard library. Install it with `brew install node` if needed.

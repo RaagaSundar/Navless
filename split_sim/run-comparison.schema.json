@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Archived experiment comparison",
+  "type": "object",
+  "required": ["schema", "run_id", "name", "kind", "baseline_id", "changes", "notes", "confounds", "evidence"],
+  "properties": {
+    "schema": {"const": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "name": {"type": "string", "minLength": 1},
+    "kind": {"enum": ["flight attempted", "bench", "replay"]},
+    "baseline_id": {"type": ["string", "null"]},
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["field", "before", "after", "evidence"],
+        "properties": {
+          "field": {"type": "string"},
+          "before": {},
+          "after": {},
+          "evidence": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+          "provenance": {"type": "string"}
+        }
+      }
+    },
+    "notes": {"type": "array", "items": {"type": "string"}},
+    "confounds": {"type": "array", "items": {"type": "string"}},
+    "evidence": {"type": "array", "items": {"type": "string"}},
+    "source_sha256": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "telemetry": {"type": "object"},
+    "snapshot": {"type": "object"},
+    "comparison_state": {"type": "string"}
+  },
+  "description": "Labels and comparisons never grant flight approval, create airborne evidence or override independent grading. Evidence paths are relative to this run; missing values are unknown."
+}
