@@ -16,10 +16,14 @@ FAILS=0 WARNS=0
 pass() { printf '  PASS  %s\n' "$1"; }
 warn() { printf '  WARN  %s\n' "$1"; WARNS=$((WARNS + 1)); }
 fail() { printf '  FAIL  %s\n        fix: %s\n' "$1" "$2"; FAILS=$((FAILS + 1)); }
-# Inside the stack container, with the stack's environment and the team overlay sourced.
+# Inside the stack container, with the stack's environment and the team overlay sourced. Fast DDS
+# prints harmless shared-memory port warnings (RTPS_TRANSPORT_SHM) on stdout after a stack restart;
+# drop them so they don't read as values. The exit code is the command's.
 ctr() {
   docker exec "$STACK" bash -lc "source skybeta_env.sh >/dev/null 2>&1; \
-    [ -f /root/team_ws/install/setup.bash ] && source /root/team_ws/install/setup.bash; $1" 2>/dev/null
+    [ -f /root/team_ws/install/setup.bash ] && source /root/team_ws/install/setup.bash; $1" 2>/dev/null \
+    | grep -v RTPS_TRANSPORT_SHM
+  return "${PIPESTATUS[0]}"
 }
 
 echo "== host"
@@ -90,16 +94,21 @@ pubs=$(ctr "ros2 topic info /skybeta/setpoint/pose" | sed -n 's/^Publisher count
   || fail "/skybeta/setpoint/pose has $pubs publishers: two commanders" "find and stop the extra node (ros2 topic info -v)"
 
 echo "== live state (drone on the launch mark)"
-vo=$(ctr "timeout 5 ros2 topic echo --once /visual_slam/status --field vo_state" | head -1)
+# Timeouts are generous: DDS discovery on skybeta's Humble image can take several seconds.
+vo=$(ctr "timeout 10 ros2 topic echo --once /visual_slam/status --field vo_state" | head -1)
 [[ "$vo" == 1 ]] && pass "cuVSLAM tracking (vo_state 1)" \
   || fail "cuVSLAM vo_state is '${vo:-no message}'" "check the camera and the slam window; don't arm without tracking"
-hz=$(ctr "timeout 12 ros2 topic hz /visual_slam/tracking/odometry" | sed -n 's/average rate: //p' | tail -1)
+hz=$(ctr "timeout 15 ros2 topic hz /visual_slam/tracking/odometry" | sed -n 's/average rate: //p' | tail -1)
 awk -v h="${hz:-0}" 'BEGIN { exit !(h >= 20) }' && pass "odometry at ${hz} Hz" \
   || fail "odometry at '${hz:-0}' Hz (want ~30)" "check cuVSLAM and CPU load"
-state=$(ctr "timeout 4 ros2 topic echo --once /skybeta/state --field data" | head -1)
-grep -q '"px4_link": true' <<<"$state" && pass "flight_interface has the PX4 link" \
-  || fail "flight_interface reports no PX4 link" "check the Pixhawk power and cable"
-grep -q '"armed": false' <<<"$state" && pass "disarmed" || warn "the vehicle reports armed"
+state=$(ctr "timeout 8 ros2 topic echo --once /skybeta/state --field data" | head -1)
+if [[ -z "$state" ]]; then
+  fail "no /skybeta/state from flight_interface" "check the competitor window (flight_interface starts with navless_course)"
+else
+  grep -q '"px4_link": true' <<<"$state" && pass "flight_interface has the PX4 link" \
+    || fail "flight_interface reports no PX4 link" "check the Pixhawk power and cable"
+  grep -q '"armed": true' <<<"$state" && warn "the vehicle reports armed" || pass "disarmed"
+fi
 
 echo
 echo "$FAILS FAIL, $WARNS WARN"
