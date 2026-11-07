@@ -8,8 +8,8 @@ Two sources, either or both:
                          VIO pose, side ToF ranges and left-camera thumbnails. Without --run, its
                          pose drives the mirror; with --run, it supplies the real sensor panels.
 
-  python3 gazebo_sim/mirror/mirror.py --drone 192.168.68.88                    # real drone only
-  python3 gazebo_sim/mirror/mirror.py --run 127.0.0.1:8776 --drone 192.168.68.88   # sim run + real sensors
+  python3 gazebo_sim/mirror/mirror.py --drone skybeta-19.local                 # real drone only
+  python3 gazebo_sim/mirror/mirror.py --run 127.0.0.1:8776 --drone skybeta-19.local   # sim run + real sensors
   python3 gazebo_sim/mirror/mirror.py --run 127.0.0.1:8776                     # sim run only
   python3 gazebo_sim/mirror/mirror.py --drone 192.168.55.1 --record vio_loss.jsonl   # VIO-loss test, off the
   python3 gazebo_sim/mirror/tube_test.py vio_loss.jsonl                              # course; then its report
@@ -84,7 +84,7 @@ IN = 0.0254
 HALF = 3.048
 LAUNCH = (-2.5146, 0.9144)
 # base_link -> camera mount when the drone's static TF never arrives: the mount measured on a
-# sister airframe (hardware_slam/README: 0.1053, 0, 0.0304 m FLU, no rotation). skybeta-11's own
+# sister airframe (hardware_slam/README: 0.1053, 0, 0.0304 m FLU, no rotation). skybeta-19's own
 # drone.env value arrives through the relay's static TF and wins.
 DEFAULT_CAM = ((0.1053, 0.0, 0.0304), (0.0, 0.0, 0.0, 1.0))
 # The mount TF (oak_parent_frame) is the camera body; cuVSLAM's view is the left eye, half the
