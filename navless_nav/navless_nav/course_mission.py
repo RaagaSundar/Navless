@@ -98,6 +98,11 @@ PREARM_PX4_TIMEOUT_S = 1.0
 # axis north-south, "Dark inside"), in course metres (in * 0.0254 - 3.048).
 TUBE_X = (1.5748, 3.048)
 TUBE_Y = (-0.3048, 1.2192)
+# Odometry that keeps arriving during a VIO loss but stays within this of
+# where VIO was lost is taken as a frozen (repeated) pose; if it moves more,
+# it is IMU-propagated, and PX4 (fed every message by the stack's bridge)
+# follows it like its own dead reckoning.
+FROZEN_ODOM_TOL_M = 0.03
 
 PARAMETERS = (
     ('takeoff_altitude_m', 0.85),
@@ -226,6 +231,7 @@ class CourseMission(Node):
         self.blind_since = None     # start of the current VIO loss in ROUTE
         self.blind_carrying = False
         self.loss_point = None      # odom position when that loss began
+        self.loss_dev = 0.0         # how far odometry has moved from it since
         self.heights_agree_since = None
         self.prearm_passed = False
         self.prearm_warned_at = None
@@ -290,6 +296,9 @@ class CourseMission(Node):
         p = msg.pose.pose.position
         self.position = (float(p.x), float(p.y), float(p.z))
         self.odom_at = self.now_s()
+        if self.blind_since is not None and self.loss_point is not None:
+            self.loss_dev = max(self.loss_dev,
+                                math.dist(self.position, self.loss_point))
 
     def status_cb(self, msg):
         self.vo_state = int(msg.vo_state)
@@ -577,20 +586,21 @@ class CourseMission(Node):
             if self.blind_since is None:
                 self.blind_since = now
                 self.loss_point = self.position     # where VIO was lost
+                self.loss_dev = 0.0
             px4 = self.blind_carry_position(now)
             if px4 is not None:
                 # at the route's own speed: a faster carry (1.0 m/s, 1.2 m
                 # lead) drifted 49 cm and touched the tube in Gazebo
                 point = self.carrot.step(px4, dt)
-            elif self.odom_still_arriving():
-                # cuVSLAM reports lost but keeps publishing: its pose may be
-                # frozen, and PX4 fusing it. Against a pinned estimate a
+            elif self.odom_frozen():
+                # cuVSLAM reports lost but keeps publishing the same pose,
+                # and PX4 (fed every message) fuses it. Against a pinned estimate a
                 # carrot ahead makes PX4 push on with no feedback (Gazebo
                 # 'freeze': through the tube into the south net). Hold where
                 # VIO was lost instead: zero error, no push.
                 self.info_once(f'frozen-odom:{self.blind_since}',
-                               'VIO lost but odometry still arriving (frozen?):'
-                               ' holding where it was lost.')
+                               'VIO lost and odometry frozen (still arriving, '
+                               'not moving): holding where it was lost.')
                 point = self.loss_point
             else:
                 point = self.carrot.point
@@ -639,8 +649,8 @@ class CourseMission(Node):
         why = None
         if not self.blind_carry:
             why = 'blind_carry off'
-        elif self.odom_still_arriving():
-            why = 'odometry still arriving (frozen?)'
+        elif self.odom_frozen():
+            why = 'odometry frozen'
         elif now - self.blind_since > self.blind_max_s:
             why = f'no VIO for {self.blind_max_s:.1f} s'
         elif not self.in_blind_zone(self.carrot.point):
@@ -651,12 +661,15 @@ class CourseMission(Node):
         self.set_carrying(why is None, why)
         return self.px4_pos if why is None else None
 
-    def odom_still_arriving(self):
-        """Odometry kept coming after VIO was flagged lost (a message at
-        least 0.1 s after the loss, so the last one before a real stop does
-        not count): cuVSLAM may be repeating a frozen pose."""
+    def odom_frozen(self):
+        """cuVSLAM looks to be repeating a frozen pose: odometry kept coming
+        after VIO was flagged lost (a message at least 0.1 s after the loss,
+        so the last one before a real stop does not count) and has stayed
+        within FROZEN_ODOM_TOL_M of where VIO was lost. Odometry that stops,
+        or keeps moving (IMU-propagated), is not frozen."""
         return (self.blind_since is not None and self.odom_at is not None
-                and self.odom_at > self.blind_since + 0.1)
+                and self.odom_at > self.blind_since + 0.1
+                and self.loss_dev <= FROZEN_ODOM_TOL_M)
 
     def set_carrying(self, carrying, why):
         if carrying == self.blind_carrying:

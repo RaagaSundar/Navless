@@ -21,12 +21,13 @@ cm = h.course_mission
 TUBE_MOUTH_Y = 1.2192        # course frame: the tube's north mouth
 
 
-def step(node, px4, pos, vo_state=1, dt=0.1, frozen=None):
+def step(node, px4, pos, vo_state=1, dt=0.1, frozen=None, moving=False):
     """One tick: odometry, state, and the point-mass drone. While lost
-    (vo_state 2) odometry stops, or with `frozen` keeps repeating that pose."""
+    (vo_state 2) odometry stops, or with `frozen` keeps repeating that pose,
+    or with `moving` keeps following the drone (IMU-propagated)."""
     node.status_cb(types.SimpleNamespace(vo_state=vo_state))
-    if vo_state != 2 or frozen is not None:
-        p = pos if vo_state != 2 else frozen
+    if vo_state != 2 or frozen is not None or moving:
+        p = frozen if (vo_state == 2 and frozen is not None) else pos
         node.odometry_cb(types.SimpleNamespace(pose=types.SimpleNamespace(
             pose=types.SimpleNamespace(position=types.SimpleNamespace(
                 x=p[0], y=p[1], z=p[2])))))
@@ -127,6 +128,22 @@ def test_blind_carry_does_not_run_on_frozen_odometry():
     # the freeze shows after a message >= 0.1 s into the loss: <= 2 ticks of carry
     assert math.dist(node.carrot.point, s0) < 0.11
     assert math.dist(last_pose(node), loss) < 1e-9
+
+
+def test_moving_odometry_during_a_loss_is_not_frozen():
+    # cuVSLAM may keep publishing IMU-propagated (moving) odometry while it
+    # reports lost; PX4 follows it like its own dead reckoning, so the carry
+    # should run, and with the carry off the old frozen carrot applies.
+    node, px4, pos = fly_to_tube(blind_carry=True)
+    s0 = node.carrot.point
+    for _ in range(20):
+        step(node, px4, pos, vo_state=2, moving=True)
+    assert math.dist(node.carrot.point, s0) > 0.6
+    node, px4, pos = fly_to_tube()
+    carrot = node.carrot.advance(0.3)
+    for _ in range(10):
+        step(node, px4, pos, vo_state=2, moving=True)
+    assert math.dist(last_pose(node), carrot) < 1e-9
 
 
 def test_blind_carry_never_runs_outside_the_tube_zone():
