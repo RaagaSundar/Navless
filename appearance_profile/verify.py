@@ -19,7 +19,7 @@ def verify(overlay, expected_manifest, world, resource_path, camera):
     if digest(sidecar) != expected_manifest:
         raise ValueError('unreviewed appearance manifest')
     manifest = json.loads(sidecar.read_text())
-    if manifest.get('appearance_profile') != PROFILE or manifest.get('synthetic') is not True:
+    if manifest.get('appearance_profile') not in (PROFILE, 'synthetic-neutral-open-net-v2') or manifest.get('synthetic') is not True:
         raise ValueError('unknown or unlabeled synthetic appearance')
     if manifest.get('schema_version') != 2 or manifest.get('asset_root') != '.':
         raise ValueError('portable schema 2 manifest required')
@@ -27,6 +27,8 @@ def verify(overlay, expected_manifest, world, resource_path, camera):
     required = ('models/dh_course/model.sdf', 'models/dh_course/meshes/course_visual.obj',
                 'models/dh_course/meshes/course.mtl', 'worlds/dronehacks-synthetic.sdf',
                 'models/synthetic_ground/materials/textures/ground.png')
+    if manifest['appearance_profile'] == 'synthetic-neutral-open-net-v2':
+        required += ('models/dh_course/meshes/net_open_strands.obj', 'models/dh_course/meshes/net_strands.mtl')
     if not all(name in members for name in required):
         raise ValueError('required asset hash missing')
     for member, expected in members.items():
@@ -47,7 +49,7 @@ def verify(overlay, expected_manifest, world, resource_path, camera):
         raise ValueError('published course include missing')
     if not camera.is_file() or camera.name != 'dh_quad_stereo.sdf':
         raise ValueError('retain the existing qualified split camera/vehicle file')
-    return {'schema_version': 1, 'appearance_profile': PROFILE, 'synthetic': True,
+    return {'schema_version': 1, 'appearance_profile': manifest['appearance_profile'], 'synthetic': True,
             'appearance_sha256': expected_manifest, 'world_sha256': digest(world),
             'camera_sha256': digest(camera),
             'qualification': 'Asset verification only; no stereo/VIO/flight/hardware qualification.'}
