@@ -18,6 +18,8 @@
 #                              (EKF2_HGT_REF 2, conditional range aid, barometer behind it).
 #   DH_TUBE_BLACKOUT=1  drone profile only: no vision inside the dark tube.
 #   PX4_PARAM_<NAME>=   any extra PX4 parameter override (applied every boot)
+#   DH_MODEL_SDF=       spawn this quad SDF instead of models/dh_quad/model.sdf (master_sim/: + stereo cameras)
+#   DH_EXTRA_MODELS=    model dir searched before models/ (master_sim/: the textured course)
 #
 # Leaves gz + PX4 (+ sensor bridge) running in the background. Stop this instance with ./stop_sim.sh (same DH_INSTANCE).
 # PX4 local frame: with sim/stock the EKF origin is the world origin, so PX4 local NED = (y, x, -z) of the
@@ -36,7 +38,7 @@ mkdir -p "$LOG_DIR"
 
 DH_INSTANCE="$N" LOG_DIR="$LOG_DIR" "$SIM_DIR/stop_sim.sh" >/dev/null 2>&1 || true
 
-export GZ_SIM_RESOURCE_PATH="$SIM_DIR/models:$PX4_DIR/Tools/simulation/gz/models:${GZ_SIM_RESOURCE_PATH:-}"
+export GZ_SIM_RESOURCE_PATH="${DH_EXTRA_MODELS:+$DH_EXTRA_MODELS:}$SIM_DIR/models:$PX4_DIR/Tools/simulation/gz/models:${GZ_SIM_RESOURCE_PATH:-}"
 export GZ_IP=127.0.0.1          # keep gz-transport on loopback
 export GZ_PARTITION="dh$N"      # isolates this instance's topics and services
 
@@ -53,12 +55,13 @@ for i in $(seq 1 60); do
   sleep 0.5
 done
 
-MODEL_SDF="$SIM_DIR/models/dh_quad/model.sdf"
+BASE_SDF="${DH_MODEL_SDF:-$SIM_DIR/models/dh_quad/model.sdf}"
+MODEL_SDF="$BASE_SDF"
 if [[ "$PROFILE" == "drone" ]]; then
   # Hide the model's built-in vision feed from PX4: sensor_bridge.py delivers it the way the drone does.
   MODEL_SDF="$LOG_DIR/dh_quad_drone.sdf"
   sed 's#<dimensions>3</dimensions>#<dimensions>3</dimensions><odom_covariance_topic>/dh/odometry_cov_unused</odom_covariance_topic>#' \
-    "$SIM_DIR/models/dh_quad/model.sdf" > "$MODEL_SDF"
+    "$BASE_SDF" > "$MODEL_SDF"
 fi
 echo "[run_sim:$N] spawning dh_quad_0"
 gz service -s /world/dronehacks/create --reqtype gz.msgs.EntityFactory --reptype gz.msgs.Boolean --timeout 10000 \
