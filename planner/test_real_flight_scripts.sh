@@ -41,7 +41,7 @@ no_call() { ! grep -q -- "$1" "$T/calls" || { echo "FAIL  $2: unexpected docker 
 
 fresh; check "start: no script -> bridge" 0 real_flight_start.sh --stop-on-pad
 expect_call "respawn-pane -k -t skybeta:competitor" "start"
-expect_call "exec python3 -u -m planner.px4_bridge_node --skybeta-mode --approve-flight --planner ego --prior .*course_visual.obj --stop-on-pad" "bridge args"
+expect_call "exec python3 -u -m planner.px4_bridge_node --skybeta-mode --approve-flight --prior .*dronehacks-course-asbuilt.obj --stop-on-pad" "bridge args"
 expect_call 'echo \\$BASHPID > /tmp/flight.pid' "pid file"
 fresh; check "start: a repo script with args" 0 real_flight_start.sh mission/square_test.py --left
 expect_call "exec python3 -u mission/square_test.py --left" "script args"

@@ -55,7 +55,7 @@ def _launch_node(context, *args, **kwargs):
 def generate_launch_description() -> LaunchDescription:
     pkg_dir = Path(__file__).resolve().parent.parent
     default_cfg = str(pkg_dir / "config" / "course_config.json")
-    default_prior = str(pkg_dir.parent / "course.obj")
+    default_prior = str(pkg_dir.parent / "dronehacks-course-asbuilt.obj")
 
     return LaunchDescription(
         [

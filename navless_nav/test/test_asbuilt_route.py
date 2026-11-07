@@ -57,20 +57,20 @@ def test_flies_the_whole_route_without_a_setpoint_pulled_off_it():
     assert 'fenced' in fly(net_margin_m=0.4).log_once      # navless.launch.py's margin would have
 
 
-def test_asbuilt_route_is_not_replaced_by_the_plan_course_planner(monkeypatch):
-    def wrong_course(*args, **kwargs):
-        raise AssertionError('the plan-course planner must not replace the as-built route')
+def test_asbuilt_route_uses_active_ego_planner(monkeypatch):
+    called = []
+    real_plan = tb.cm.plan_dynamic_course_route
 
-    monkeypatch.setattr(tb.cm, 'create_live_course_planner', wrong_course)
-    monkeypatch.setattr(tb.cm, 'plan_dynamic_course_route', wrong_course)
+    def tracked_plan(*args, **kwargs):
+        called.append((args, kwargs))
+        return real_plan(*args, **kwargs)
+
+    monkeypatch.setattr(tb.cm, 'plan_dynamic_course_route', tracked_plan)
     tb.h.OVERRIDES.clear()
     tb.h.OVERRIDES.update(route_file=ROUTE)
     node = tb.cm.CourseMission()
-    data = json.load(open(os.path.join(REPO_ROOT, ROUTE)))
-    expected = [course_to_odom(p, data['launch_origin_enu'], node.start_bearing, node.start_height)
-                for p in data['waypoints_enu']]
-    assert node.route == expected and node.planner_router is None
-    node.pointcloud_cb(None)
-    node.live_grid_updated = True
-    node.maybe_replan_for_discrepancies(100.0)
-    assert node.route == expected
+    assert not node.static_asbuilt_route
+    assert node.planner_router is not None
+    assert len(called) == 1
+    assert len(node.route) > 20
+    assert max(max(abs(p[0]), abs(p[1])) for p in node.route) <= NET_HALF_M

@@ -23,14 +23,14 @@ STACK="${SKYBETA_CONTAINER:-skybeta-stack}"
 REPO="/root/team_ws/src/Navless"
 LOG="/tmp/flight.log"
 PIDF="/tmp/flight.pid"
-MESH="gazebo_sim/models/dh_course/meshes/course_visual.obj"
+MESH="dronehacks-course-asbuilt.obj"
 if [[ "${1:-}" == *.py ]]; then
   SCRIPT="$1"; shift
   RUN="python3 -u $SCRIPT $*"
 else
   SCRIPT="$MESH"   # checked below: the bridge needs the course mesh
-  # --planner ego: the planner flown in the FlyX lab.
-  RUN="python3 -u -m planner.px4_bridge_node --skybeta-mode --approve-flight --planner ego --prior $MESH $*"
+  # EGO B-spline planner backed by the as-built course scan.
+  RUN="python3 -u -m planner.px4_bridge_node --skybeta-mode --approve-flight --prior $MESH $*"
 fi
 running() { docker exec "$STACK" bash -c "p=\$(cat $PIDF 2>/dev/null) && kill -0 \"\$p\" 2>/dev/null"; }
 die() { echo "NOT STARTED: $1"; exit 1; }

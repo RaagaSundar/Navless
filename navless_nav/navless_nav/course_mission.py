@@ -299,12 +299,9 @@ class CourseMission(Node):
             'gate_b' if 'gate_b' in str(self.get_parameter('route_file').value).lower()
             else 'window'
         )
-        # Keep the flight branch's as-built route intact. The dynamic planner's prior is the
-        # organisers' plan, whose maze walls differ from the real course by up to 0.76 m.
-        self.static_asbuilt_route = 'asbuilt' in str(self.get_parameter('route_file').value).lower()
-        self.planner_cfg = self.planner_grid = self.planner_router = None
-        if not self.static_asbuilt_route:
-            self.planner_cfg, self.planner_grid, self.planner_router = create_live_course_planner()
+        # Always use the active 3D occupancy grid + EGO B-spline planner backed by the as-built course map.
+        self.static_asbuilt_route = False
+        self.planner_cfg, self.planner_grid, self.planner_router = create_live_course_planner()
         self.live_grid_updated = False
         self.last_replan_at = 0.0
         self.frame = None          # (launch mark xy, start bearing) once known
@@ -358,17 +355,14 @@ class CourseMission(Node):
             'then switch to Position...')
 
     def load_route(self, name, bearing_deg, height_m):
-        """Load the qualified as-built route, or plan dynamically against the plan-course prior."""
+        """Plan dynamically via the active 3D A* + EGO B-spline planner against the as-built course prior."""
         try:
             low = str(name).lower()
-            if self.static_asbuilt_route:
-                waypoints, launch, kind = load_route(resolve_route_path(name))
-            else:
-                if not any(k in low for k in ('window', 'gate_b', 'dynamic', 'route.json')):
-                    resolve_route_path(name)
-                branch = 'gate_b' if 'gate_b' in low else 'window'
-                waypoints, launch, kind = plan_dynamic_course_route(
-                    branch=branch, router=self.planner_router)
+            if not any(k in low for k in ('window', 'gate_b', 'dynamic', 'route.json')):
+                resolve_route_path(name)
+            branch = 'gate_b' if 'gate_b' in low else 'window'
+            waypoints, launch, kind = plan_dynamic_course_route(
+                branch=branch, router=self.planner_router)
         except (OSError, ValueError, KeyError, RuntimeError) as exc:
             self.get_logger().error(
                 f'route not loaded ({exc}); will take off and hover only.')

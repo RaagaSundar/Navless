@@ -105,6 +105,13 @@ class Carrot:
         return fallback
 
 
+def local_to_course(ned, launch, heading_deg):
+    c, s = math.cos(math.radians(heading_deg)), math.sin(math.radians(heading_deg))
+    n = ned[0] * c - ned[1] * s
+    e = ned[0] * s + ned[1] * c
+    return (launch[0] + e, launch[1] + n, launch[2] - ned[2])
+
+
 def load_route(path, launch, heading):
     with open(path) as f:
         r = json.load(f)
@@ -114,18 +121,23 @@ def load_route(path, launch, heading):
     return [course_to_local(p, launch, heading) for p in enu], launch
 
 
-def plan_route(route_arg, launch, heading):
-    """Plan a 3D A* + EGO B-spline route dynamically from the 3D occupancy grid (never relying on static route.json)."""
+def _import_live_planner():
     import os
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     nav_pkg = os.path.join(repo_root, "navless_nav")
     for p in (repo_root, nav_pkg):
         if p not in sys.path:
             sys.path.insert(0, p)
-    from navless_nav.route import plan_dynamic_course_route
+    from navless_nav.route import create_live_course_planner, plan_dynamic_course_route
+    return create_live_course_planner, plan_dynamic_course_route
+
+
+def plan_route(route_arg, launch, heading, router=None):
+    """Plan a 3D A* + EGO B-spline route dynamically from the 3D occupancy grid (never relying on static route.json)."""
+    _, plan_dynamic_course_route = _import_live_planner()
     branch = "gate_b" if "gate_b" in str(route_arg).lower() else "window"
     start_enu = (float(launch[0]), float(launch[1]), 0.85) if launch is not None else None
-    enu, launch_xy, _ = plan_dynamic_course_route(branch=branch, start_enu=start_enu)
+    enu, launch_xy, _ = plan_dynamic_course_route(branch=branch, start_enu=start_enu, router=router)
     if launch is None:
         launch = (float(launch_xy[0]), float(launch_xy[1]), 0.0)
     return [course_to_local(p, launch, heading) for p in enu], launch
@@ -174,6 +186,17 @@ def run(route, a):
                 from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
                 self.create_subscription(VisualSlamStatus, "/visual_slam/status",
                                          lambda m: setattr(self, "vo_state", int(m.vo_state)), 10)
+            except ImportError:
+                pass
+            create_live_course_planner, self._plan_dynamic = _import_live_planner()
+            self.planner_cfg, self.planner_grid, self.planner_router = create_live_course_planner()
+            self.launch_enu = a.launch_enu
+            self.branch = "gate_b" if "gate_b" in str(a.route).lower() else "window"
+            self.live_grid_updated = False
+            self.last_replan_ns = 0
+            try:
+                from sensor_msgs.msg import PointCloud2
+                self.create_subscription(PointCloud2, "/team/stereo/points", self._pointcloud_cb, 10)
             except ImportError:
                 pass
             self.state, self.ticks, self.timer = "PREFLIGHT", 0, None
@@ -248,6 +271,35 @@ def run(route, a):
             sp.yaw, sp.timestamp = float(self.yaw), self.now_us()
             self.p_sp.publish(sp)
 
+        def _pointcloud_cb(self, msg):
+            if self.state != "FLY" or "pos" not in self.msg:
+                return
+            from planner.px4_bridge_node import decode_ros_pointcloud2_optical
+            cur_enu = local_to_course(self.pos(), self.launch_enu, a.local_heading)
+            yaw_enu = 0.5 * math.pi - float(self.msg["pos"].heading) - math.radians(a.local_heading)
+            pts_world = decode_ros_pointcloud2_optical(msg, cur_enu, yaw_enu, max_depth_m=2.80)
+            if pts_world.size > 0:
+                if self.planner_grid.insert_point_cloud(pts_world, sensor_origin_m=cur_enu, min_live_hits=2) > 0:
+                    self.live_grid_updated = True
+
+        def _maybe_replan(self, here):
+            now_ns = self.get_clock().now().nanoseconds
+            if not self.live_grid_updated or (now_ns - self.last_replan_ns) < int(0.5e9):
+                return
+            self.live_grid_updated = False
+            rem = self.carrot.path[self.carrot.i:]
+            if not any(self.planner_grid.is_occupied(local_to_course(q, self.launch_enu, a.local_heading), inflated=True) for q in rem):
+                return
+            cur_enu = local_to_course(here, self.launch_enu, a.local_heading)
+            try:
+                wps_enu, _, kind = self._plan_dynamic(branch=self.branch, start_enu=cur_enu, router=self.planner_router)
+                new_path = [course_to_local(p, self.launch_enu, a.local_heading) for p in wps_enu]
+                self.carrot = Carrot(new_path, a.speed, a.max_lead, turn_slowdown=True)
+                self.last_replan_ns = now_ns
+                self.get_logger().info(f"Online 3D A* + B-spline replan ({kind}): {len(new_path)} pts")
+            except (ValueError, RuntimeError) as exc:
+                self.get_logger().warn(f"Online replan skipped ({exc})")
+
         def start(self):
             self.pos_zero = self.raw_pos()
             here = self.pos()
@@ -312,6 +364,7 @@ def run(route, a):
                 if here[2] <= route[0][2] + 0.20:
                     self.state = "FLY"
             elif s == "FLY":
+                self._maybe_replan(here)
                 sp_next = self.carrot.step(here, 1.0 / RATE_HZ)
                 if not a.no_face_travel:
                     self.yaw = turn_toward(self.yaw, self.carrot.heading(self.yaw), a.max_yaw_rate / RATE_HZ)
@@ -382,7 +435,8 @@ def main():
         argv, ros_args = argv[:i], argv[i:]
     a = ap.parse_args(argv)
     a.ros_args = [sys.argv[0]] + ros_args
-    route, _ = plan_route(a.route, a.launch, a.local_heading)
+    route, launch_enu = plan_route(a.route, a.launch, a.local_heading)
+    a.launch_enu = launch_enu
     check(route, a.fence_margin)
     if not a.check:
         sys.exit(run(route, a))

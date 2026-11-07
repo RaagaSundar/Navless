@@ -7,8 +7,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { WebClient } from "@slack/web-api";
 import { z } from "zod";
 
+const DEFAULT_CHANNEL_ID = "C0CDARV3UQG";
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
-const SLACK_CHANNEL_ID = process.env.SLACK_CHANNEL_ID;
+let SLACK_CHANNEL_ID =
+  !process.env.SLACK_CHANNEL_ID || process.env.SLACK_CHANNEL_ID === "C0ABC123XYZ"
+    ? DEFAULT_CHANNEL_ID
+    : process.env.SLACK_CHANNEL_ID;
 const AGENT_NAME = (process.env.AGENT_NAME || "agent").trim();
 const AGENT_OWNER = (process.env.AGENT_OWNER || "").trim();
 const AGENT_EMOJI = process.env.AGENT_EMOJI || ":robot_face:";
@@ -62,18 +66,39 @@ function mentionsMe(text) {
 }
 
 async function fetchMessages({ since, thread_ts, limit }) {
-  const res = thread_ts
-    ? await slack.conversations.replies({
-        channel: SLACK_CHANNEL_ID,
-        ts: thread_ts,
-        limit,
-        ...(since ? { oldest: since } : {}),
-      })
-    : await slack.conversations.history({
-        channel: SLACK_CHANNEL_ID,
-        limit,
-        ...(since ? { oldest: since } : {}),
-      });
+  let res;
+  try {
+    res = thread_ts
+      ? await slack.conversations.replies({
+          channel: SLACK_CHANNEL_ID,
+          ts: thread_ts,
+          limit,
+          ...(since ? { oldest: since } : {}),
+        })
+      : await slack.conversations.history({
+          channel: SLACK_CHANNEL_ID,
+          limit,
+          ...(since ? { oldest: since } : {}),
+        });
+  } catch (err) {
+    if (SLACK_CHANNEL_ID !== DEFAULT_CHANNEL_ID && String(err?.data?.error || err?.message || "").includes("channel_not_found")) {
+      SLACK_CHANNEL_ID = DEFAULT_CHANNEL_ID;
+      res = thread_ts
+        ? await slack.conversations.replies({
+            channel: SLACK_CHANNEL_ID,
+            ts: thread_ts,
+            limit,
+            ...(since ? { oldest: since } : {}),
+          })
+        : await slack.conversations.history({
+            channel: SLACK_CHANNEL_ID,
+            limit,
+            ...(since ? { oldest: since } : {}),
+          });
+    } else {
+      throw err;
+    }
+  }
   const msgs = (res.messages || []).filter((m) => !m.subtype || m.subtype === "bot_message");
   // history comes newest first; replies oldest first. Normalize to oldest first.
   msgs.sort((a, b) => Number(a.ts) - Number(b.ts));
@@ -117,14 +142,31 @@ server.registerTool(
     },
   },
   async ({ text: body, thread_ts }) => {
-    const res = await slack.chat.postMessage({
-      channel: SLACK_CHANNEL_ID,
-      text: body,
-      username: displayName,
-      icon_emoji: AGENT_EMOJI,
-      ...(thread_ts ? { thread_ts } : {}),
-      unfurl_links: false,
-    });
+    let res;
+    try {
+      res = await slack.chat.postMessage({
+        channel: SLACK_CHANNEL_ID,
+        text: body,
+        username: displayName,
+        icon_emoji: AGENT_EMOJI,
+        ...(thread_ts ? { thread_ts } : {}),
+        unfurl_links: false,
+      });
+    } catch (err) {
+      if (SLACK_CHANNEL_ID !== DEFAULT_CHANNEL_ID && String(err?.data?.error || err?.message || "").includes("channel_not_found")) {
+        SLACK_CHANNEL_ID = DEFAULT_CHANNEL_ID;
+        res = await slack.chat.postMessage({
+          channel: SLACK_CHANNEL_ID,
+          text: body,
+          username: displayName,
+          icon_emoji: AGENT_EMOJI,
+          ...(thread_ts ? { thread_ts } : {}),
+          unfurl_links: false,
+        });
+      } else {
+        throw err;
+      }
+    }
     return text(`Posted as ${displayName}. ts=${res.ts}${thread_ts ? ` (in thread ${thread_ts})` : ""}`);
   }
 );

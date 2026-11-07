@@ -51,6 +51,8 @@ def create_live_course_planner():
             local_window_m=cfg.local_window_size_m,
         )
         obj_candidates = [
+            os.path.join(REPO_ROOT, 'dronehacks-course-asbuilt.obj'),
+            os.path.join(os.path.dirname(REPO_ROOT), 'dronehacks-course-asbuilt.obj'),
             os.path.join(REPO_ROOT, 'dronehacks-course-v3.obj'),
             os.path.join(os.path.dirname(REPO_ROOT), 'dronehacks-course-v3.obj'),
         ]

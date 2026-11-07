@@ -2107,7 +2107,7 @@ def run_ros2_node(argv=None) -> int:
     timer = node.create_timer(period_s, timer_callback)
     node.get_logger().info(
         f"EGO-Planner PX4 Bridge started at {cfg.tracker_rate_hz:.1f} Hz "
-        f"(planner={cfg.short_term_planner}, fast_mode={cfg.fast_mode}, approve_flight={args.approve_flight})"
+        f"(planner=bspline, fast_mode={cfg.fast_mode}, approve_flight={args.approve_flight})"
     )
 
     try:
