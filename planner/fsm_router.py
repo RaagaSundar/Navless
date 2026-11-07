@@ -96,24 +96,39 @@ class GlobalCourseRouter:
             return self.config.active_profile(self.config.fly_home_profile, allow_fast_mode=False)
         return self.config.active_profile(self.config.maze_profile)
 
+    def landing_target_enu(self, features=None) -> Tuple[Tuple[float, float, float], float]:
+        """Return (bullseye_target_enu, concentric_outer_radius_m) from discovered concentric rings."""
+        cp = self.config.checkpoints
+        if features is None:
+            features = self.grid.discover_course_features(
+                standoff_distance_m=self.config.window_inspect_distance_m,
+            )
+        if features.concentric_pad is not None:
+            cx, cy = features.concentric_pad.center_xy_m
+            return (float(cx), float(cy), float(cp.landing_pad[2])), float(features.concentric_pad.outer_radius_m)
+        return cp.landing_pad, 0.762
+
     def current_goal_enu(self) -> Tuple[float, float, float]:
-        """Return the current stage's target goal dynamically from map features & topological stage."""
+        """Return the current stage's target goal dynamically from map features & concentric target."""
         cp = self.config.checkpoints
         features = self.grid.discover_course_features(
             standoff_distance_m=self.config.window_inspect_distance_m,
         )
-        if self.stage == CourseStage.STAGE_1_MAZE:
-            return cp.corridor_bend
-        if self.stage == CourseStage.STAGE_2_GATE_A:
-            return cp.gate_a_exit
+        landing_goal, _ = self.landing_target_enu(features)
+        # When 3D course features are present, 3D A* navigates the entire Maze + Gate A directly
+        # toward the discovered Tunnel entrance without hardcoded corridor_bend / gate_a_exit anchors!
+        if self.stage in (CourseStage.STAGE_1_MAZE, CourseStage.STAGE_2_GATE_A):
+            if features.concentric_pad is not None:
+                return features.tunnel_entry_m
+            return cp.corridor_bend if self.stage == CourseStage.STAGE_1_MAZE else cp.gate_a_exit
         if self.stage == CourseStage.STAGE_3_TUNNEL:
             return features.window_approach_m or cp.window_inspect_point
         if self.stage == CourseStage.STAGE_4_CHICANE:
             if self.selected_branch == "WINDOW":
                 return features.window_exit_m or cp.window_exit
-            return cp.landing_pad
+            return landing_goal
         if self.stage == CourseStage.STAGE_5_LANDING_PAD:
-            return cp.landing_pad
+            return landing_goal
         if self.stage == CourseStage.STAGE_6_FLY_HOME:
             return self.home_target_enu()
         sx, sy, sz = self.recorded_start_pos_enu or cp.start_pad
@@ -174,17 +189,19 @@ class GlobalCourseRouter:
             ):
                 return "WINDOW", win_spline, elapsed_ms, inspect_res, "window_confident_and_feasible"
 
-        # 3. Fallback: mask out the Window opening and let 3D A* + clearance field automatically
-        #    discover the collision-free path through Gate B around the chicane walls to Landing Pad!
+        # 3. Fallback: mask out the Window opening and let 3D A* + concentric-circle target field
+        #    automatically discover the Gate B path around the chicane walls to the Concentric Pad!
+        landing_goal, concentric_r = self.landing_target_enu(features)
         gate_b_spline, elapsed_ms = self.optimizer.plan_spline(
             current_pos_enu,
-            cp.landing_pad,
+            landing_goal,
             profile,
             intermediate_waypoints=None,
             avoid_spheres=[(win_center, 0.55)],
+            goal_radius_m=concentric_r,
         )
         if gate_b_spline is None:
-            pts = np.vstack([current_pos_enu, np.asarray(cp.landing_pad)])
+            pts = np.vstack([current_pos_enu, np.asarray(landing_goal)])
             gate_b_spline = UniformBspline.from_waypoints(pts, 0.6).reallocate_time(profile.v_max, profile.a_max)
         return "GATE_B", gate_b_spline, elapsed_ms, inspect_res, f"fallback_to_gate_b ({inspect_res.reason})"
 
@@ -203,13 +220,25 @@ class GlobalCourseRouter:
         stage_changed = False
 
         if self.stage != CourseStage.MISSION_COMPLETE:
+            # In zero-anchor mode on the 3D course map, STAGE_1_MAZE smoothly progresses into STAGE_2_GATE_A
+            # as the drone crosses the maze midpoint (x > -0.60 m) along its single continuous 3D A* spline
+            if (
+                self.stage == CourseStage.STAGE_1_MAZE
+                and self.grid.detected_concentric_pad is not None
+                and float(pos[0]) > -0.60
+            ):
+                self.stage = CourseStage.STAGE_2_GATE_A
+
             goal = np.asarray(self.current_goal_enu(), dtype=np.float64)
             dist_to_goal = float(np.linalg.norm(pos - goal))
 
             if dist_to_goal <= self.config.acceptance_radius_m:
                 stage_changed = True
                 if self.stage == CourseStage.STAGE_1_MAZE:
-                    self.stage = CourseStage.STAGE_2_GATE_A
+                    if self.grid.detected_concentric_pad is not None:
+                        self.stage = CourseStage.STAGE_3_TUNNEL
+                    else:
+                        self.stage = CourseStage.STAGE_2_GATE_A
                 elif self.stage == CourseStage.STAGE_2_GATE_A:
                     self.stage = CourseStage.STAGE_3_TUNNEL
                 elif self.stage == CourseStage.STAGE_3_TUNNEL:
@@ -340,6 +369,9 @@ class GlobalCourseRouter:
         goal_enu = self.current_goal_enu()
         mids: Optional[List[Tuple[float, float, float]]] = None
         use_clearance = True
+        goal_rad = 0.0
+        if self.stage == CourseStage.STAGE_5_LANDING_PAD:
+            _, goal_rad = self.landing_target_enu()
         if self.stage == CourseStage.STAGE_3_TUNNEL:
             features = self.grid.discover_course_features(
                 standoff_distance_m=self.config.window_inspect_distance_m,
@@ -356,6 +388,7 @@ class GlobalCourseRouter:
             profile,
             intermediate_waypoints=mids,
             use_clearance_cost=use_clearance,
+            goal_radius_m=goal_rad,
         )
         self.active_spline = spline
         reason = "collision_avoidance_replan" if spline_blocked else ("stage_transition" if stage_changed else "periodic_1hz_replan")
@@ -390,31 +423,58 @@ class GlobalCourseRouter:
         win_center = features.window_center_m or cp.window_aperture
         win_approach = features.window_approach_m or cp.window_inspect_point
         win_exit = features.window_exit_m or cp.window_exit
+        landing_goal, concentric_r = self.landing_target_enu(features)
         branch_name = "WINDOW" if use_window else "GATE_B"
+
+        # Discover Maze + Gate A path directly via 3D A* toward the Tunnel entrance (zero hardcoded anchors!)
+        if features.concentric_pad is not None:
+            from .bspline import astar_search_3d
+            soft_cost = self.grid.build_soft_clearance_cost()
+            maze_guiding = astar_search_3d(
+                self.grid,
+                cp.start_pad,
+                features.tunnel_entry_m,
+                z_min_m=self.config.maze_profile.z_min_enu,
+                z_max_m=self.config.maze_profile.z_max_enu,
+                soft_clearance_cost=soft_cost,
+            )
+            if maze_guiding is not None and len(maze_guiding) >= 4:
+                mid_pt = maze_guiding[len(maze_guiding) // 2]
+                maze_split_wp = (float(mid_pt[0]), float(mid_pt[1]), float(cp.start_pad[2]))
+                gate_a_end_wp = features.tunnel_entry_m
+                tunnel_mids = [features.tunnel_mid_m, features.tunnel_exit_m]
+            else:
+                maze_split_wp = cp.corridor_bend
+                gate_a_end_wp = cp.gate_a_exit
+                tunnel_mids = [features.tunnel_entry_m, features.tunnel_mid_m, features.tunnel_exit_m]
+        else:
+            maze_split_wp = cp.corridor_bend
+            gate_a_end_wp = cp.gate_a_exit
+            tunnel_mids = [features.tunnel_entry_m, features.tunnel_mid_m, features.tunnel_exit_m]
 
         # Stage 1 -> Stage 2 -> Stage 3 discovered dynamically via 3D A* on the map
         stages_spec: List[Tuple[str, Tuple[float, float, float], Tuple[float, float, float], List[Tuple[float, float, float]], StageProfile, Optional[List[Tuple[Tuple[float, float, float], float]]]]] = [
             (
                 CourseStage.STAGE_1_MAZE.value,
                 cp.start_pad,
-                cp.corridor_bend,
+                maze_split_wp,
                 [],
                 self.profile_for_stage(CourseStage.STAGE_1_MAZE),
                 None,
             ),
             (
                 CourseStage.STAGE_2_GATE_A.value,
-                cp.corridor_bend,
-                cp.gate_a_exit,
+                maze_split_wp,
+                gate_a_end_wp,
                 [],  # No hardcoded maze turns: 3D A* discovers the serpentine maze path from the map!
                 self.profile_for_stage(CourseStage.STAGE_2_GATE_A),
                 None,
             ),
             (
                 CourseStage.STAGE_3_TUNNEL.value,
-                cp.gate_a_exit,
+                gate_a_end_wp,
                 win_approach,
-                [features.tunnel_entry_m, features.tunnel_mid_m, features.tunnel_exit_m],
+                tunnel_mids,
                 self.profile_for_stage(CourseStage.STAGE_3_TUNNEL),
                 None,
             ),
@@ -435,7 +495,7 @@ class GlobalCourseRouter:
                 (
                     CourseStage.STAGE_5_LANDING_PAD.value,
                     win_exit,
-                    cp.landing_pad,
+                    landing_goal,
                     [],
                     self.profile_for_stage(CourseStage.STAGE_5_LANDING_PAD),
                     None,
@@ -447,7 +507,7 @@ class GlobalCourseRouter:
                 (
                     CourseStage.STAGE_4_CHICANE.value,
                     win_approach,
-                    cp.landing_pad,
+                    landing_goal,
                     [],
                     self.profile_for_stage(CourseStage.STAGE_4_CHICANE),
                     [(win_center, 0.55)],

@@ -435,13 +435,15 @@ HTML_PAGE = """<!DOCTYPE html>
     startPadMesh.position.set(-2.515, 0.914, 0.01);
     scene.add(startPadMesh);
 
-    const landPadMesh = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.32, 0.32, 0.02, 32),
-      new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.70 })
-    );
-    landPadMesh.rotation.x = Math.PI / 2;
-    landPadMesh.position.set(-2.042, -0.792, 0.01);
-    scene.add(landPadMesh);
+    // Concentric Circle Landing Target: r9 (0.229m), r20 (0.508m), r30 (0.762m) + bullseye
+    for (const [rIn, rOut, col, op] of [[0.0, 0.08, 0x38bdf8, 0.9], [0.20, 0.23, 0x38bdf8, 0.75], [0.48, 0.51, 0x0284c7, 0.65], [0.73, 0.76, 0x0369a1, 0.55]]) {
+      const ringMesh = new THREE.Mesh(
+        new THREE.RingGeometry(rIn, rOut, 48),
+        new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: op, side: THREE.DoubleSide })
+      );
+      ringMesh.position.set(-2.042, -0.792, 0.015);
+      scene.add(ringMesh);
+    }
 
     // 20x20 ft (±3.048 m) Outer Perimeter Net Cage wireframe
     const netGeom = new THREE.EdgesGeometry(new THREE.BoxGeometry(6.096, 6.096, 2.4));

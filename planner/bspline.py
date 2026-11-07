@@ -40,6 +40,7 @@ def astar_search_3d(
     max_expansions: int = 45000,
     soft_clearance_cost: Optional[np.ndarray] = None,
     avoid_spheres: Optional[List[Tuple[Tuple[float, float, float], float]]] = None,
+    goal_radius_m: float = 0.0,
 ) -> Optional[np.ndarray]:
     """Find a collision-free 3D guiding path on the inflated occupancy grid within [z_min_m, z_max_m].
 
@@ -48,6 +49,10 @@ def astar_search_3d(
     - `avoid_spheres`: optional list of (center_m, radius_m) regions to dynamically avoid
       (e.g., masking out the Window aperture when Window confidence is low so A* automatically
       discovers the Gate B route around the chicane walls).
+    - `goal_radius_m`: concentric-circle target radius (e.g., 0.762 m for the 5-ft landing pad
+      with r9, r20, r30 rings). Pulls the search toward the bullseye center (`goal_vox`), and
+      if the exact center voxel is obstructed, returns the collision-free path to the reachable
+      voxel inside the concentric circles that is strictly closest to the bullseye center.
     """
     start_clamped = clamp_altitude_enu(start_m, z_min_m, z_max_m)
     goal_clamped = clamp_altitude_enu(goal_m, z_min_m, z_max_m)
@@ -57,11 +62,12 @@ def astar_search_3d(
 
     if not grid.in_bounds_voxel(start_vox) or not grid.in_bounds_voxel(goal_vox):
         return None
-    if grid.inflated_grid[goal_vox]:
+    if grid.inflated_grid[goal_vox] and goal_radius_m <= 0.0:
         return None
 
     iz_min = max(0, int(math.floor((z_min_m - grid.bounds_min[2]) / grid.resolution)))
     iz_max = min(grid.shape[2] - 1, int(math.floor((z_max_m - grid.bounds_min[2]) / grid.resolution)))
+    goal_r_vox = max(0.0, goal_radius_m / grid.resolution)
 
     # Pre-convert avoid_spheres to voxel space for fast checking
     avoid_vox_spheres: List[Tuple[int, int, int, float]] = []
@@ -84,6 +90,20 @@ def astar_search_3d(
             + (v[2] - goal_vox[2]) ** 2
         )
 
+    def _reconstruct_path(end_vox: Tuple[int, int, int]) -> np.ndarray:
+        cur = end_vox
+        vox_path = [cur]
+        while cur in came_from:
+            cur = came_from[cur]
+            vox_path.append(cur)
+        vox_path.reverse()
+        pts = np.array([grid.voxel_to_world(v) for v in vox_path], dtype=np.float64)
+        pts[0] = start_clamped
+        if end_vox == goal_vox:
+            pts[-1] = goal_clamped
+        pts[:, 2] = np.clip(pts[:, 2], z_min_m, z_max_m)
+        return pts
+
     open_heap: List[Tuple[float, int, Tuple[int, int, int]]] = []
     counter = 0
     heapq.heappush(open_heap, (heuristic(start_vox), counter, start_vox))
@@ -92,26 +112,29 @@ def astar_search_3d(
     closed = set()
     nx, ny, _ = grid.shape
 
+    # Track the closest reachable collision-free voxel inside the concentric circle target
+    best_concentric_vox: Optional[Tuple[int, int, int]] = None
+    best_concentric_dist: float = float("inf")
+
     expansions = 0
     while open_heap and expansions < max_expansions:
         _, _, current = heapq.heappop(open_heap)
-        if current == goal_vox:
-            # Reconstruct voxel path
-            vox_path = [current]
-            while current in came_from:
-                current = came_from[current]
-                vox_path.append(current)
-            vox_path.reverse()
-            pts = np.array([grid.voxel_to_world(v) for v in vox_path], dtype=np.float64)
-            pts[0] = start_clamped
-            pts[-1] = goal_clamped
-            pts[:, 2] = np.clip(pts[:, 2], z_min_m, z_max_m)
-            return pts
+        if current == goal_vox and not grid.inflated_grid[goal_vox]:
+            return _reconstruct_path(current)
 
         if current in closed:
             continue
         closed.add(current)
         expansions += 1
+
+        if goal_r_vox > 0.0 and not grid.inflated_grid[current]:
+            d_xy_vox = math.hypot(current[0] - goal_vox[0], current[1] - goal_vox[1])
+            if d_xy_vox <= goal_r_vox and d_xy_vox < best_concentric_dist:
+                best_concentric_dist = d_xy_vox
+                best_concentric_vox = current
+                # If goal_vox itself is blocked and we reached the inner bullseye ring (r <= 1.2 vox), finish!
+                if grid.inflated_grid[goal_vox] and d_xy_vox <= 1.5:
+                    return _reconstruct_path(best_concentric_vox)
 
         cx, cy, cz = current
         g_cur = g_score[current]
@@ -122,10 +145,10 @@ def astar_search_3d(
             nbr = (nx_i, ny_i, nz_i)
             if nbr in closed:
                 continue
-            if grid.raw_grid[nbr] and nbr != goal_vox:
+            if grid.raw_grid[nbr] and (nbr != goal_vox or goal_r_vox > 0.0):
                 continue
             inflated_escape_penalty = 0.0
-            if grid.inflated_grid[nbr] and nbr != goal_vox:
+            if grid.inflated_grid[nbr] and (nbr != goal_vox or goal_r_vox > 0.0):
                 # If the drone started inside the safety inflation buffer, allow escaping to non-raw voxels
                 if grid.inflated_grid[current]:
                     inflated_escape_penalty = 8.0
@@ -142,6 +165,8 @@ def astar_search_3d(
                 f = tentative_g + 1.05 * heuristic(nbr)
                 heapq.heappush(open_heap, (f, counter, nbr))
 
+    if best_concentric_vox is not None:
+        return _reconstruct_path(best_concentric_vox)
     return None
 
 
@@ -290,6 +315,7 @@ class EgoBsplineOptimizer:
         max_plan_time_ms: Optional[float] = None,
         use_clearance_cost: bool = True,
         avoid_spheres: Optional[List[Tuple[Tuple[float, float, float], float]]] = None,
+        goal_radius_m: float = 0.0,
     ) -> Tuple[Optional[UniformBspline], float]:
         """Plan an obstacle-free, smooth UniformBspline from start_m through optional waypoints to goal_m.
 
@@ -307,6 +333,7 @@ class EgoBsplineOptimizer:
 
         guiding_segments: List[np.ndarray] = []
         for i in range(len(chain) - 1):
+            is_last_seg = i == (len(chain) - 2)
             seg_path = astar_search_3d(
                 self.grid,
                 chain[i],
@@ -315,6 +342,7 @@ class EgoBsplineOptimizer:
                 z_max_m=profile.z_max_enu,
                 soft_clearance_cost=soft_cost,
                 avoid_spheres=avoid_spheres,
+                goal_radius_m=(goal_radius_m if is_last_seg else 0.0),
             )
             if seg_path is None:
                 elapsed_ms = (time.perf_counter() - t0) * 1000.0

@@ -47,6 +47,28 @@ class BarrierJumpSpec:
 
 
 @dataclass(frozen=True)
+class ConcentricPadTarget:
+    """Concentric-circle landing target discovered from floor ring geometry or camera observations.
+
+    In the DroneHacks arena, the landing target consists of 3 concentric rings (r9 = 0.229 m,
+    r20 = 0.508 m, r30 = 0.762 m) around a central bullseye cross. Closer to the center is better.
+    """
+
+    center_xy_m: Tuple[float, float]
+    ring_radii_m: Tuple[float, float, float] = (0.229, 0.508, 0.762)
+    outer_radius_m: float = 0.762
+
+    def radial_cost_bonus(self, x_m: float, y_m: float) -> float:
+        """Return a smooth radial cost in [0, 2.0] inside/near the concentric rings (0 at bullseye)."""
+        r = math.hypot(x_m - self.center_xy_m[0], y_m - self.center_xy_m[1])
+        if r >= self.outer_radius_m:
+            return 2.0
+        # Stepped + quadratic gradient across r30 -> r20 -> r9 -> bullseye so closer is strictly better
+        ring_step = sum(0.25 for rad in self.ring_radii_m if r > rad)
+        return ring_step + 1.25 * ((r / max(self.outer_radius_m, 1e-3)) ** 2)
+
+
+@dataclass(frozen=True)
 class DetectedCourseFeatures:
     """Course features dynamically discovered from the 3D occupancy map (no hardcoded turns)."""
 
@@ -57,6 +79,8 @@ class DetectedCourseFeatures:
     window_normal_xy: Tuple[float, float]
     window_approach_m: Optional[Tuple[float, float, float]]
     window_exit_m: Optional[Tuple[float, float, float]]
+    concentric_pad: Optional[ConcentricPadTarget] = None
+    launch_mark_xy_m: Optional[Tuple[float, float]] = None
 
 
 class OccupancyGrid3D:
@@ -87,6 +111,8 @@ class OccupancyGrid3D:
         # Inflated occupancy: True within inflation_radius_m of any occupied voxel
         self.inflated_grid = np.zeros(self.shape, dtype=bool)
         self._inflation_offsets = self._build_spherical_offsets(self.inflation_radius)
+        self.detected_concentric_pad: Optional[ConcentricPadTarget] = None
+        self.detected_launch_mark_xy: Optional[Tuple[float, float]] = None
 
         # If this grid covers the 20x20 ft course arena, permanently bake in the perimeter net border
         # because the thin mesh net at x,y = ±3.048 m is invisible to the OAK-D stereo depth sensor.
@@ -272,6 +298,11 @@ class OccupancyGrid3D:
             return 0
 
         v_arr = np.asarray(vertices, dtype=np.float64)
+        # Detect concentric landing pad rings (r9, r20, r30) and launch mark from floor geometry
+        floor_mask = (v_arr[:, 2] >= 0.0015) & (v_arr[:, 2] <= 0.012)
+        if np.any(floor_mask):
+            self.detect_concentric_pad_from_floor_points(v_arr[floor_mask])
+
         valid_v = (v_arr[:, 2] > min_obstacle_z_m) & (v_arr[:, 2] < max_obstacle_z_m)
         sampled_batches: List[np.ndarray] = [v_arr[valid_v]]
 
@@ -697,7 +728,61 @@ class OccupancyGrid3D:
             window_normal_xy=win_normal,
             window_approach_m=win_approach,
             window_exit_m=win_exit,
+            concentric_pad=self.detected_concentric_pad,
+            launch_mark_xy_m=self.detected_launch_mark_xy,
         )
+
+    def detect_concentric_pad_from_floor_points(
+        self,
+        floor_points_m: np.ndarray,
+    ) -> Optional[ConcentricPadTarget]:
+        """Geometrically detect the concentric-circle landing target (and launch mark) from floor vertices."""
+        pts = np.asarray(floor_points_m, dtype=np.float64)
+        if pts.shape[0] < 20:
+            return None
+        xy = pts[:, :2]
+        dists = np.linalg.norm(xy[:, None, :] - xy[None, :, :], axis=2)
+        neighbor_counts = (dists <= 0.80).sum(axis=1)
+        best_i = int(np.argmax(neighbor_counts))
+        in_pad_mask = dists[best_i] <= 0.82
+        pad_xy = xy[in_pad_mask]
+        if pad_xy.shape[0] < 15:
+            return None
+
+        center_xy = 0.5 * (np.min(pad_xy, axis=0) + np.max(pad_xy, axis=0))
+        radii = np.linalg.norm(pad_xy - center_xy[None, :], axis=1)
+        r9, r20, r30 = [float(x) for x in np.percentile(radii, [15, 50, 85])]
+        outer_r = float(np.percentile(radii, 98))
+        self.detected_concentric_pad = ConcentricPadTarget(
+            center_xy_m=(float(center_xy[0]), float(center_xy[1])),
+            ring_radii_m=(round(r9, 3), round(r20, 3), round(r30, 3)),
+            outer_radius_m=round(max(outer_r, r30), 3),
+        )
+
+        # Remaining floor marking cluster (outside 1.2 m of landing pad) is the Launch Mark
+        rem_xy = xy[dists[best_i] > 1.20]
+        if rem_xy.shape[0] >= 4:
+            rem_d = np.linalg.norm(rem_xy[:, None, :] - rem_xy[None, :, :], axis=2)
+            rem_best = int(np.argmax((rem_d <= 0.15).sum(axis=1)))
+            launch_cluster = rem_xy[rem_d[rem_best] <= 0.15]
+            if launch_cluster.shape[0] >= 4:
+                l_xy = 0.5 * (np.min(launch_cluster, axis=0) + np.max(launch_cluster, axis=0))
+                self.detected_launch_mark_xy = (float(l_xy[0]), float(l_xy[1]))
+
+        return self.detected_concentric_pad
+
+    def update_concentric_target_observation(
+        self,
+        center_xy_m: Tuple[float, float],
+        ring_radii_m: Tuple[float, float, float] = (0.229, 0.508, 0.762),
+    ) -> ConcentricPadTarget:
+        """Update or refine the concentric-circle landing target from live camera ring detection."""
+        self.detected_concentric_pad = ConcentricPadTarget(
+            center_xy_m=(float(center_xy_m[0]), float(center_xy_m[1])),
+            ring_radii_m=ring_radii_m,
+            outer_radius_m=float(max(ring_radii_m)),
+        )
+        return self.detected_concentric_pad
 
     def detect_barrier_between(
         self,

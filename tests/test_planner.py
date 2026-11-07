@@ -224,12 +224,38 @@ class TestPlannerScaffold(unittest.TestCase):
         n_vox = grid.load_prior_from_obj(obj_path)
         self.assertGreater(n_vox, 5000)
 
-        # Verify dynamic discovery of Tunnel and Window cutout from 3D voxel geometry
+        # Verify dynamic discovery of Tunnel, Window cutout, and Concentric Landing Rings from 3D geometry
         features = grid.discover_course_features()
         self.assertIsNotNone(features.window_center_m)
+        self.assertIsNotNone(features.concentric_pad)
         assert features.window_center_m is not None
+        assert features.concentric_pad is not None
         self.assertAlmostEqual(features.window_center_m[0], -0.47, delta=0.20)
         self.assertAlmostEqual(features.window_center_m[1], -2.27, delta=0.20)
+        self.assertAlmostEqual(features.concentric_pad.center_xy_m[0], -2.042, delta=0.02)
+        self.assertAlmostEqual(features.concentric_pad.center_xy_m[1], -0.792, delta=0.02)
+        self.assertAlmostEqual(features.concentric_pad.outer_radius_m, 0.762, delta=0.03)
+
+        # Verify that even if the exact bullseye center of the concentric rings is blocked,
+        # 3D A* with goal_radius_m=0.762 ("closer to the goal is better") reaches the innermost clear ring!
+        cx, cy = features.concentric_pad.center_xy_m
+        grid_blocked_bullseye = OccupancyGrid3D(
+            bounds_min_m=cfg.global_map_bounds_min_m,
+            bounds_max_m=cfg.global_map_bounds_max_m,
+            resolution_m=cfg.voxel_resolution_m,
+            inflation_radius_m=cfg.obstacle_inflation_m,
+        )
+        grid_blocked_bullseye.add_aabb_obstacle((cx - 0.05, cy - 0.05, 0.0), (cx + 0.05, cy + 0.05, 1.5))
+        path_concentric = astar_search_3d(
+            grid_blocked_bullseye,
+            (-1.2, -1.5, 0.85),
+            (cx, cy, 0.85),
+            goal_radius_m=features.concentric_pad.outer_radius_m,
+        )
+        self.assertIsNotNone(path_concentric)
+        assert path_concentric is not None
+        dist_to_bullseye = float(np.linalg.norm(path_concentric[-1][:2] - np.array([cx, cy])))
+        self.assertLessEqual(dist_to_bullseye, features.concentric_pad.outer_radius_m)
 
         router = GlobalCourseRouter(cfg, grid)
         gate_b_route = router.plan_full_course_route(use_window=False)
