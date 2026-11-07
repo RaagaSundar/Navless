@@ -98,7 +98,7 @@ FlyX Lab still simulates the plan. So there are two courses, and every tool pick
   ```bash
   python3 depthcloud/asbuilt/make_asbuilt.py --obj path/to/dronehacks-course-v3.obj
   ```
-  The .obj lands next to the plan's. Neither .obj is in git.
+  The .obj lands next to the plan's. The as-built .obj is also committed, at the repo root (`dronehacks-course-asbuilt.obj`), so you only need to re-run this after changing `scan_walls.json`. The plan .obj comes from the organisers' zip and isn't in git. `asbuilt/asbuilt_vs_scan.png` shows the as-built walls over the scan.
 - **What it recomputes:** the moved walls keep their names. The floor line, gate A and the wall-bounded checkpoint zones are worked out from the walls, using the same rule that reproduces the plan's own floor line exactly.
 - **What it can't give you:** the floor line isn't observed (the tape doesn't show in the scan), and **nothing is tape-measured yet**. Fine for localization and simulation. Measure the moved walls' ends from the west net before planning a flight route on it.
 
@@ -189,7 +189,7 @@ Other options: `yaw=fixed|travel`, `seed=`, `odom_drop=0.15` (untrusted VSLAM fr
 
 **What the simulations do NOT show:** the camera data in them is generated from the .obj, with made-up noise and clutter. They test the matching and fusion logic, not real stereo depth, the real net, real lighting, or the real VSLAM's drift. See the team Slack post for the full list.
 
-The course .objs are not in the repo: `dronehacks-course-v3.obj` (5.7 MB) comes from the organisers' zip, and `dronehacks-course-asbuilt.obj` is made from it by `asbuilt/make_asbuilt.py`. Copy both next to the script, or into `~/team_ws/src/dronehacks` on the drone.
+Course .objs: `dronehacks-course-asbuilt.obj` (5.7 MB) is at the repo root, where `cloud_localize.py` finds it with no parameters. `dronehacks-course-v3.obj` (the plan) comes from the organisers' zip and isn't in git; put it in the repo root too for `course:=plan`. On the drone, both can also go in `~/team_ws/src/dronehacks`.
 
 `search_heading:=true` (or the viewer's checkbox) tries every heading from the start position instead. That's unreliable on the launch mark, because Barrier 1 and the M1 divider, both about 0.5 m away, look alike.
 
