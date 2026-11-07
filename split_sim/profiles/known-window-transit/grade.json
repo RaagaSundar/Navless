@@ -1,0 +1,20 @@
+{
+  "passed": false,
+  "reasons": [
+    "window crossing outside vertical opening"
+  ],
+  "checkpoints_sim_s": {
+    "corridor_done": 39.03546438614104,
+    "maze_m2": 61.06154816587098,
+    "gate_a": 78.03036632507809,
+    "tube_in": 94.67032958520892,
+    "tube_out": 103.95680462165025,
+    "window": 131.8219177252823
+  },
+  "pad_distance_cm": 14.13,
+  "min_clearance_cm": 10.72,
+  "samples": 13236,
+  "contacts": [],
+  "aircraft_envelope_radius_m": 0.3,
+  "scope": "conservative full-aircraft simulation grading; truth solely for independent scoring"
+}

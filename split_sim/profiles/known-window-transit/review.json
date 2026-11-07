@@ -1,0 +1,15 @@
+{
+  "outcome": "Flight recorded; course did not pass",
+  "worked": [
+    "flight/track.json: recorded 13236 samples.",
+    "flight/track.json: armed airborne motion was recorded.",
+    "flight/track.json: final sample was landed and disarmed.",
+    "flight/track.json: contact sensors verified; no contacts recorded."
+  ],
+  "failed": [
+    "flight/grade.json: window crossing outside vertical opening"
+  ],
+  "next": [
+    "Inspect the listed evidence and resolve the recorded failures before another approved run."
+  ]
+}

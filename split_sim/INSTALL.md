@@ -241,3 +241,14 @@ for exact candidate provenance, known prior failure, finite measured transition
 conditions, replay limits and pending flight status. Do not change a running
 container's profile: coordinate a disarmed fresh world, preserve failed evidence,
 and use the documented setup/start sequence under the team's approval workflow.
+
+
+## Recorded full-transit recipe
+
+See [profiles/README.md](profiles/README.md) for the source/hash-verified 215942
+physical full transit and explicit stereo31.25Hz / EV-height / window-forward /
+neutral-ground recipe. It landed/disarmed on the pad at14.13cm with zero
+contacts, but its independent grade failed the full-envelope window Z check
+by5.60cm. The separate0.762m centered candidate is not selected by that recipe
+and has no successful airborne verdict at packaging time. No new flight
+controller, return-hop or heading-all policy is included in that profile.

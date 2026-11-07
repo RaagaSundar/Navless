@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "run_label": "215942",
+  "physical_transit": true,
+  "all_ordered_checkpoints_recorded": true,
+  "final_landed_disarmed": true,
+  "contacts": 0,
+  "pad_distance_cm": 14.13,
+  "minimum_physical_clearance_cm": 10.72,
+  "graded_passed": false,
+  "sole_grade_failure": "window crossing outside vertical opening",
+  "window_actual_compass_deg": 291.6,
+  "window_target_compass_deg": 292.09944571866015,
+  "window_true_center_z_m": 0.97524,
+  "full_envelope_upper_z_m": 0.9192,
+  "excess_z_cm": 5.604,
+  "envelope_radius_m": 0.3,
+  "checkpoints_sim_s": {
+    "corridor_done": 39.03546438614104,
+    "maze_m2": 61.06154816587098,
+    "gate_a": 78.03036632507809,
+    "tube_in": 94.67032958520892,
+    "tube_out": 103.95680462165025,
+    "window": 131.8219177252823
+  },
+  "evidence_sha256": {
+    "flight/grade.json": "5786e0f64f8b515c5889d5d018668592309123371fd8bee97d37d2d2ca674f53",
+    "review.json": "9cc629fba2cb038b907542f6225f088342db761d4703e16a7973392a4f688602",
+    "flight/track.json": "a84388064cc6bbcd80e7cc3594f8bee17f63b3b57b6a78fe19829c7111ef035b",
+    "flight/mission.log": "94870bf6027183bb543b286211e4915add561022fa64dc9de48082df20bd49b1",
+    "settings.json": "8d28b829df25f766fda8a270bd9cb0e271b9f1b2fef59f4009d97f7ead862200",
+    "sources.sha256": "3db735f123cb65ef711669c0f052f7bb62cca2dddd557e63d4913de794aa7796",
+    "simulated-vehicle.sdf": "a5d6131addc341245d145647efbc332f0e264a14ee38e775c20cf0c211aca852"
+  },
+  "scope": "Recorded simulation evidence summary; truth only independent scoring/diagnosis, no hardware qualification"
+}
