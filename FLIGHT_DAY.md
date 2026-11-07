@@ -16,7 +16,7 @@ docker rm -f skybeta-stack                           # the stack restarts with t
 Use the slow launch (0.5 m/s) until real laps look like the sim. `navless_course.launch.py` is the fast
 one (0.7 m/s, about 11 s quicker) and needs tighter placement. Keep `fly_home` and `blind_carry` off
 unless you decide otherwise (section 5). Don't install or start the planner (`px4_bridge_node`): its
-launch file defaults to `approve_flight:=true`, and in the sim it still hits walls.
+launch file defaults to `approve_flight:=true` until PR #22 merges, and in the sim it still hits walls.
 
 ## 2. Run the check: it must say 0 FAIL
 
