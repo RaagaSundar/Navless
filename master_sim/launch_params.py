@@ -4,22 +4,37 @@
   python3 launch_params.py mission [name:=value ...]   ->  -p name:=value ... (navless_nav's params)
   python3 launch_params.py envelope                    ->  --min-alt A --max-alt B --max-speed C
 
-Values come from navless_nav/launch/navless.launch.py (ARGUMENTS, MISSION_PARAMS). Overrides
-replace a mission default, e.g. route_file:=route_window.json.
+The drone starts navless_course.launch.py (when it exists), which sets a few values (route, bearing,
+speed, odometry topic) and forwards them to navless.launch.py; everything else comes from
+navless.launch.py's ARGUMENTS and MISSION_PARAMS. Overrides replace a value, e.g.
+route_file:=route_gate_b.json.
 """
 import importlib.util
 import os
 import sys
 
-LAUNCH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                      "navless_nav", "launch", "navless.launch.py")
+LAUNCH_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "navless_nav", "launch")
+
+
+def module(name):
+    path = os.path.join(LAUNCH_DIR, name)
+    if not os.path.isfile(path):
+        return None
+    spec = importlib.util.spec_from_file_location(name.replace(".", "_"), path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def load():
-    spec = importlib.util.spec_from_file_location("navless_launch", LAUNCH)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return {name: default for name, default, _ in mod.ARGUMENTS}, mod.MISSION_PARAMS
+    base = module("navless.launch.py")
+    defaults = {name: default for name, default, _ in base.ARGUMENTS}
+    course = module("navless_course.launch.py")       # the drone's entry point, if this branch has it
+    if course is not None:
+        for name, default, _ in course.ARGUMENTS:
+            if name in defaults:                       # only what it forwards to navless.launch.py
+                defaults[name] = default
+    return defaults, base.MISSION_PARAMS
 
 
 def main():
