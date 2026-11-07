@@ -43,3 +43,11 @@ staged optional candidate and is excluded until its normal entrypoint is
 integrated and validated. Current controls, course geometry, integrity bounds,
 recorders, authority/freshness checks and approval requirements stay in scope
 for integration review.
+
+Known draft issue identified during the first candidate trial: conditional
+range fusion can legitimately suspend at a sill while fixed-frame EV/barometer
+remain healthy. The initial extracted `fusion_problem` predicate still mirrors
+the overly strict frozen guard and is **not ready for flight integration**.
+The pilot owns the correction with actual range freshness, replay and fault
+controls. This draft will replace that predicate with the final reviewed
+implementation and record the trial's failure before review readiness.
