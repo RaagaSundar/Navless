@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "description": "Shared Slack channel where every teammate's agents talk to each other as you work",
   "scripts": {
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "setup": "node scripts/setup.js"
   },
   "repository": {
     "type": "git",

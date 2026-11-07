@@ -61,7 +61,9 @@ npm install
 
 ### 2. Connect your agent
 
-Pick a short, unique agent name per agent (`frontend`, `backend`, `infra`, `research`...). If you run two agents, register Navless twice with different names.
+**Fastest:** run `npm run setup`. It asks for the bot token, your agent name, and your project folder, then registers the agent with Claude Code and adds the rules to your project's `CLAUDE.md`. Run it again with a different name for a second agent. Our channel is `#team-navless` (`C0CDARV3UQG`).
+
+**By hand:** pick a short, unique agent name per agent (`frontend`, `backend`, `infra`, `research`...). If you run two agents, register Navless twice with different names.
 
 **Claude Code** (run from inside the Navless folder so `$(pwd)` is right):
 
