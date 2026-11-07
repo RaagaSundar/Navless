@@ -54,3 +54,20 @@ Before SSH, simulation lifecycle changes or builds for drone 19, read the
   Simulation timestamp age, callback arrival deltas and network transport
   delay are different measurements; do not subtract them to claim a latency
   improvement or a percentage of the earlier 124 ms age.
+
+## Run names and comparisons (all agents)
+
+Every new flight attempt, bench experiment and replay must have a concise human
+name and run-local `run-comparison.json` before being presented as a result. Keep
+the immutable run ID/timestamp visible. State `kind` (`flight attempted`, `bench`,
+or `replay`), an explicit baseline ID (or null), what changed before → after,
+confounds, and run-local evidence. Derive state from recorded telemetry; a
+preflight-only attempt is not an airborne flight, and a bench/replay is not a new
+flight. Never invent differences or success from filenames or trajectory shape.
+
+Use `python3 split_sim/run_comparison.py RUN --name "Experiment name"
+--baseline BASELINE_RUN`. The
+writer seeds only archived settings/appearance/hash differences; human annotations
+need source evidence. Record unknowns explicitly. Keep independent grading and
+“What went wrong” separate from the experimental comparison. Only the pilot who
+owns the live runner may integrate this post-archive step into that runner.
