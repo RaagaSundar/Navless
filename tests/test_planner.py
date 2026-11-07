@@ -568,9 +568,10 @@ class TestPlannerScaffold(unittest.TestCase):
         self.assertEqual(tick(25.1, pad_ground).state, "PRIME")
         self.assertEqual(tick(26.2, pad_ground).state, "ARMING")
         self.assertEqual(tick(27.0, pad_ground, **armed).state, "TAKEOFF")
-        hop_z = router.home_target_enu()[2]
         c = tick(27.5, (pad[0], pad[1], -1.0), **armed)  # part way up: no lateral motion yet
-        assert c.setpoint is not None
+        hop_z = tracker.px4_hop_z  # from the wall between pad and home (none in this empty map: the floor)
+        assert c.setpoint is not None and hop_z is not None
+        self.assertGreaterEqual(hop_z, 1.85)
         self.assertEqual(c.state, "TAKEOFF")
         self.assertAlmostEqual(c.setpoint.position_ned[0], pad[0], places=3)
         self.assertAlmostEqual(c.setpoint.position_ned[1], pad[1], places=3)

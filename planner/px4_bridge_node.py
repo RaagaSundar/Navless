@@ -237,6 +237,7 @@ class PX4TrajectoryTrackerCore:
         self.px4_unhealthy_since_s: Optional[float] = None
         self.px4_takeoff_enu: Optional[Tuple[float, float, float]] = None
         self.px4_align_target: Tuple[float, float, float] = (0.0, 0.0, PX4_ALIGN_Z_M)
+        self.px4_hop_z: Optional[float] = None  # fly-home climb height, from the wall between pad and home
         self.last_landed_time_s: Optional[float] = None
         # Operator stop (SIGINT/SIGTERM, `planner/real_flight_kill.sh`): land where we are, then finish
         self.stop_requested_s: Optional[float] = None
@@ -1387,8 +1388,13 @@ class PX4TrajectoryTrackerCore:
                 takeoff_z = float(self.config.checkpoints.start_pad[2])
                 north_nudge = 0.0 if self.launch_origin_enu[1] > 1.00 else 0.20
             else:  # fly home: straight up over the pad to hop height before any lateral motion (the
-                # re-planned spline otherwise starts sideways while still low: lab run b1 hit the west net)
-                takeoff_z = float(self.router.home_target_enu()[2])
+                # re-planned spline otherwise starts sideways while still low: lab run b1 hit the west net).
+                # Same height the router's fly-home spline uses, so ROUTE doesn't start with another climb.
+                if self.px4_hop_z is None:
+                    self.px4_hop_z = float(
+                        self.router.grid.detect_barrier_between(pos_enu, self.router.home_target_enu()).safe_hop_z_m
+                    )
+                takeoff_z = self.px4_hop_z
                 north_nudge = 0.0
             target = (self.px4_takeoff_enu[0], self.px4_takeoff_enu[1] + north_nudge, takeoff_z)
             if float(pos_enu[2]) >= takeoff_z - 0.15:
