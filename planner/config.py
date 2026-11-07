@@ -87,6 +87,7 @@ class PlannerConfig:
     max_window_plan_time_ms: float = 100.0
     replan_period_s: float = 1.00  # Re-check route every 1.0 second
     tracker_rate_hz: float = 30.0  # 30-50 Hz PX4 TrajectorySetpoint streaming
+    short_term_planner: str = "nmpc"  # "nmpc" (Receding-Horizon 3D MPCC/NMPC) or "ego" (EGO B-spline)
     fast_mode: bool = False
     fast_mode_multiplier: float = 1.65
     enable_fly_home: bool = True
@@ -140,6 +141,7 @@ class PlannerConfig:
             max_window_plan_time_ms=raw.get("max_window_plan_time_ms", 100.0),
             replan_period_s=raw.get("replan_period_s", 1.00),
             tracker_rate_hz=raw.get("tracker_rate_hz", 30.0),
+            short_term_planner=str(raw.get("short_term_planner", "nmpc")),
             fast_mode=raw.get("fast_mode", False),
             fast_mode_multiplier=raw.get("fast_mode_multiplier", 1.30),
             enable_fly_home=raw.get("enable_fly_home", True),
