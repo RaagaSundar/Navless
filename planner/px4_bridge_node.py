@@ -221,7 +221,8 @@ class PX4TrajectoryTrackerCore:
 def decode_ros_depth_image(message) -> np.ndarray:
     """Decode a ROS `sensor_msgs/msg/Image` (`16UC1` mm or `32FC1` m) into a 2D float32 array in metres.
 
-    Follows Chapter 03 of `dronehacks-flight-notebook.ipynb`.
+    Follows Chapter 03 of `dronehacks-flight-notebook.ipynb` and supports `@depthcloud`'s
+    `/team/stereo/depth` (`32FC1` metres, 512x320) as well as `/camera/depth/image_raw`.
     """
     h, w, step = int(message.height), int(message.width), int(message.step)
     dtype_code = {"16UC1": "u2", "32FC1": "f4"}.get(message.encoding)
@@ -233,6 +234,57 @@ def decode_ros_depth_image(message) -> np.ndarray:
     raw = np.ndarray((h, w), dtype=dt, buffer=bytes(message.data), strides=(step, dt.itemsize))
     scale = 0.001 if dtype_code == "u2" else 1.0
     return raw.astype(np.float32) * scale
+
+
+def decode_ros_pointcloud2_optical(
+    message,
+    drone_pos_enu: np.ndarray | Tuple[float, float, float],
+    drone_yaw_rad: float,
+    *,
+    stride: int = 8,
+    min_depth_m: float = 0.30,
+    max_depth_m: float = 3.50,
+) -> np.ndarray:
+    """Decode `@depthcloud`'s `/team/stereo/points` (`PointCloud2` in left camera optical frame) to world ENU.
+
+    Optical frame: +Z forward, +X right, +Y down -> Body FLU: +X forward, +Y left (-X_opt), +Z up (-Y_opt).
+    """
+    point_step = int(message.point_step)
+    if point_step < 12 or len(message.data) < point_step:
+        return np.zeros((0, 3), dtype=np.float64)
+    n_pts = len(message.data) // point_step
+    endian = ">" if getattr(message, "is_bigendian", False) else "<"
+
+    # Extract x, y, z float32 offsets from PointField list if present, otherwise standard (0, 4, 8)
+    offsets = {"x": 0, "y": 4, "z": 8}
+    for f in getattr(message, "fields", []) or []:
+        if f.name in offsets:
+            offsets[f.name] = int(f.offset)
+
+    buf = bytes(message.data)
+    idx = np.arange(0, n_pts, max(1, stride), dtype=np.int64)
+    if idx.size == 0:
+        return np.zeros((0, 3), dtype=np.float64)
+
+    dt_f4 = np.dtype(endian + "f4")
+    x_opt = np.ndarray((n_pts,), dtype=dt_f4, buffer=buf, offset=offsets["x"], strides=(point_step,))[idx].astype(np.float64)
+    y_opt = np.ndarray((n_pts,), dtype=dt_f4, buffer=buf, offset=offsets["y"], strides=(point_step,))[idx].astype(np.float64)
+    z_opt = np.ndarray((n_pts,), dtype=dt_f4, buffer=buf, offset=offsets["z"], strides=(point_step,))[idx].astype(np.float64)
+
+    valid = np.isfinite(x_opt) & np.isfinite(y_opt) & np.isfinite(z_opt) & (z_opt >= min_depth_m) & (z_opt <= max_depth_m)
+    if not np.any(valid):
+        return np.zeros((0, 3), dtype=np.float64)
+
+    x_flu = z_opt[valid]
+    y_flu = -x_opt[valid]
+    z_flu = -y_opt[valid]
+
+    c, s = math.cos(drone_yaw_rad), math.sin(drone_yaw_rad)
+    pos = np.asarray(drone_pos_enu, dtype=np.float64)
+    x_w = pos[0] + c * x_flu - s * y_flu
+    y_w = pos[1] + s * x_flu + c * y_flu
+    z_w = pos[2] + z_flu
+    return np.stack([x_w, y_w, z_w], axis=-1)
 
 
 def run_ros2_node(argv=None) -> int:
@@ -283,7 +335,7 @@ def run_ros2_node(argv=None) -> int:
     from rclpy.node import Node
     from rclpy.parameter import Parameter
     from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-    from sensor_msgs.msg import CameraInfo, Image
+    from sensor_msgs.msg import CameraInfo, Image, PointCloud2
     from std_msgs.msg import Bool
     from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleLocalPosition, VehicleStatus
 
@@ -329,12 +381,17 @@ def run_ros2_node(argv=None) -> int:
             cam_intrinsics["cx"] = float(msg.k[2])
             cam_intrinsics["fy"] = float(msg.k[4])
             cam_intrinsics["cy"] = float(msg.k[5])
+            cam_intrinsics["width"] = float(msg.width) if msg.width > 0 else 0.0
+            cam_intrinsics["height"] = float(msg.height) if msg.height > 0 else 0.0
 
     def on_depth(msg: Image) -> None:
         if "fx" not in cam_intrinsics or tracker.telemetry.last_local_pos_time_s is None:
             return
         try:
             depth_m = decode_ros_depth_image(msg)
+            # Support half-resolution depth images (e.g. 512x320 `/team/stereo/depth` vs 1024x640 `/oak/left/camera_info`)
+            sx = (float(msg.width) / cam_intrinsics["width"]) if cam_intrinsics.get("width", 0.0) > 0 else 1.0
+            sy = (float(msg.height) / cam_intrinsics["height"]) if cam_intrinsics.get("height", 0.0) > 0 else 1.0
             pos_enu = ned_to_enu_pos(
                 tracker.telemetry.pos_ned,
                 convention=tracker.frame_convention,
@@ -343,21 +400,37 @@ def run_ros2_node(argv=None) -> int:
             yaw_enu = (0.5 * math.pi - tracker.telemetry.heading_ned_rad) if tracker.frame_convention == "enu_to_ned" else -tracker.telemetry.heading_ned_rad
             grid.update_from_depth_image(
                 depth_m,
-                cam_intrinsics["fx"],
-                cam_intrinsics["fy"],
-                cam_intrinsics["cx"],
-                cam_intrinsics["cy"],
+                cam_intrinsics["fx"] * sx,
+                cam_intrinsics["fy"] * sy,
+                cam_intrinsics["cx"] * sx,
+                cam_intrinsics["cy"] * sy,
                 pos_enu,
                 yaw_enu,
             )
         except ValueError as err:
             node.get_logger().warning(f"Depth decode warning: {err}")
 
+    def on_pointcloud(msg: PointCloud2) -> None:
+        if tracker.telemetry.last_local_pos_time_s is None:
+            return
+        pos_enu = ned_to_enu_pos(
+            tracker.telemetry.pos_ned,
+            convention=tracker.frame_convention,
+            origin_enu=tracker.launch_origin_enu,
+        )
+        yaw_enu = (0.5 * math.pi - tracker.telemetry.heading_ned_rad) if tracker.frame_convention == "enu_to_ned" else -tracker.telemetry.heading_ned_rad
+        pts_world = decode_ros_pointcloud2_optical(msg, pos_enu, yaw_enu)
+        if pts_world.size > 0:
+            grid.insert_point_cloud(pts_world, sensor_origin_m=pos_enu)
+
     node.create_subscription(VehicleLocalPosition, "/fmu/out/vehicle_local_position_v1", on_local_pos, px4_qos)
     node.create_subscription(VehicleStatus, "/fmu/out/vehicle_status_v1", on_status, px4_qos)
     node.create_subscription(Bool, "/estimator/healthy", on_estimator_health, px4_qos)
     node.create_subscription(CameraInfo, "/camera/depth/camera_info", on_camera_info, px4_qos)
+    node.create_subscription(CameraInfo, "/oak/left/camera_info", on_camera_info, px4_qos)
     node.create_subscription(Image, "/camera/depth/image_raw", on_depth, px4_qos)
+    node.create_subscription(Image, "/team/stereo/depth", on_depth, px4_qos)
+    node.create_subscription(PointCloud2, "/team/stereo/points", on_pointcloud, px4_qos)
 
     offboard_pub = node.create_publisher(OffboardControlMode, "/fmu/in/offboard_control_mode", 10)
     setpoint_pub = node.create_publisher(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", 10)
