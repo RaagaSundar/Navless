@@ -74,12 +74,22 @@ class Trajectory:
 
 
 # ---------------------------------------------------------------------------------------- the route
-def window_route(course_path=COURSE_JSON, z_maze=0.94, z_window=0.85, window_shift_m=0.0):
+def window_route(course_path=COURSE_JSON, z_maze=0.94, z_window=0.85, window_shift_m=0.0,
+                 tube_exit_drop_in=26.0, pad_from_south_in=0.0, maze_top_north_m=0.0):
     """Launch -> corridor -> maze -> Gate A -> tube -> window -> pad. Every point comes from the map.
 
     window_shift_m moves the window crossing along the wall (+ = towards the wall's north-east end, C2a_b).
     A carrot follower cuts the turn before the window, so it crosses off-centre towards C2a_a, and
     aiming this far the other way centres the flown crossing.
+
+    The defaults are the plan's route. On the as-built course C1's south end and A1's south end sit
+    in its last two legs: tube_exit_drop_in turns towards the window further below the tube (clear of
+    C1), and pad_from_south_in > 0 adds a point that far south of the pad, so the descent comes in
+    from the south, clear of A1, instead of diagonally past its end.
+    maze_top_north_m moves the two crossings over M1's and M3's north ends towards the north net. The
+    floor line puts them midway between wall end and net, but nose north the drone reaches 0.2275 m
+    behind its centre and only 0.1575 m ahead (DRONE_PARTS), so midway leaves the wall end the
+    smaller gap. On the as-built course those gaps are only ~0.6 m wide.
     """
     d = json.load(open(course_path))
     W = lambda x, y, z: (*map_to_world(x, y), z)
@@ -96,22 +106,24 @@ def window_route(course_path=COURSE_JSON, z_maze=0.94, z_window=0.85, window_shi
     aim = (wc[0] + math.sin(b) * window_shift_m / IN, wc[1] + math.cos(b) * window_shift_m / IN)
     pad = d["landing_pad_in"]["center"]
     U = 0.57                                        # maze U-turn radius: half the 45 in corridor spacing
+    top = maze_top_north_m / IN                     # inches: the map's unit
 
     wps = [
         Waypoint("launch", W(lx, ly, GROUND_Z), 0.0, yaw=0.0),
         Waypoint("liftoff", W(lx, ly, 0.45), 0.25),
         Waypoint("climb", W(lx, ly + 30, z_maze), 0.30),
-        Waypoint("corridor_end", W(line[1][0], line[1][1], z_maze), U),     # (21, 221.75)
-        Waypoint("m1_top", W(line[2][0], line[2][1], z_maze), U),           # (66, 221.75)
-        Waypoint("m2_bottom_w", W(line[3][0], line[3][1], z_maze), U),      # (66, 158.25)
-        Waypoint("m2_bottom_e", W(line[4][0], line[4][1], z_maze), U),      # (110, 158.25)
-        Waypoint("m3_top", W(line[5][0], line[5][1], z_maze), 0.50),        # (110, 221.75)
-        Waypoint("gate_a_out", W(line[6][0] + 18, line[6][1], z_maze), 1.0),  # past Gate A (132, 221.75)
+        Waypoint("corridor_end", W(line[1][0], line[1][1] + top, z_maze), U),     # (21, 221.75)
+        Waypoint("m1_top", W(line[2][0], line[2][1] + top, z_maze), U),           # (66, 221.75)
+        Waypoint("m2_bottom_w", W(line[3][0], line[3][1], z_maze), U),            # (66, 158.25)
+        Waypoint("m2_bottom_e", W(line[4][0], line[4][1], z_maze), U),            # (110, 158.25)
+        Waypoint("m3_top", W(line[5][0], line[5][1] + top, z_maze), 0.50),        # (110, 221.75)
+        Waypoint("gate_a_out", W(line[6][0] + 18, line[6][1] + top, z_maze), 1.0),  # past Gate A (132, 221.75)
         Waypoint("tube_turn", W(tube_x, 200, z_maze), 0.60),
-        Waypoint("tube_exit", W(tube_x - 3, tube["y_min"] - 26, z_maze), 0.80, yaw=0.0),
+        Waypoint("tube_exit", W(tube_x - 3, tube["y_min"] - tube_exit_drop_in, z_maze), 0.80, yaw=0.0),
         Waypoint("window_approach", W(aim[0] - n[0] * 30, aim[1] - n[1] * 30, z_win), 0.60,
                  yaw=win_wall["bearing_deg"]),
         Waypoint("window_exit", W(aim[0] + n[0] * 24, aim[1] + n[1] * 24, z_win), 0.60),
+    ] + ([Waypoint("pad_south", W(pad[0], pad[1] - pad_from_south_in, 0.60), 0.35)] if pad_from_south_in > 0 else []) + [
         Waypoint("pad_above", W(pad[0], pad[1], 0.35), 0.25),
         Waypoint("pad", W(pad[0], pad[1], GROUND_Z + 0.05), 0.0),
     ]
