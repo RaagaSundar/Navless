@@ -76,21 +76,50 @@ class Carrot:
         ang = math.acos(cos_a)
         return max(0.50, 1.0 - 0.50 * min(1.0, max(0.0, (ang - 0.20) / 0.80)))
 
-    def step(self, drone, dt):
+    def step(self, drone, dt, vel=None):
         tf = self._turn_factor()
-        if dist(drone, self.p) > self.max_lead * tf:
-            return self.p  # drone is lagging or rounding a tight turn: wait for it
-        budget = self.speed * tf * dt
-        while budget > 0 and self.i < len(self.path) - 1:
-            nxt = self.path[self.i + 1]
-            d = dist(self.p, nxt)
-            if d <= budget:
-                self.p, self.i, budget = tuple(nxt), self.i + 1, budget - d
-            else:
-                f = budget / d
-                self.p = tuple(a + (b - a) * f for a, b in zip(self.p, nxt))
-                budget = 0
-        return self.p
+        eff_lead = self.max_lead * tf
+        if dist(drone, self.p) <= eff_lead:
+            budget = self.speed * tf * dt
+            while budget > 0 and self.i < len(self.path) - 1:
+                nxt = self.path[self.i + 1]
+                d = dist(self.p, nxt)
+                if d <= budget:
+                    self.p, self.i, budget = tuple(nxt), self.i + 1, budget - d
+                else:
+                    f = budget / d
+                    self.p = tuple(a + (b - a) * f for a, b in zip(self.p, nxt))
+                    budget = 0
+        if vel is None or self.i >= len(self.path) - 1:
+            return self.p
+        # Short-term MPCC / NMPC anisotropic cross-track contouring & velocity braking:
+        # Decompose tracking error and velocity relative to segment tangent t_hat so any lateral
+        # overshoot or cross-track velocity toward a corridor wall is actively damped.
+        a_pt = self.path[self.i]
+        b_pt = self.path[min(len(self.path) - 1, self.i + 1)]
+        seg_len = dist(a_pt, b_pt)
+        if seg_len < 1e-4:
+            return self.p
+        tx, ty, tz = (b_pt[0] - a_pt[0]) / seg_len, (b_pt[1] - a_pt[1]) / seg_len, (b_pt[2] - a_pt[2]) / seg_len
+        ex, ey, ez = self.p[0] - drone[0], self.p[1] - drone[1], self.p[2] - drone[2]
+        e_lag = ex * tx + ey * ty + ez * tz
+        ecx, ecy = ex - e_lag * tx, ey - e_lag * ty
+        v_lag = vel[0] * tx + vel[1] * ty + vel[2] * tz
+        vcx, vcy = vel[0] - v_lag * tx, vel[1] - v_lag * ty
+        target = (
+            self.p[0] + 0.35 * ecx - 0.18 * vcx,
+            self.p[1] + 0.35 * ecy - 0.18 * vcy,
+            self.p[2],
+        )
+        d_target = dist(drone, target)
+        if d_target > eff_lead and d_target > 1e-6:
+            s = eff_lead / d_target
+            target = (
+                drone[0] + (target[0] - drone[0]) * s,
+                drone[1] + (target[1] - drone[1]) * s,
+                target[2],
+            )
+        return target
 
     def done(self, drone, accept):
         return self.i == len(self.path) - 1 and dist(drone, self.p) < accept
@@ -312,7 +341,9 @@ def run(route, a):
                 if here[2] <= route[0][2] + 0.20:
                     self.state = "FLY"
             elif s == "FLY":
-                sp_next = self.carrot.step(here, 1.0 / RATE_HZ)
+                m_pos = self.msg["pos"]
+                vel = (float(getattr(m_pos, "vx", 0.0)), float(getattr(m_pos, "vy", 0.0)), float(getattr(m_pos, "vz", 0.0)))
+                sp_next = self.carrot.step(here, 1.0 / RATE_HZ, vel=None if a.no_nmpc else vel)
                 if not a.no_face_travel:
                     self.yaw = turn_toward(self.yaw, self.carrot.heading(self.yaw), a.max_yaw_rate / RATE_HZ)
                 self.publish_sp(sp_next)
@@ -375,6 +406,7 @@ def main():
     ap.add_argument("--fence-margin", type=float, default=0.5, help="m beyond route bbox before abort")
     ap.add_argument("--max-yaw-rate", type=float, default=1.40, help="rad/s yaw rate limit when facing travel")
     ap.add_argument("--no-face-travel", action="store_true", help="keep fixed takeoff yaw instead of facing travel")
+    ap.add_argument("--no-nmpc", action="store_true", help="disable short-term MPCC/NMPC cross-track velocity damping")
     argv = sys.argv[1:]
     ros_args = []
     if "--ros-args" in argv:

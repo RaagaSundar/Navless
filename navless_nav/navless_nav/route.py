@@ -320,16 +320,38 @@ class Carrot:
         nxt = min(self.index + 1, len(self.path) - 1)
         return min(self.limits[self.index], self.limits[nxt])
 
-    def step(self, drone, dt):
+    def step(self, drone, dt, vel=None):
         if math.dist(drone, self.point) > self.max_lead:
-            return self.point
-        limit = self.lead_limit()
-        # The turn cap is about the horizontal cut, so measure it in x/y: a
-        # height offset (PX4 may hold height up to ~0.2 m off odom) must not
-        # exceed a small cap and stall the carrot in a tight turn.
-        if limit < self.max_lead and math.dist(drone[:2], self.point[:2]) > limit:
-            return self.point
-        return self.advance(self.speed_here() * max(0.0, dt))
+            pt = self.point
+        else:
+            limit = self.lead_limit()
+            # The turn cap is about the horizontal cut, so measure it in x/y: a
+            # height offset (PX4 may hold height up to ~0.2 m off odom) must not
+            # exceed a small cap and stall the carrot in a tight turn.
+            if limit < self.max_lead and math.dist(drone[:2], self.point[:2]) > limit:
+                pt = self.point
+            else:
+                pt = self.advance(self.speed_here() * max(0.0, dt))
+        if vel is None or self.index >= len(self.path) - 1:
+            return pt
+        a_pt = self.path[self.index]
+        b_pt = self.path[min(len(self.path) - 1, self.index + 1)]
+        seg_len = math.dist(a_pt, b_pt)
+        if seg_len < 1e-4:
+            return pt
+        tx, ty = (b_pt[0] - a_pt[0]) / seg_len, (b_pt[1] - a_pt[1]) / seg_len
+        ex, ey = pt[0] - drone[0], pt[1] - drone[1]
+        e_lag = ex * tx + ey * ty
+        ecx, ecy = ex - e_lag * tx, ey - e_lag * ty
+        v_lag = vel[0] * tx + vel[1] * ty
+        vcx, vcy = vel[0] - v_lag * tx, vel[1] - v_lag * ty
+        target = (pt[0] + 0.35 * ecx - 0.18 * vcx, pt[1] + 0.35 * ecy - 0.18 * vcy, pt[2])
+        lim = min(self.max_lead, self.lead_limit())
+        d_xy = math.hypot(target[0] - drone[0], target[1] - drone[1])
+        if d_xy > lim and d_xy > 1e-6:
+            s = lim / d_xy
+            target = (drone[0] + (target[0] - drone[0]) * s, drone[1] + (target[1] - drone[1]) * s, target[2])
+        return target
 
     def advance(self, distance):
         """Slide the carrot `distance` metres along the path, ignoring speed."""
