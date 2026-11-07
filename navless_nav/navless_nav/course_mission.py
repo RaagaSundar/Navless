@@ -34,7 +34,10 @@ States (10 Hz timer):
     ROUTE              walk route_file's waypoints with a speed-limited
                        carrot (navless_nav/route.py). The carrot freezes
                        while cuVSLAM reports lost tracking or odometry is
-                       stale, and resumes when it is back.
+                       stale, and resumes when it is back. With blind_carry,
+                       a loss inside the dark tube instead keeps the carrot
+                       pacing PX4's own estimate for a few seconds, so the
+                       drone does not stop where tracking cannot return.
     LAND               route done: descend onto its end point (the landing
                        pad) with twist setpoints until PX4 detects the
                        touchdown and disarms (COM_DISARM_LAND). The twist
@@ -66,7 +69,8 @@ from rcl_interfaces.msg import ParameterDescriptor
 from std_msgs.msg import String
 
 from navless_nav.route import (Carrot, clamp_to_net, course_to_odom,
-                               load_route, resolve_route_path)
+                               load_route, odom_to_course,
+                               resolve_route_path)
 
 try:
     from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
@@ -89,6 +93,11 @@ IDLE_STATES = ('WAIT_FOR_OFFBOARD', 'PAUSED', 'DONE')
 # height for PREARM_PX4_TIMEOUT_S.
 PREARM_HYSTERESIS_M = 0.05
 PREARM_PX4_TIMEOUT_S = 1.0
+
+# The tube (course_v3.json `tunnel`: footprint x 182-240 in, y 108-168 in,
+# axis north-south, "Dark inside"), in course metres (in * 0.0254 - 3.048).
+TUBE_X = (1.5748, 3.048)
+TUBE_Y = (-0.3048, 1.2192)
 
 PARAMETERS = (
     ('takeoff_altitude_m', 0.85),
@@ -153,6 +162,16 @@ PARAMETERS = (
     # odom, hence the margin over the 0.07 m stand-in offset.
     ('prearm_height_tol_m', 0.15),
     ('prearm_settle_s', 2.0),     # ...and for this long without a break
+    # The tube is dark inside, so cuVSLAM may lose tracking there. Off: a VIO
+    # loss freezes the carrot, which in the tube means hovering blind until
+    # PX4's dead reckoning times out (EKF2_NOAID_TOUT, 5 s on the fleet) and
+    # it fails safe. On: while the carrot is in the tube (plus
+    # blind_zone_margin_m at each mouth), a VIO loss keeps it pacing PX4's
+    # own estimate (FI_NS/state local_enu) along the route for at most
+    # blind_carry_max_s per loss. A loss anywhere else still freezes it.
+    ('blind_carry', False),
+    ('blind_carry_max_s', 4.0),
+    ('blind_zone_margin_m', 0.4),
 )
 
 
@@ -198,6 +217,14 @@ class CourseMission(Node):
         self.prearm_settle = param('prearm_settle_s')
         self.px4_z = None           # PX4's last valid height (local_enu z)
         self.px4_z_at = None
+        self.px4_pos = None         # PX4's position (local_enu), odom-comparable
+        self.px4_at = None
+        self.blind_carry = str(self.get_parameter('blind_carry').value
+                               ).lower() in ('true', '1')
+        self.blind_max_s = param('blind_carry_max_s')
+        self.blind_margin = param('blind_zone_margin_m')
+        self.blind_since = None     # start of the current VIO loss in ROUTE
+        self.blind_carrying = False
         self.heights_agree_since = None
         self.prearm_passed = False
         self.prearm_warned_at = None
@@ -281,13 +308,16 @@ class CourseMission(Node):
         self.landed = bool(state.get('landed', False))
         local = state.get('local_enu')
         try:
-            z = float(local[2])
-        except (TypeError, IndexError, ValueError):
-            z = None
-        if z is not None and math.isfinite(z):
+            xyz = tuple(float(v) for v in local[:3])
+        except (TypeError, ValueError):
+            xyz = ()
+        ok = len(xyz) == 3 and all(math.isfinite(v) for v in xyz)
+        self.px4_pos = xyz if ok else None
+        self.px4_at = self.now_s()
+        if ok:
             # Keep the last valid height: one message without a position
             # must not refuse a takeover (heights_agree checks its age).
-            self.px4_z, self.px4_z_at = z, self.now_s()
+            self.px4_z, self.px4_z_at = xyz[2], self.px4_at
         if state.get('clamped'):
             self.info_once(
                 'clamped:' + ','.join(state['clamped']),
@@ -524,12 +554,21 @@ class CourseMission(Node):
             else:
                 self.get_logger().warn(
                     f'VIO lost (vo_state {self.vo_state}, odometry '
-                    f'{now - (self.odom_at or now):.2f} s old): carrot '
-                    'frozen at its current point.')
-        # With no trustworthy position, do not move the target: PX4 falls
-        # back on its own estimate and holds the last point.
-        point = (self.carrot.step(self.position, dt) if vio_ok
-                 else self.carrot.point)
+                    f'{now - (self.odom_at or now):.2f} s old).')
+        if vio_ok:
+            self.blind_since = None
+            self.set_carrying(False, 'VIO back')
+            point = self.carrot.step(self.position, dt)
+        else:
+            # With no trustworthy position, do not move the target: PX4
+            # falls back on its own estimate and holds the last point. In
+            # the dark tube (blind_carry) keep pacing that estimate instead,
+            # so the drone does not stop where tracking cannot come back.
+            if self.blind_since is None:
+                self.blind_since = now
+            px4 = self.blind_carry_position(now)
+            point = (self.carrot.step(px4, dt) if px4 is not None
+                     else self.carrot.point)
         self.send(*point)
         if self.going_home:
             # Over the launch mark by x/y only: PX4 can hold the hop height a
@@ -558,6 +597,46 @@ class CourseMission(Node):
                 f'({math.dist(self.position, point):.2f} m off); holding. '
                 f'Check `clamped` in {STATE_TOPIC} and VIO.')
             self.goto('HOLD', self.position)
+
+    def in_blind_zone(self, point):
+        """The odom point is in the tube, or within blind_zone_margin_m of a mouth."""
+        if self.frame is None:
+            return False
+        x, y, _ = odom_to_course(point, self.frame[0], self.frame[1])
+        return (TUBE_X[0] <= x <= TUBE_X[1]
+                and TUBE_Y[0] - self.blind_margin <= y
+                <= TUBE_Y[1] + self.blind_margin)
+
+    def blind_carry_position(self, now):
+        """PX4's own position to pace the carrot with during a VIO loss, or
+        None to freeze it (blind_carry off, outside the tube zone, past
+        blind_carry_max_s, or no fresh PX4 position)."""
+        why = None
+        if not self.blind_carry:
+            why = 'blind_carry off'
+        elif now - self.blind_since > self.blind_max_s:
+            why = f'no VIO for {self.blind_max_s:.1f} s'
+        elif not self.in_blind_zone(self.carrot.point):
+            why = 'outside the tube'
+        elif (self.px4_pos is None or self.px4_at is None
+              or now - self.px4_at > self.odom_timeout):
+            why = 'no fresh PX4 position'
+        self.set_carrying(why is None, why)
+        return self.px4_pos if why is None else None
+
+    def set_carrying(self, carrying, why):
+        if carrying == self.blind_carrying:
+            if not carrying and self.blind_since is not None:
+                self.info_once(f'frozen:{self.blind_since}',
+                               f'carrot frozen at its current point ({why}).')
+            return
+        self.blind_carrying = carrying
+        if carrying:
+            self.get_logger().warn(
+                'VIO lost in the tube: carrying the carrot on PX4\'s own '
+                f'estimate for up to {self.blind_max_s:.1f} s.')
+        else:
+            self.get_logger().warn(f'blind carry ended ({why}).')
 
     def _state_land(self):
         # Straight down at land_speed, nudged back over the pad. Keep pushing

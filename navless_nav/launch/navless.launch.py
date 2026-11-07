@@ -58,6 +58,13 @@ ARGUMENTS = [
      'and odom z agree to this, m; 0 = off'),
     ('prearm_settle_s', '2.0',
      'pre-arm check: how long they must agree without a break, s'),
+    ('blind_carry', 'false',
+     'on a VIO loss inside the dark tube, keep the route moving on PX4\'s own '
+     'estimate instead of freezing (elsewhere a loss still freezes it)'),
+    ('blind_carry_max_s', '4.0',
+     'longest blind carry per VIO loss, s (PX4 dead reckoning ends at 5 s)'),
+    ('blind_zone_margin_m', '0.4',
+     'blind carry also allowed this far outside each tube mouth, m'),
     ('competitor', 'true', 'also start the course node'),
 ]
 
@@ -71,8 +78,8 @@ MISSION_PARAMS = ('takeoff_altitude_m', 'takeoff_lead_m', 'arrival_radius_m',
                   'net_margin_m',
                   'land_at_end', 'land_speed_mps', 'fly_home',
                   'home_altitude_m', 'home_climb_tol_m', 'home_arrival_radius_m',
-                  'prearm_height_tol_m',
-                  'prearm_settle_s')
+                  'prearm_height_tol_m', 'prearm_settle_s',
+                  'blind_carry', 'blind_carry_max_s', 'blind_zone_margin_m')
 
 
 def generate_launch_description():
