@@ -28,13 +28,15 @@ nonzero on missing/stale input, mismatched settings or absent aiding. CLI output
 is configuration evidence, not flight approval. The tiny sill test explains why
 AGL and fixed launch height differ; it is not an estimator or a sensor source.
 
-As-flown source reference: frozen companion `mission.py` SHA-256
+Historical 213553 source reference: frozen companion `mission.py` SHA-256
 `3a3166edb5adc59de48a577137705ce4c0d8865234c7811fee548f2f548ea6be`;
 `px4_navigation.py` SHA-256
 `0dfc45c51a923d3f6c94a7fa8261f8b3038def9d568e3da693b7236ae34071a4`.
 The recorded candidate's actual parameter readback was HGT_REF=3, EV_CTRL=11,
-RNG_CTRL=1, BARO_CTRL=1. Its moving trial was still in progress when this draft
-was opened; no course pass or hardware qualification is claimed.
+RNG_CTRL=1, BARO_CTRL=1. That first candidate stopped at the sill; the current
+215431 snapshot is pinned separately in `evidence/runtime.json` and the active
+38-member manifest. Its moving outcome remains pending; no course pass or
+hardware qualification is claimed.
 
 [Open-net appearance PR #41](https://github.com/RaagaSundar/Navless/pull/41)
 is separate and is not duplicated. Window-forward yaw is included as an explicit optional profile; its moving
