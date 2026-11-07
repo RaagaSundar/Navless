@@ -62,6 +62,10 @@ class TelemetryHealthState:
     xy_valid: bool = False
     z_valid: bool = False
     estimator_healthy: bool = False
+    vslam_vo_state: Optional[int] = None
+    position_jump_detected: bool = False
+    geofence_breach_detected: bool = False
+    last_jump_reason: str = ""
     arming_state: int = 0
     nav_state: int = 0
     was_in_offboard: bool = False
@@ -78,7 +82,13 @@ class TelemetryHealthState:
         require_z_valid: bool = True,
         require_estimator_healthy: bool = True,
     ) -> Tuple[bool, str]:
-        """Validate fresh telemetry, position validity flags, VIO health, and offboard authority."""
+        """Validate fresh telemetry, position validity flags, VIO health, geofence, and offboard authority."""
+        if self.geofence_breach_detected:
+            return False, f"geofence_breach ({self.last_jump_reason})"
+        if self.position_jump_detected:
+            return False, f"estimator_position_jump ({self.last_jump_reason})"
+        if self.vslam_vo_state is not None and self.vslam_vo_state != 1:
+            return False, f"vslam_lost (vo_state={self.vslam_vo_state})"
         if self.last_local_pos_time_s is None:
             return False, "missing_vehicle_local_position"
         if (now_s - self.last_local_pos_time_s) > max_age_s:
@@ -139,6 +149,9 @@ class PX4TrajectoryTrackerCore:
         max_yaw_rate_rad_s: float = 1.40,
         max_lead_m: float = 0.55,
         touch_and_go_fly_home: bool = True,
+        prearm_settle_s: float = 0.0,
+        prearm_height_tol_m: float = 0.15,
+        prearm_jitter_tol_m: float = 0.05,
     ) -> None:
         self.router = router
         self.config = router.config
@@ -149,12 +162,24 @@ class PX4TrajectoryTrackerCore:
         self.max_yaw_rate_rad_s = float(max_yaw_rate_rad_s)
         self.max_lead_m = float(max_lead_m)
         self.touch_and_go_fly_home = bool(touch_and_go_fly_home)
+        self.prearm_settle_s = float(prearm_settle_s)
+        self.prearm_height_tol_m = float(prearm_height_tol_m)
+        self.prearm_jitter_tol_m = float(prearm_jitter_tol_m)
         if launch_origin_enu is None:
             sp = self.config.checkpoints.start_pad
             self.launch_origin_enu: Tuple[float, float, float] = (float(sp[0]), float(sp[1]), 0.0)
         else:
             self.launch_origin_enu = launch_origin_enu
         self.telemetry = TelemetryHealthState()
+        self.raw_pos_ned: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+        self.nav_zero_offset_ned: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+        self.nav_zeroed: bool = False
+        self.prearm_anchor_ned: Optional[Tuple[float, float, float]] = None
+        self.prearm_stable_since_s: Optional[float] = None
+        self.prearm_settled: bool = self.prearm_settle_s <= 0.0
+        self.px4_skybeta_z_enu: Optional[float] = None
+        self.px4_skybeta_z_time_s: Optional[float] = None
+        self.direct_takeoff_complete: bool = False
         self.last_tube_offset_time_s: Optional[float] = None
         self.tube_offset_left_m: float = 0.0
         self.tube_width_m: float = 0.0
@@ -171,6 +196,84 @@ class PX4TrajectoryTrackerCore:
         self.landed_flag: bool = False
         self.pad_touchdown_since_s: Optional[float] = None
         self.last_safe_course_pos_enu: Optional[Tuple[float, float, float]] = None
+
+    def update_px4_skybeta_height(self, now_s: float, px4_z_enu: float) -> None:
+        """Update PX4's `local_enu` z height from `/skybeta/state` for pre-arm height agreement."""
+        if math.isfinite(px4_z_enu):
+            self.px4_skybeta_z_enu = float(px4_z_enu)
+            self.px4_skybeta_z_time_s = float(now_s)
+
+    def update_vslam_status(self, now_s: float, vo_state: int) -> None:
+        """Update `/visual_slam/status` (`vo_state == 1` means tracking)."""
+        self.telemetry.vslam_vo_state = int(vo_state)
+        self.telemetry.estimator_healthy = int(vo_state) == 1
+
+    def check_prearm_navigation_ready(self, now_s: float) -> Tuple[bool, str]:
+        """Verify 2-second pre-arm navigation stability, PX4/VIO height agreement, and zero-tare at launch."""
+        if self.telemetry.last_local_pos_time_s is None:
+            return False, "waiting_for_odometry"
+        if (now_s - self.telemetry.last_local_pos_time_s) > self.config.safety.max_telemetry_age_s:
+            self.prearm_stable_since_s = None
+            self.prearm_settled = False
+            return False, "stale_prearm_odometry"
+        if not (self.telemetry.xy_valid and self.telemetry.z_valid and self.telemetry.estimator_healthy):
+            self.prearm_stable_since_s = None
+            self.prearm_settled = False
+            return False, "prearm_estimator_unhealthy"
+        if self.telemetry.vslam_vo_state is not None and self.telemetry.vslam_vo_state != 1:
+            self.prearm_stable_since_s = None
+            self.prearm_settled = False
+            return False, f"prearm_vslam_not_tracking ({self.telemetry.vslam_vo_state})"
+
+        # Check PX4 vs Odom height agreement when `/skybeta/state` provides `local_enu` z
+        if (
+            self.prearm_height_tol_m > 0.0
+            and self.px4_skybeta_z_enu is not None
+            and self.px4_skybeta_z_time_s is not None
+            and (now_s - self.px4_skybeta_z_time_s) <= 1.0
+        ):
+            odom_z = -self.raw_pos_ned[2] - self.start_height_m
+            tol = self.prearm_height_tol_m + (0.05 if self.prearm_settled else 0.0)
+            if abs(self.px4_skybeta_z_enu - odom_z) > tol:
+                self.prearm_stable_since_s = None
+                self.prearm_settled = False
+                return False, f"prearm_height_mismatch (dz={abs(self.px4_skybeta_z_enu - odom_z):.2f}m)"
+
+        # Check stationary velocity and position stability on the pad
+        vel_norm = math.hypot(*self.telemetry.vel_ned)
+        if vel_norm > 0.20:
+            self.prearm_anchor_ned = self.raw_pos_ned
+            self.prearm_stable_since_s = now_s
+            self.prearm_settled = self.prearm_settle_s <= 0.0
+            return self.prearm_settled, f"prearm_velocity_not_zero ({vel_norm:.2f}m/s)"
+
+        if self.prearm_anchor_ned is None or math.dist(self.raw_pos_ned, self.prearm_anchor_ned) > self.prearm_jitter_tol_m:
+            self.prearm_anchor_ned = self.raw_pos_ned
+            self.prearm_stable_since_s = now_s
+            self.prearm_settled = self.prearm_settle_s <= 0.0
+            if not self.prearm_settled:
+                return False, "prearm_position_settling"
+
+        if self.prearm_stable_since_s is None:
+            self.prearm_stable_since_s = now_s
+        if (now_s - self.prearm_stable_since_s) < self.prearm_settle_s:
+            return False, f"prearm_settling ({now_s - self.prearm_stable_since_s:.1f}/{self.prearm_settle_s:.1f}s)"
+
+        # Zero-tare the initial launch pad offset once settled before first takeoff
+        if not self.nav_zeroed and not self.router.primary_landed:
+            rx, ry, rz = self.raw_pos_ned
+            if math.hypot(rx, ry) <= 0.45 and abs(rz) <= 0.35:
+                expected_z_ned = -self.start_height_m
+                self.nav_zero_offset_ned = (rx, ry, rz - expected_z_ned)
+                self.telemetry.pos_ned = (
+                    rx - self.nav_zero_offset_ned[0],
+                    ry - self.nav_zero_offset_ned[1],
+                    rz - self.nav_zero_offset_ned[2],
+                )
+            self.nav_zeroed = True
+
+        self.prearm_settled = True
+        return True, "prearm_ready_and_zeroed"
 
     def update_localize_status(
         self,
@@ -262,8 +365,44 @@ class PX4TrajectoryTrackerCore:
         xy_valid: bool,
         z_valid: bool,
     ) -> None:
+        self.raw_pos_ned = (float(x_ned), float(y_ned), float(z_ned))
+        zeroed_ned = (
+            float(x_ned) - self.nav_zero_offset_ned[0],
+            float(y_ned) - self.nav_zero_offset_ned[1],
+            float(z_ned) - self.nav_zero_offset_ned[2],
+        )
+        prev_t = self.telemetry.last_local_pos_time_s
+        if (
+            self.telemetry.arming_state == ARMING_STATE_ARMED
+            and prev_t is not None
+            and math.isfinite(zeroed_ned[0])
+            and math.isfinite(zeroed_ned[1])
+            and math.isfinite(zeroed_ned[2])
+        ):
+            dt = float(now_s - prev_t)
+            if 0.001 <= dt <= 0.50:
+                step_m = math.dist(zeroed_ned, self.telemetry.pos_ned)
+                vel_norm = math.hypot(float(vx_ned), float(vy_ned), float(vz_ned))
+                if step_m > max(0.85, 4.5 * dt) or vel_norm > 5.0:
+                    self.telemetry.position_jump_detected = True
+                    self.telemetry.last_jump_reason = f"step={step_m:.2f}m/{dt:.2f}s, vel={vel_norm:.2f}m/s"
+            pos_enu_chk = ned_to_enu_pos(
+                zeroed_ned,
+                convention=self.frame_convention,
+                origin_enu=self.launch_origin_enu,
+            )
+            if (
+                abs(float(pos_enu_chk[0])) > 3.20
+                or abs(float(pos_enu_chk[1])) > 3.20
+                or float(pos_enu_chk[2]) < -0.35
+                or float(pos_enu_chk[2]) > 2.65
+            ):
+                self.telemetry.geofence_breach_detected = True
+                self.telemetry.last_jump_reason = (
+                    f"pos_enu=({pos_enu_chk[0]:.2f},{pos_enu_chk[1]:.2f},{pos_enu_chk[2]:.2f})"
+                )
         self.telemetry.last_local_pos_time_s = now_s
-        self.telemetry.pos_ned = (float(x_ned), float(y_ned), float(z_ned))
+        self.telemetry.pos_ned = zeroed_ned
         self.telemetry.vel_ned = (float(vx_ned), float(vy_ned), float(vz_ned))
         self.telemetry.heading_ned_rad = float(heading_rad)
         self.telemetry.xy_valid = bool(xy_valid)
@@ -280,6 +419,10 @@ class PX4TrajectoryTrackerCore:
         self.telemetry.last_status_time_s = now_s
         self.telemetry.arming_state = int(arming_state)
         self.telemetry.nav_state = int(nav_state)
+        if self.telemetry.arming_state != ARMING_STATE_ARMED:
+            self.direct_takeoff_complete = False
+            self.telemetry.position_jump_detected = False
+            self.telemetry.geofence_breach_detected = False
         if self.telemetry.nav_state == NAVIGATION_STATE_OFFBOARD:
             self.telemetry.was_in_offboard = True
         if landed is not None:
@@ -324,7 +467,73 @@ class PX4TrajectoryTrackerCore:
         if not ok:
             return None, reason
 
+        # 1. Pre-arm & pre-Offboard gate: never advance the B-spline clock while disarmed or outside Offboard!
+        if (
+            self.telemetry.arming_state != ARMING_STATE_ARMED
+            or self.telemetry.nav_state != NAVIGATION_STATE_OFFBOARD
+        ):
+            self.router.spline_start_time_s = now_s
+            prearm_ok, prearm_reason = self.check_prearm_navigation_ready(now_s)
+            if not prearm_ok:
+                return None, prearm_reason
+            drone_pos_enu, current_yaw_enu = self.current_course_pose_enu(now_s)
+            takeoff_z = float(self.config.checkpoints.start_pad[2])
+            pos_enu = np.array(
+                [float(self.launch_origin_enu[0]), float(self.launch_origin_enu[1]) + 0.15, takeoff_z],
+                dtype=np.float64,
+            )
+            yaw_enu = self._rate_limit_yaw_enu(now_s, current_yaw_enu)
+            pos_ned = enu_to_ned_pos(pos_enu, convention=self.frame_convention, origin_enu=self.launch_origin_enu)
+            vel_ned = enu_to_ned_vel((0.0, 0.0, 0.0), convention=self.frame_convention)
+            yaw_ned = enu_yaw_to_ned_yaw(yaw_enu, convention=self.frame_convention)
+            odom_quat = enu_yaw_to_odom_quat(yaw_enu, self.start_bearing_deg)
+            return (
+                PX4SetpointSample(
+                    position_ned=pos_ned,
+                    velocity_ned=vel_ned,
+                    yaw_ned=yaw_ned,
+                    timestamp_us=int(now_s * 1_000_000),
+                    stage=self.router.stage,
+                    branch="PREARM_STREAM",
+                    yaw_enu=yaw_enu,
+                    odom_orientation_xyzw=odom_quat,
+                ),
+                "prearm_settled_and_zeroed_streaming",
+            )
+
         drone_pos_enu, current_yaw_enu = self.current_course_pose_enu(now_s)
+
+        # 2. Mandatory vertical takeoff climb gate in direct PX4 mode:
+        # Never start lateral flight along Corridor 1 while still below z = 0.65 m!
+        if self.router.stage == CourseStage.STAGE_1_MAZE and not self.direct_takeoff_complete:
+            if float(drone_pos_enu[2]) >= 0.65:
+                self.direct_takeoff_complete = True
+            else:
+                self.router.spline_start_time_s = now_s
+                takeoff_z = float(self.config.checkpoints.start_pad[2])
+                pos_enu = np.array(
+                    [float(self.launch_origin_enu[0]), float(self.launch_origin_enu[1]) + 0.15, takeoff_z],
+                    dtype=np.float64,
+                )
+                yaw_enu = self._rate_limit_yaw_enu(now_s, current_yaw_enu)
+                pos_ned = enu_to_ned_pos(pos_enu, convention=self.frame_convention, origin_enu=self.launch_origin_enu)
+                vel_ned = enu_to_ned_vel((0.0, 0.0, 0.35), convention=self.frame_convention)
+                yaw_ned = enu_yaw_to_ned_yaw(yaw_enu, convention=self.frame_convention)
+                odom_quat = enu_yaw_to_odom_quat(yaw_enu, self.start_bearing_deg)
+                return (
+                    PX4SetpointSample(
+                        position_ned=pos_ned,
+                        velocity_ned=vel_ned,
+                        yaw_ned=yaw_ned,
+                        timestamp_us=int(now_s * 1_000_000),
+                        stage=CourseStage.STAGE_1_MAZE,
+                        branch="TAKEOFF_CLIMB",
+                        yaw_enu=yaw_enu,
+                        odom_orientation_xyzw=odom_quat,
+                    ),
+                    "climbing_to_takeoff_altitude",
+                )
+
         decision = self.router.step(
             now_s,
             drone_pos_enu,
@@ -542,6 +751,8 @@ class PX4TrajectoryTrackerCore:
         if self.skybeta_state == "PAUSED":
             if not armed:
                 self.skybeta_state = "WAIT_FOR_OFFBOARD"
+                self.prearm_stable_since_s = None
+                self.prearm_settled = self.prearm_settle_s <= 0.0
             return SkybetaMissionCommand(
                 mode="pose",
                 pos_odom=pos_odom_cur,
@@ -551,14 +762,44 @@ class PX4TrajectoryTrackerCore:
                 reason="paused_pilot_control",
             )
 
-        if self.skybeta_state == "WAIT_FOR_OFFBOARD":
-            if self.router.recorded_start_pos_enu is None:
-                self.router.recorded_start_pos_enu = (
-                    float(pos_enu[0]),
-                    float(pos_enu[1]),
-                    float(self.config.checkpoints.start_pad[2]),
+        if self.skybeta_state == "REFUSED":
+            if not armed:
+                self.skybeta_state = "WAIT_FOR_OFFBOARD"
+                self.prearm_stable_since_s = None
+                self.prearm_settled = self.prearm_settle_s <= 0.0
+                return SkybetaMissionCommand(
+                    mode="none",
+                    skybeta_state="WAIT_FOR_OFFBOARD",
+                    stage=self.router.stage.value,
+                    reason="disarmed_after_refused",
                 )
+            return SkybetaMissionCommand(
+                mode="twist",
+                vel_odom=(0.0, 0.0, -0.30),
+                skybeta_state="REFUSED",
+                stage=self.router.stage.value,
+                reason="refused_unsettled_prearm_descending",
+            )
+
+        if self.skybeta_state == "WAIT_FOR_OFFBOARD":
+            self.router.spline_start_time_s = now_s
+            prearm_ok, prearm_reason = self.check_prearm_navigation_ready(now_s)
+            pos_enu, current_yaw_enu = self.current_course_pose_enu(now_s)
+            pos_odom_cur = course_to_odom_pos(pos_enu, launch_xy, self.start_bearing_deg, self.start_height_m)
             if not offboard_active:
+                if not prearm_ok:
+                    return SkybetaMissionCommand(
+                        mode="none",
+                        skybeta_state="WAIT_FOR_OFFBOARD",
+                        stage=self.router.stage.value,
+                        reason=prearm_reason,
+                    )
+                if self.router.recorded_start_pos_enu is None:
+                    self.router.recorded_start_pos_enu = (
+                        float(pos_enu[0]),
+                        float(pos_enu[1]),
+                        float(self.config.checkpoints.start_pad[2]),
+                    )
                 return SkybetaMissionCommand(
                     mode="pose",
                     pos_odom=pos_odom_cur,
@@ -566,6 +807,21 @@ class PX4TrajectoryTrackerCore:
                     skybeta_state="WAIT_FOR_OFFBOARD",
                     stage=self.router.stage.value,
                     reason="prestreaming_current_pose_for_offboard_handover",
+                )
+            if not prearm_ok:
+                self.skybeta_state = "REFUSED"
+                return SkybetaMissionCommand(
+                    mode="twist",
+                    vel_odom=(0.0, 0.0, -0.30),
+                    skybeta_state="REFUSED",
+                    stage=self.router.stage.value,
+                    reason=f"refused_takeover ({prearm_reason})",
+                )
+            if self.router.recorded_start_pos_enu is None:
+                self.router.recorded_start_pos_enu = (
+                    float(pos_enu[0]),
+                    float(pos_enu[1]),
+                    float(self.config.checkpoints.start_pad[2]),
                 )
             # Offboard just became active! If resuming from Concentric Pad after disarm, jump to FLY_HOME
             if self.router.primary_landed and self.config.enable_fly_home:
@@ -628,6 +884,14 @@ class PX4TrajectoryTrackerCore:
                         reason=reason,
                     )
                 else:
+                    if self.telemetry.geofence_breach_detected or self.telemetry.position_jump_detected:
+                        return SkybetaMissionCommand(
+                            mode="twist",
+                            vel_odom=(0.0, 0.0, -0.35),
+                            skybeta_state="EMERGENCY_LAND",
+                            stage=self.router.stage.value,
+                            reason=f"emergency_land ({reason})",
+                        )
                     # VIO lost or temporary hold: freeze at last safe setpoint
                     hold_enu = self.last_safe_course_pos_enu or (float(pos_enu[0]), float(pos_enu[1]), float(pos_enu[2]))
                     hold_odom = course_to_odom_pos(hold_enu, launch_xy, self.start_bearing_deg, self.start_height_m)
@@ -865,6 +1129,12 @@ def run_ros2_node(argv=None) -> int:
         action="store_true",
         help="Insert live stereo depth/pointcloud into OccupancyGrid3D even when --prior mesh is loaded",
     )
+    parser.add_argument(
+        "--prearm-settle-s",
+        type=float,
+        default=2.0,
+        help="Seconds to verify stationary, valid, height-matched navigation and zero-tare before arming",
+    )
     args, unknown_args = parser.parse_known_args(argv)
     # Support `-p fly_home:=true` passed by master_sim/run_master.sh
     fly_home_arg = any("fly_home:=true" in str(u).lower() for u in unknown_args)
@@ -883,11 +1153,18 @@ def run_ros2_node(argv=None) -> int:
         local_window_m=cfg.local_window_size_m,
     )
     prior_loaded = False
-    if args.prior and args.prior.exists():
-        if args.prior.suffix.lower() == ".obj":
-            grid.load_prior_from_obj(args.prior)
+    default_json = Path(__file__).resolve().parent / "config" / "prior_course_map.json"
+    default_obj = Path(__file__).resolve().parent.parent / "dronehacks-course-v3.obj"
+    prior_path = (
+        args.prior
+        if (args.prior and args.prior.exists())
+        else (default_json if default_json.exists() else (default_obj if default_obj.exists() else None))
+    )
+    if prior_path is not None and prior_path.exists():
+        if prior_path.suffix.lower() == ".obj":
+            grid.load_prior_from_obj(prior_path)
         else:
-            grid.load_prior_from_json(args.prior)
+            grid.load_prior_from_json(prior_path)
         prior_loaded = True
 
     router = GlobalCourseRouter(cfg, grid)
@@ -896,6 +1173,7 @@ def run_ros2_node(argv=None) -> int:
         start_bearing_deg=args.start_bearing_deg,
         start_height_m=(args.start_height_m if args.skybeta_mode else 0.0),
         touch_and_go_fly_home=bool(args.touch_and_go and not args.stop_on_pad),
+        prearm_settle_s=args.prearm_settle_s,
     )
 
     import rclpy
@@ -906,7 +1184,7 @@ def run_ros2_node(argv=None) -> int:
     from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
     from sensor_msgs.msg import CameraInfo, Image, PointCloud2
     from std_msgs.msg import Bool, String
-    from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleLocalPosition, VehicleStatus
+    from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleLocalPosition, VehicleStatus
 
     rclpy.init()
     node = Node("ego_px4_planner_bridge")
@@ -920,11 +1198,14 @@ def run_ros2_node(argv=None) -> int:
     )
 
     cam_intrinsics: Dict[str, float] = {}
+    last_fmu_pos_rx_s: List[float] = [-1e9]
+    last_nav_land_cmd_s: List[float] = [-1e9]
 
     def now_sec() -> float:
         return node.get_clock().now().nanoseconds * 1e-9
 
     def on_local_pos(msg: VehicleLocalPosition) -> None:
+        last_fmu_pos_rx_s[0] = now_sec()
         tracker.update_local_position(
             now_sec(),
             msg.x,
@@ -1061,18 +1342,23 @@ def run_ros2_node(argv=None) -> int:
 
     def on_validated_odom(msg: Odometry) -> None:
         last_validated_odom_rx_s[0] = now_sec()
+        if not args.skybeta_mode and (now_sec() - last_fmu_pos_rx_s[0]) <= 1.0:
+            return
         _apply_odom_msg(msg, from_validated_gate=True)
 
     def on_visual_slam_odom(msg: Odometry) -> None:
-        # Prefer Koji's fail-closed `/mapping/validated_odometry` gate when active
+        # Prefer Koji's fail-closed `/mapping/validated_odometry` gate when active,
+        # and in direct PX4 mode do not overwrite `/fmu/out/vehicle_local_position_v1`
         if (now_sec() - last_validated_odom_rx_s[0]) <= 1.0:
+            return
+        if not args.skybeta_mode and (now_sec() - last_fmu_pos_rx_s[0]) <= 1.0:
             return
         _apply_odom_msg(msg, from_validated_gate=False)
 
     def on_vslam_status(msg: object) -> None:
         last_vslam_status_rx_s[0] = now_sec()
         vo_state = int(getattr(msg, "vo_state", 1))
-        tracker.update_estimator_health(vo_state == 1)
+        tracker.update_vslam_status(now_sec(), vo_state)
 
     def on_skybeta_state(msg: String) -> None:
         try:
@@ -1081,6 +1367,12 @@ def run_ros2_node(argv=None) -> int:
             nav = NAVIGATION_STATE_OFFBOARD if st.get("offboard_active", False) else 2
             landed = bool(st.get("landed", False))
             tracker.update_vehicle_status(now_sec(), armed, nav, landed=landed)
+            local = st.get("local_enu")
+            if isinstance(local, (list, tuple)) and len(local) >= 3:
+                try:
+                    tracker.update_px4_skybeta_height(now_sec(), float(local[2]))
+                except (TypeError, ValueError):
+                    pass
         except ValueError:
             pass
 
@@ -1115,8 +1407,28 @@ def run_ros2_node(argv=None) -> int:
     setpoint_pub = (
         None if args.skybeta_mode else node.create_publisher(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", 10)
     )
+    cmd_pub = (
+        None if args.skybeta_mode else node.create_publisher(VehicleCommand, "/fmu/in/vehicle_command", 10)
+    )
     skybeta_pose_pub = node.create_publisher(PoseStamped, "/skybeta/setpoint/pose", 10)
     skybeta_twist_pub = node.create_publisher(TwistStamped, "/skybeta/setpoint/twist", 10)
+
+    def _send_nav_land(t_now: float, why: str) -> None:
+        if cmd_pub is None or not args.approve_flight:
+            return
+        if (t_now - last_nav_land_cmd_s[0]) < 1.0:
+            return
+        last_nav_land_cmd_s[0] = t_now
+        node.get_logger().warning(f"Sending VEHICLE_CMD_NAV_LAND: {why}")
+        vc = VehicleCommand()
+        vc.command = int(getattr(VehicleCommand, "VEHICLE_CMD_NAV_LAND", 21))
+        vc.target_system = 1
+        vc.target_component = 1
+        vc.source_system = 1
+        vc.source_component = 1
+        vc.from_external = True
+        vc.timestamp = int(t_now * 1_000_000)
+        cmd_pub.publish(vc)
 
     def timer_callback() -> None:
         t_now = now_sec()
@@ -1149,7 +1461,17 @@ def run_ros2_node(argv=None) -> int:
 
         sample, status_reason = tracker.sample_setpoint(t_now)
         if sample is None:
+            if tracker.telemetry.arming_state == ARMING_STATE_ARMED and (
+                "geofence_breach" in status_reason
+                or "estimator_position_jump" in status_reason
+                or "vslam_lost" in status_reason
+                or "stale_" in status_reason
+            ):
+                _send_nav_land(t_now, status_reason)
             node.get_logger().debug(f"Planner holding publishing: {status_reason}")
+            return
+        if sample.stage == CourseStage.MISSION_COMPLETE and tracker.telemetry.arming_state == ARMING_STATE_ARMED:
+            _send_nav_land(t_now, "mission_complete")
             return
         if not args.approve_flight:
             # Read-only / dry-run planning mode until team explicitly approves flight (AGENTS.md)

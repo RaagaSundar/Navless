@@ -78,6 +78,22 @@ def load_route(path, launch, heading):
     return [course_to_local(p, launch, heading) for p in enu], launch
 
 
+def plan_route(route_arg, launch, heading):
+    """Plan a 3D A* + EGO B-spline route dynamically from the 3D occupancy grid (never relying on static route.json)."""
+    import os
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    nav_pkg = os.path.join(repo_root, "navless_nav")
+    for p in (repo_root, nav_pkg):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    from navless_nav.route import plan_dynamic_course_route
+    branch = "gate_b" if "gate_b" in str(route_arg).lower() else "window"
+    enu, launch_xy, _ = plan_dynamic_course_route(branch=branch)
+    if launch is None:
+        launch = (float(launch_xy[0]), float(launch_xy[1]), 0.0)
+    return [course_to_local(p, launch, heading) for p in enu], launch
+
+
 def check(route, fence_margin):
     steps = [dist(a, b) for a, b in zip(route, route[1:])]
     lo, hi = fence_for(route, fence_margin)
@@ -92,6 +108,7 @@ def check(route, fence_margin):
 
 STALE_S = 0.5
 RATE_HZ = 30.0
+PREARM_SETTLE_S = 2.0
 
 
 def run(route, a):
@@ -115,7 +132,18 @@ def run(route, a):
                                   ("pos", VehicleLocalPosition, "/fmu/out/vehicle_local_position_v1"),
                                   ("land", VehicleLandDetected, "/fmu/out/vehicle_land_detected")):
                 self.create_subscription(typ, topic, lambda m, k=k: self._rx(k, m), qos)
+            self.vo_state = 1
+            try:
+                from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
+                self.create_subscription(VisualSlamStatus, "/visual_slam/status",
+                                         lambda m: setattr(self, "vo_state", int(m.vo_state)), 10)
+            except ImportError:
+                pass
             self.state, self.ticks, self.timer = "PREFLIGHT", 0, None
+            self.pos_zero = (0.0, 0.0, 0.0)
+            self.prearm_anchor = None
+            self.prearm_stable_since_ns = None
+            self.prev_pos = None
             self.exit_code = 0
 
         def _rx(self, k, m):
@@ -128,13 +156,17 @@ def run(route, a):
             now = self.get_clock().now()
             return all(k in self.t and (now - self.t[k]).nanoseconds < STALE_S * 1e9 for k in ("status", "pos", "land"))
 
-        def pos(self):
+        def raw_pos(self):
             m = self.msg["pos"]
-            return (m.x, m.y, m.z)
+            return (float(m.x), float(m.y), float(m.z))
+
+        def pos(self):
+            rx, ry, rz = self.raw_pos()
+            return (rx - self.pos_zero[0], ry - self.pos_zero[1], rz - self.pos_zero[2])
 
         def est_ok(self):
             m = self.msg["pos"]
-            return m.xy_valid and m.z_valid
+            return bool(m.xy_valid and m.z_valid and self.vo_state == 1)
 
         def armed(self):
             return self.msg["status"].arming_state == VehicleStatus.ARMING_STATE_ARMED
@@ -143,7 +175,23 @@ def run(route, a):
             return self.msg["status"].nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD
 
         def preflight_ok(self):
-            return self.fresh() and self.est_ok() and self.msg["land"].landed and not self.armed()
+            if not (self.fresh() and self.est_ok() and self.msg["land"].landed and not self.armed()):
+                self.prearm_anchor = None
+                self.prearm_stable_since_ns = None
+                return False
+            rp = self.raw_pos()
+            m = self.msg["pos"]
+            vel = math.hypot(float(getattr(m, "vx", 0.0)), float(getattr(m, "vy", 0.0)), float(getattr(m, "vz", 0.0)))
+            now_ns = self.get_clock().now().nanoseconds
+            if self.prearm_anchor is None or dist(rp, self.prearm_anchor) > 0.05 or vel > 0.15:
+                self.prearm_anchor = rp
+                self.prearm_stable_since_ns = now_ns
+                return False
+            if (now_ns - self.prearm_stable_since_ns) < int(PREARM_SETTLE_S * 1e9):
+                return False
+            # Zero-tare the settled ground reading so local (0,0,0) is anchored on the launch pad
+            self.pos_zero = rp
+            return True
 
         def cmd(self, command, p1=0.0, p2=0.0):
             m = VehicleCommand()
@@ -157,14 +205,16 @@ def run(route, a):
             m.position, m.timestamp = True, self.now_us()
             self.p_mode.publish(m)
             sp = TrajectorySetpoint()
-            sp.position = [float(v) for v in p]
+            sp.position = [float(v + z0) for v, z0 in zip(p, self.pos_zero)]
             sp.velocity = sp.acceleration = [math.nan] * 3
             sp.yaw, sp.timestamp = float(self.yaw), self.now_us()
             self.p_sp.publish(sp)
 
         def start(self):
+            self.pos_zero = self.raw_pos()
             here = self.pos()
-            path = [here] + route  # climb from wherever we actually sit
+            self.prev_pos = here
+            path = [here] + route  # climb from zeroed launch pad origin
             self.fence = fence_for(path, a.fence_margin)
             self.carrot = Carrot(path, a.speed, a.max_lead)
             self.yaw = self.msg["pos"].heading  # ponytail: fixed heading; face-travel if depth needs it
@@ -194,13 +244,17 @@ def run(route, a):
                 self.exit_code = 2
                 return self.land("telemetry stale or estimator invalid")
             here = self.pos()
+            if self.prev_pos is not None and self.armed() and dist(here, self.prev_pos) > 0.85:
+                self.exit_code = 6
+                return self.land(f"impossible position jump {self.prev_pos} -> {here}")
+            self.prev_pos = here
             if s == "STREAM":  # PX4 needs a setpoint stream before it accepts Offboard
-                self.publish_sp(self.carrot.p)
+                self.publish_sp(route[0])
                 if self.ticks == int(RATE_HZ):
                     self.cmd(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1, 6)
                     self.cmd(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1)
                 if self.armed() and self.offboard():
-                    self.state = "FLY"
+                    self.state = "TAKEOFF"
                 elif self.ticks > 4 * RATE_HZ:
                     self.cmd(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 0)
                     self.finish(3, "PX4 refused offboard/arm; disarm sent")
@@ -210,7 +264,11 @@ def run(route, a):
             if not inside(here, self.fence):
                 self.exit_code = 5
                 return self.land(f"geofence breach at {here}")
-            if s == "FLY":
+            if s == "TAKEOFF":
+                self.publish_sp(route[0])
+                if here[2] <= route[0][2] + 0.20:
+                    self.state = "FLY"
+            elif s == "FLY":
                 self.publish_sp(self.carrot.step(here, 1.0 / RATE_HZ))
                 if self.carrot.done(here, a.accept):
                     self.state, self.ticks = "HOVER", 0
@@ -226,16 +284,16 @@ def run(route, a):
         while not node.preflight_ok():
             rclpy.spin_once(node, timeout_sec=0.1)
             if node.get_clock().now().nanoseconds > deadline:
-                print("Preflight failed: need fresh status/position/land-detected, valid estimator, landed, disarmed.")
+                print("Preflight failed: need 2.0 s of fresh status/position/land-detected, valid stationary estimator, landed, disarmed.")
                 print({k: (k in node.msg) for k in ("status", "pos", "land")})
                 return 1
-        print(f"Ready. Local position {tuple(round(v, 2) for v in node.pos())}, heading {node.msg['pos'].heading:.2f} rad.")
-        print(f"Route: {len(route)} pts, first {tuple(round(v, 2) for v in route[0])}, speed {a.speed} m/s.")
+        print(f"Ready (2.0 s settled & zeroed). Zeroed local position {tuple(round(v, 2) for v in node.pos())}, raw {tuple(round(v, 2) for v in node.raw_pos())}, heading {node.msg['pos'].heading:.2f} rad.")
+        print(f"Planned 3D A* + B-spline Route: {len(route)} pts, first {tuple(round(v, 2) for v in route[0])}, speed {a.speed} m/s.")
         if input("Team-approved? Type ARM to fly: ").strip() != "ARM":
             print("Not armed.")
             return 1
-        for _ in range(20):  # input() blocked callbacks; refresh before re-checking
-            rclpy.spin_once(node, timeout_sec=0.05)
+        for _ in range(25):  # input() blocked callbacks; re-verify 2.0 s settled state before arming
+            rclpy.spin_once(node, timeout_sec=0.1)
         if not node.preflight_ok():
             print("Preflight no longer OK after confirmation. Not armed.")
             return 1
@@ -256,10 +314,11 @@ def run(route, a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("route")
+    ap.add_argument("route", nargs="?", default="dynamic",
+                    help="branch ('window'/'gate_b'/'dynamic'); plans dynamically via 3D A* + B-spline")
     ap.add_argument("--check", action="store_true", help="validate offline, no ROS")
     ap.add_argument("--launch", type=float, nargs=3, metavar=("X", "Y", "Z"),
-                    help="course ENU of PX4 local origin (default: first waypoint xy, z=0)")
+                    help="course ENU of PX4 local origin (default: launch mark xy, z=0)")
     ap.add_argument("--local-heading", type=float, default=0.0)
     ap.add_argument("--speed", type=float, default=0.5, help="m/s along path")
     ap.add_argument("--max-lead", type=float, default=0.6, help="m setpoint may lead the drone")
@@ -272,7 +331,7 @@ def main():
         argv, ros_args = argv[:i], argv[i:]
     a = ap.parse_args(argv)
     a.ros_args = [sys.argv[0]] + ros_args
-    route, _ = load_route(a.route, a.launch, a.local_heading)
+    route, _ = plan_route(a.route, a.launch, a.local_heading)
     check(route, a.fence_margin)
     if not a.check:
         sys.exit(run(route, a))

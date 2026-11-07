@@ -211,6 +211,38 @@ class TestPlannerScaffold(unittest.TestCase):
         self.assertIsNone(sample_stale)
         self.assertEqual(reason_stale, "stale_vehicle_local_position")
 
+        # Verify pre-arm navigation settle + launch-pad zero-tare + vertical TAKEOFF_CLIMB gate
+        tracker2 = PX4TrajectoryTrackerCore(GlobalCourseRouter(cfg, grid), prearm_settle_s=2.0)
+        tracker2.update_estimator_health(True)
+        # Disarmed on launch pad with a small non-zero spawn offset (0.12, -0.05, -0.02) NED
+        tracker2.update_vehicle_status(0.0, 1, nav_state=2)
+        tracker2.update_local_position(0.0, 0.12, -0.05, -0.02, 0.0, 0.0, 0.0, 0.0, True, True)
+        sp_settle, r_settle = tracker2.sample_setpoint(0.5)
+        self.assertIsNone(sp_settle)
+        self.assertIn("prearm_position_settling", r_settle)
+        # After 2.0 s stationary on the pad, pre-arm zero-tare locks in and pre-offboard stream begins
+        tracker2.update_vehicle_status(2.6, 1, nav_state=2)
+        tracker2.update_local_position(2.6, 0.12, -0.05, -0.02, 0.0, 0.0, 0.0, 0.0, True, True)
+        sp_ready, r_ready = tracker2.sample_setpoint(2.6)
+        self.assertIsNotNone(sp_ready)
+        self.assertTrue(tracker2.nav_zeroed)
+        np.testing.assert_allclose(tracker2.nav_zero_offset_ned, (0.12, -0.05, -0.02), atol=1e-6)
+        # Arm in Offboard while still near the floor (z_enu = 0.10 m < 0.65 m): must hold XY at (0,0) in TAKEOFF_CLIMB
+        tracker2.update_vehicle_status(5.0, ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD)
+        tracker2.update_local_position(5.0, 0.12, -0.05, -0.12, 0.0, 0.0, 0.0, 0.0, True, True)
+        sp_climb, r_climb = tracker2.sample_setpoint(5.0)
+        self.assertIsNotNone(sp_climb)
+        self.assertIn("climbing_to_takeoff_altitude", r_climb)
+        assert sp_climb is not None
+        self.assertEqual(sp_climb.branch, "TAKEOFF_CLIMB")
+        np.testing.assert_allclose(sp_climb.position_ned[:2], (0.15, 0.0), atol=1e-3)
+        self.assertAlmostEqual(tracker2.router.spline_start_time_s, 5.0, places=3)
+        # Impossible position jump (> 0.85 m in 0.05 s) must trip position_jump_detected and refuse setpoints
+        tracker2.update_local_position(5.05, -15.0, 12.0, -3.5, 0.0, 0.0, 0.0, 0.0, True, True)
+        sp_jump, r_jump = tracker2.sample_setpoint(5.05)
+        self.assertIsNone(sp_jump)
+        self.assertTrue("position_jump" in r_jump or "geofence_breach" in r_jump)
+
     def test_export_route_json_for_gate_b(self) -> None:
         cfg = PlannerConfig()
         grid = OccupancyGrid3D()

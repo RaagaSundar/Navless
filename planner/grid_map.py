@@ -154,6 +154,7 @@ class OccupancyGrid3D:
         self.add_aabb_obstacle((inner, bmin_y, z_lo), (bmax_x, bmax_y, z_hi))
         self.add_aabb_obstacle((bmin_x, bmin_y, z_lo), (bmax_x, -inner, z_hi))
         self.add_aabb_obstacle((bmin_x, inner, z_lo), (bmax_x, bmax_y, z_hi))
+        self.prior_grid[:] = self.raw_grid
 
     def _build_spherical_offsets(self, radius_m: float) -> np.ndarray:
         """Build quadrotor-shaped (cylindrical XY = radius_m, vertical Z = min(radius_m, 0.15 m)) inflation offsets."""
@@ -302,8 +303,14 @@ class OccupancyGrid3D:
         ] = False
 
     def load_prior_from_json(self, path: str | Path) -> None:
-        """Pre-seed map from a JSON layout file containing `walls` (boxes) and `openings`."""
+        """Pre-seed map from a JSON layout file containing `walls` (boxes), `openings`, or packed voxel snapshot."""
+        import base64
+        import zlib
         data = json.loads(Path(path).read_text(encoding="utf-8"))
+        if "packed_raw_grid_b64" in data and list(data.get("shape", [])) == list(self.shape):
+            raw_bytes = zlib.decompress(base64.b64decode(data["packed_raw_grid_b64"]))
+            bits = np.unpackbits(np.frombuffer(raw_bytes, dtype=np.uint8))[: self.raw_grid.size]
+            self.raw_grid[:] = bits.reshape(self.shape).astype(bool)
         for wall in data.get("walls", []):
             self.add_aabb_obstacle(tuple(wall["min"]), tuple(wall["max"]), update_inflation=False)
         for opening in data.get("openings", []):
@@ -311,6 +318,15 @@ class OccupancyGrid3D:
         if "points" in data and len(data["points"]) > 0:
             pts = np.asarray(data["points"], dtype=np.float64)
             self.insert_point_cloud(pts, sensor_origin_m=None)
+        if "concentric_pad" in data and data["concentric_pad"]:
+            cp_data = data["concentric_pad"]
+            self.detected_concentric_pad = ConcentricPadTarget(
+                center_xy_m=(float(cp_data["center_xy_m"][0]), float(cp_data["center_xy_m"][1])),
+                ring_radii_m=tuple(float(v) for v in cp_data.get("ring_radii_m", (0.229, 0.508, 0.762))),
+                outer_radius_m=float(cp_data.get("outer_radius_m", 0.762)),
+            )
+        if "launch_mark_xy" in data and data["launch_mark_xy"]:
+            self.detected_launch_mark_xy = (float(data["launch_mark_xy"][0]), float(data["launch_mark_xy"][1]))
         self.rebuild_inflation()
         self._update_prior_snapshot()
 

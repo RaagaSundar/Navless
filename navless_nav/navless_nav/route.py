@@ -16,6 +16,7 @@ import bisect
 import json
 import math
 import os
+import sys
 
 # realpath, not abspath: on the drone, team_build.sh runs `colcon build
 # --symlink-install`, which imports this package from team_ws/build/navless_nav/,
@@ -23,8 +24,146 @@ import os
 # team_ws/build, no route file is found, and the node takes off and hovers.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.realpath(__file__))))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 NET_HALF_M = 3.048      # the 20 x 20 ft net; course origin at its floor centre
+
+_BASE_PLANNER_GRID = None
+_CLEAN_DYNAMIC_ROUTE_CACHE = {}
+
+
+def create_live_course_planner():
+    """Create a live (PlannerConfig, OccupancyGrid3D, GlobalCourseRouter) backed by the 3D course geometry."""
+    global _BASE_PLANNER_GRID
+    from planner.config import PlannerConfig
+    from planner.fsm_router import GlobalCourseRouter
+    from planner.grid_map import OccupancyGrid3D
+
+    cfg_path = os.path.join(REPO_ROOT, 'planner', 'config', 'course_config.json')
+    cfg = PlannerConfig.from_json(cfg_path) if os.path.isfile(cfg_path) else PlannerConfig()
+    if _BASE_PLANNER_GRID is None:
+        base = OccupancyGrid3D(
+            bounds_min_m=cfg.global_map_bounds_min_m,
+            bounds_max_m=cfg.global_map_bounds_max_m,
+            resolution_m=cfg.voxel_resolution_m,
+            inflation_radius_m=cfg.obstacle_inflation_m,
+            local_window_m=cfg.local_window_size_m,
+        )
+        obj_candidates = [
+            os.path.join(REPO_ROOT, 'dronehacks-course-v3.obj'),
+            os.path.join(os.path.dirname(REPO_ROOT), 'dronehacks-course-v3.obj'),
+        ]
+        json_candidates = [
+            os.path.join(REPO_ROOT, 'planner', 'config', 'prior_course_map.json'),
+            os.path.join(REPO_ROOT, 'planner', 'config', 'course_occupancy.json'),
+            os.path.join(os.path.dirname(REPO_ROOT), 'planner', 'config', 'prior_course_map.json'),
+        ]
+        loaded_prior = False
+        for json_path in json_candidates:
+            if os.path.isfile(json_path):
+                base.load_prior_from_json(json_path)
+                loaded_prior = True
+                break
+        if not loaded_prior:
+            for obj_path in obj_candidates:
+                if os.path.isfile(obj_path):
+                    base.load_prior_from_obj(obj_path)
+                    loaded_prior = True
+                    break
+        if not loaded_prior:
+            base._update_prior_snapshot()
+        base.build_soft_clearance_cost()
+        base.build_soft_clearance_cost(0.55)
+        _BASE_PLANNER_GRID = base
+
+    grid = OccupancyGrid3D(
+        bounds_min_m=cfg.global_map_bounds_min_m,
+        bounds_max_m=cfg.global_map_bounds_max_m,
+        resolution_m=cfg.voxel_resolution_m,
+        inflation_radius_m=cfg.obstacle_inflation_m,
+        local_window_m=cfg.local_window_size_m,
+    )
+    grid.raw_grid[:] = _BASE_PLANNER_GRID.raw_grid
+    grid.prior_grid[:] = _BASE_PLANNER_GRID.prior_grid
+    grid.prior_near_mask[:] = _BASE_PLANNER_GRID.prior_near_mask
+    grid.inflated_grid[:] = _BASE_PLANNER_GRID.inflated_grid
+    grid.detected_concentric_pad = _BASE_PLANNER_GRID.detected_concentric_pad
+    grid.detected_launch_mark_xy = _BASE_PLANNER_GRID.detected_launch_mark_xy
+    grid._soft_cost_cache = {k: v.copy() for k, v in _BASE_PLANNER_GRID._soft_cost_cache.items()}
+    router = GlobalCourseRouter(cfg, grid)
+    return cfg, grid, router
+
+
+def plan_dynamic_course_route(branch='window', start_enu=None, router=None):
+    """Plan a collision-free 3D A* + EGO B-spline route dynamically from the 3D occupancy grid."""
+    use_win = str(branch).lower() != 'gate_b'
+    cache_key = ('window' if use_win else 'gate_b')
+    if start_enu is None and router is None and cache_key in _CLEAN_DYNAMIC_ROUTE_CACHE:
+        wps, launch, kind = _CLEAN_DYNAMIC_ROUTE_CACHE[cache_key]
+        return list(wps), launch, kind
+
+    if router is None:
+        _, _, router = create_live_course_planner()
+
+    if start_enu is None and not router.grid.get_discovered_discrepancy_points().size:
+        if cache_key in _CLEAN_DYNAMIC_ROUTE_CACHE:
+            wps, launch, kind = _CLEAN_DYNAMIC_ROUTE_CACHE[cache_key]
+            return list(wps), launch, kind
+        data = router.plan_full_course_route(use_window=use_win, include_fly_home=False)
+        raw_wps = [tuple(float(v) for v in p) for p in data['waypoints_enu']]
+        launch_raw = data.get('launch_origin_enu') or raw_wps[0][:2]
+        launch = (float(launch_raw[0]), float(launch_raw[1]))
+        z0 = float(raw_wps[0][2])
+        # Anchor initial 0.25 m climb-lean segment straight North along Corridor 1
+        aligned_wps = [
+            (launch[0], launch[1], z0),
+            (launch[0], launch[1] + 0.25, z0),
+        ] + [p for p in raw_wps if math.hypot(p[0] - launch[0], p[1] - launch[1]) > 0.28]
+        kind = f"DYNAMIC_3D_ASTAR_BSPLINE_{data.get('route_type', cache_key.upper())}"
+        _CLEAN_DYNAMIC_ROUTE_CACHE[cache_key] = (aligned_wps, launch, kind)
+        return list(aligned_wps), launch, kind
+
+    # Online mid-flight replanning from current drone pose around newly discovered map discrepancies
+    from planner.fsm_router import CourseStage
+    cp = router.config.checkpoints
+    launch = (float(cp.start_pad[0]), float(cp.start_pad[1]))
+    s_pt = tuple(float(v) for v in (start_enu or cp.start_pad))
+    pad_goal, pad_r = router.landing_target_enu()
+    prof = router.profile_for_stage(CourseStage.STAGE_4_CHICANE)
+    features = router.grid.discover_course_features(standoff_distance_m=router.config.window_inspect_distance_m)
+    win_center = features.window_center_m if features.window_center_m is not None else cp.window_aperture
+
+    # Try Window first if requested and clear; automatically generalize to Gate B if blocked!
+    spline = None
+    chosen = 'WINDOW'
+    inspect_res = router.grid.inspect_window_aperture(
+        win_center,
+        confidence_threshold=router.config.window_confidence_threshold,
+    )
+    if use_win and inspect_res.is_passable:
+        spline, _ = router.optimizer.plan_spline(
+            s_pt,
+            pad_goal,
+            prof,
+            use_clearance_cost=True,
+            goal_radius_m=pad_r,
+        )
+    if spline is None:
+        chosen = 'GATE_B'
+        spline, _ = router.optimizer.plan_spline(
+            s_pt,
+            pad_goal,
+            prof,
+            use_clearance_cost=True,
+            avoid_spheres=[(win_center, 0.55)],
+            goal_radius_m=pad_r,
+        )
+    if spline is None:
+        raise ValueError('3D A* + B-spline could not find a collision-free path from current pose')
+    pts = spline.sample_points(80)
+    wps = [tuple(round(float(v), 4) for v in pt) for pt in pts]
+    return wps, launch, f'DYNAMIC_REPLAN_{chosen}'
 
 
 def course_to_odom(p, launch_xy, start_bearing_deg, start_height_m=0.0):

@@ -69,13 +69,19 @@ from rcl_interfaces.msg import ParameterDescriptor
 from std_msgs.msg import String
 
 from navless_nav.route import (Carrot, clamp_to_net, course_to_odom,
-                               load_route, odom_to_course,
+                               create_live_course_planner, load_route,
+                               odom_to_course, plan_dynamic_course_route,
                                resolve_route_path)
 
 try:
     from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
 except ImportError:   # off the drone: fall back to odometry staleness only
     VisualSlamStatus = None
+
+try:
+    from sensor_msgs.msg import PointCloud2
+except ImportError:
+    PointCloud2 = None
 
 VO_LOST = 2           # VisualSlamStatus.vo_state: 0 unknown, 1 tracking, 2 lost
 
@@ -240,10 +246,24 @@ class CourseMission(Node):
         self.heights_agree_since = None
         self.prearm_passed = False
         self.prearm_warned_at = None
+        self.prearm_anchor_pos = None
+        self.prearm_stability_tol = 0.05
+        self.raw_position = None
+        self.odom_zero_offset = (0.0, 0.0, 0.0)
+        self.odom_zeroed = False
+        self.start_bearing = param('start_bearing_deg')
+        self.start_height = param('start_height_m')
+        self.preferred_branch = (
+            'gate_b' if 'gate_b' in str(self.get_parameter('route_file').value).lower()
+            else 'window'
+        )
+        self.planner_cfg, self.planner_grid, self.planner_router = create_live_course_planner()
+        self.live_grid_updated = False
+        self.last_replan_at = 0.0
         self.frame = None          # (launch mark xy, start bearing) once known
         self.route = self.load_route(
             str(self.get_parameter('route_file').value),
-            param('start_bearing_deg'), param('start_height_m'))
+            self.start_bearing, self.start_height)
         self.carrot = None
         self.last_tick = None
         self.progress_at = None
@@ -259,6 +279,9 @@ class CourseMission(Node):
         if VisualSlamStatus is not None:
             self.create_subscription(
                 VisualSlamStatus, '/visual_slam/status', self.status_cb, 10)
+        if PointCloud2 is not None and not hasattr(PointCloud2, '__getattr__'):
+            self.create_subscription(
+                PointCloud2, '/team/stereo/points', self.pointcloud_cb, 10)
 
         self.state = 'WAIT_FOR_OFFBOARD'
         self.state_since = self.now_s()
@@ -280,11 +303,15 @@ class CourseMission(Node):
             'then switch to Position...')
 
     def load_route(self, name, bearing_deg, height_m):
-        """Odom-frame waypoints, or None (we then only take off and hover)."""
+        """Plan 3D A* + EGO B-spline route dynamically in odom-frame (never relying on static route.json)."""
         try:
-            path = resolve_route_path(name)
-            waypoints, launch, kind = load_route(path)
-        except (OSError, ValueError, KeyError) as exc:
+            low = str(name).lower()
+            if not any(k in low for k in ('window', 'gate_b', 'dynamic', 'route.json')):
+                resolve_route_path(name)
+            branch = 'gate_b' if 'gate_b' in low else 'window'
+            waypoints, launch, kind = plan_dynamic_course_route(
+                branch=branch, router=self.planner_router)
+        except (OSError, ValueError, KeyError, RuntimeError) as exc:
             self.get_logger().error(
                 f'route not loaded ({exc}); will take off and hover only.')
             return None
@@ -292,15 +319,73 @@ class CourseMission(Node):
                 for p in waypoints]
         self.frame = (launch, bearing_deg)
         self.get_logger().info(
-            f'route {kind} from {path}: {len(odom)} waypoints, launch mark '
+            f'planned dynamic {kind}: {len(odom)} waypoints, launch mark '
             f'{launch}, start bearing {bearing_deg:.1f} deg, ends at odom '
             f'({odom[-1][0]:.2f}, {odom[-1][1]:.2f}, {odom[-1][2]:.2f})')
         return odom
 
+    def pointcloud_cb(self, msg):
+        """Insert live stereo pointcloud obstacles into the 3D occupancy grid for online replanning."""
+        if self.position is None or self.frame is None:
+            return
+        from planner.px4_bridge_node import decode_ros_pointcloud2_optical
+        cur_course = odom_to_course(
+            self.position, self.frame[0], self.frame[1], self.start_height)
+        yaw_enu = 0.5 * math.pi - math.radians(self.frame[1])
+        pts_world = decode_ros_pointcloud2_optical(
+            msg, cur_course, yaw_enu, max_depth_m=2.80)
+        if pts_world.size > 0:
+            n_added = self.planner_grid.insert_point_cloud(
+                pts_world, sensor_origin_m=cur_course, min_live_hits=2)
+            if n_added > 0:
+                self.live_grid_updated = True
+
+    def maybe_replan_for_discrepancies(self, now):
+        """Replan remaining route via 3D A* + B-spline if live stereo depth reveals a map discrepancy."""
+        if (not self.live_grid_updated or self.going_home
+                or self.frame is None or self.carrot is None
+                or (now - self.last_replan_at) < 0.5):
+            return
+        self.live_grid_updated = False
+        rem_odom = self.route[self.carrot.index:]
+        blocked = False
+        for q in rem_odom:
+            c_pt = odom_to_course(q, self.frame[0], self.frame[1], self.start_height)
+            if self.planner_grid.is_occupied(c_pt, inflated=True):
+                blocked = True
+                break
+        if not blocked:
+            return
+        cur_course = odom_to_course(
+            self.position, self.frame[0], self.frame[1], self.start_height)
+        try:
+            wps_enu, launch, kind = plan_dynamic_course_route(
+                branch=self.preferred_branch,
+                start_enu=cur_course,
+                router=self.planner_router,
+            )
+            new_odom = [course_to_odom(p, launch, self.frame[1], self.start_height)
+                        for p in wps_enu]
+            self.route = new_odom
+            self.carrot = Carrot(
+                self.route, self.cruise_speed, self.max_lead,
+                self.max_lat_accel, self.max_sagitta)
+            self.last_replan_at = now
+            self.get_logger().info(
+                f'Online 3D A* + B-spline replan ({kind}): {len(new_odom)} waypoints around obstacle.')
+        except (ValueError, RuntimeError) as exc:
+            self.get_logger().warn(f'Online replan skipped ({exc}).')
+
     # -- inputs ----------------------------------------------------------
     def odometry_cb(self, msg):
         p = msg.pose.pose.position
-        self.position = (float(p.x), float(p.y), float(p.z))
+        raw = (float(p.x), float(p.y), float(p.z))
+        self.raw_position = raw
+        self.position = (
+            raw[0] - self.odom_zero_offset[0],
+            raw[1] - self.odom_zero_offset[1],
+            raw[2] - self.odom_zero_offset[2],
+        )
         self.odom_at = self.now_s()
 
     def status_cb(self, msg):
@@ -389,14 +474,28 @@ class CourseMission(Node):
             # Every arming (the fly_home re-arm on the pad too) re-checks.
             self.heights_agree_since = None
             self.prearm_passed = False
+            self.prearm_anchor_pos = None
 
     def heights_agree(self):
-        """Pre-arm check: PX4's height has matched odom z for prearm_settle_s."""
+        """Pre-arm check: PX4's height matches odom z, VIO is stationary, and launch offset is zeroed."""
         if self.prearm_tol <= 0.0:
             self.info_once('prearm_off', 'pre-arm height check is OFF '
                            '(prearm_height_tol_m 0).')
             return True
         now = self.now_s()
+        if not self.vio_ok():
+            self.heights_agree_since = None
+            self.prearm_passed = False
+            self.prearm_anchor_pos = None
+            return False
+        raw_pos = self.raw_position if self.raw_position is not None else self.position
+        if self.prearm_anchor_pos is None:
+            self.prearm_anchor_pos = raw_pos
+        elif math.dist(raw_pos, self.prearm_anchor_pos) > self.prearm_stability_tol:
+            self.prearm_anchor_pos = raw_pos
+            self.heights_agree_since = None
+            self.prearm_passed = False
+            return False
         fresh = (self.px4_z is not None
                  and now - self.px4_z_at <= PREARM_PX4_TIMEOUT_S)
         dz = abs(self.px4_z - self.position[2]) if fresh else None
@@ -428,11 +527,16 @@ class CourseMission(Node):
             self.heights_agree_since = now
         if now - self.heights_agree_since < self.prearm_settle:
             return False
+        if not self.odom_zeroed and not self.going_home and raw_pos is not None:
+            if 0.0 < math.hypot(raw_pos[0], raw_pos[1]) <= 0.20 and abs(raw_pos[2]) <= 0.20:
+                self.odom_zero_offset = raw_pos
+                self.position = (0.0, 0.0, 0.0)
+            self.odom_zeroed = True
         if not self.prearm_passed:
             self.prearm_passed = True
             self.prearm_warned_at = None
             self.get_logger().info(
-                f'pre-arm height check passed: PX4 and odom agree to '
+                f'pre-arm height & zero check passed: PX4 and odom agree to '
                 f'{dz:.2f} m. Streaming; ready for the arming.')
         return True
 
@@ -580,6 +684,7 @@ class CourseMission(Node):
         if vio_ok:
             self.blind_since = None
             self.set_carrying(False, 'VIO back')
+            self.maybe_replan_for_discrepancies(now)
             point = self.carrot.step(self.position, dt)
         else:
             # With no trustworthy position, do not move the target: PX4
