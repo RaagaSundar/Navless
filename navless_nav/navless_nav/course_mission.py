@@ -538,6 +538,8 @@ class CourseMission(Node):
             self.goto('HOLD', self.target)
             return
         self.carrot = carrot
+        self.blind_since = None     # a fly_home leg starts with a clean slate
+        self.blind_carrying = False
         self.last_tick = self.now_s()
         self.progress_at = (self.last_tick, 0, self.carrot.point)
         self.goto('ROUTE')
