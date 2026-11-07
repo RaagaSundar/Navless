@@ -71,6 +71,7 @@ from std_msgs.msg import String
 from navless_nav.route import (Carrot, clamp_to_net, course_to_odom,
                                load_route, odom_to_course,
                                resolve_route_path)
+from navless_nav.tube_guidance import TubeGuidance
 
 try:
     from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
@@ -183,6 +184,11 @@ PARAMETERS = (
     ('blind_carry', False),
     ('blind_carry_max_s', 4.0),
     ('blind_zone_margin_m', 0.4),
+    # Experimental stereo wall correction. Never enabled by a hardware default.
+    ('stereo_tube_centering', False),
+    ('stereo_tube_max_shift_m', 0.20),
+    ('stereo_tube_rate_mps', 0.10),
+    ('stereo_tube_hold_s', 3.0),
 )
 
 
@@ -237,6 +243,13 @@ class CourseMission(Node):
         self.blind_margin = param('blind_zone_margin_m')
         self.blind_since = None     # start of the current VIO loss in ROUTE
         self.blind_carrying = False
+        self.stereo_tube = str(self.get_parameter('stereo_tube_centering').value).lower() in ('true', '1')
+        self.tube_guidance = TubeGuidance(param('stereo_tube_max_shift_m'), param('stereo_tube_rate_mps'),
+                                          param('stereo_tube_hold_s'))
+        self.tube_invalid_at = -math.inf
+        self.tube_status_at = None
+        self.vo_at = None
+        self.state_at = None
         self.heights_agree_since = None
         self.prearm_passed = False
         self.prearm_warned_at = None
@@ -256,6 +269,9 @@ class CourseMission(Node):
             Odometry, str(self.get_parameter('odometry_topic').value),
             self.odometry_cb, 10)
         self.create_subscription(String, STATE_TOPIC, self.state_cb, 10)
+        if self.stereo_tube:
+            self.create_subscription(PoseStamped, '/tube/stereo/centerline', self.tube_center_cb, 2)
+            self.create_subscription(String, '/tube/stereo/status', self.tube_status_cb, 2)
         if VisualSlamStatus is not None:
             self.create_subscription(
                 VisualSlamStatus, '/visual_slam/status', self.status_cb, 10)
@@ -305,6 +321,33 @@ class CourseMission(Node):
 
     def status_cb(self, msg):
         self.vo_state = int(msg.vo_state)
+        self.vo_at = self.now_s()
+        if self.vo_state != 1:
+            self.tube_guidance.clear()
+            self.tube_invalid_at = self.now_s()
+
+    def tube_status_cb(self, msg):
+        self.tube_status_at = self.now_s()
+        try:
+            valid = json.loads(msg.data).get('valid') is True
+        except (ValueError, AttributeError):
+            valid = False
+        if not valid:
+            self.tube_guidance.clear()
+            self.tube_invalid_at = self.now_s()
+
+    def tube_center_cb(self, msg):
+        p, q = msg.pose.position, msg.pose.orientation
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        values = (q.x, q.y, q.z, q.w)
+        if (msg.header.frame_id != 'odom' or stamp <= self.tube_invalid_at
+                or not all(math.isfinite(v) for v in values)
+                or abs(sum(v*v for v in values)-1) > 0.01
+                or abs(q.x) > 1e-6 or abs(q.y) > 1e-6):
+            self.tube_guidance.clear()
+            return
+        self.tube_guidance.update(stamp, (p.x, p.y, p.z),
+                                  2*math.atan2(q.z, q.w), self.now_s())
 
     def vio_ok(self):
         fresh = (self.odom_at is not None
@@ -316,6 +359,7 @@ class CourseMission(Node):
             state = json.loads(msg.data)
         except ValueError:
             return
+        self.state_at = self.now_s()
         self.offboard_active = bool(state.get('offboard_active', False))
         self.armed = bool(state.get('armed', False))
         self.landed = bool(state.get('landed', False))
@@ -443,6 +487,13 @@ class CourseMission(Node):
                 'no_odom', 'no /visual_slam/tracking/odometry yet; nothing '
                 'is commanded until cuVSLAM is tracking.')
             return
+        if self.stereo_tube and self.state not in ('WAIT_FOR_OFFBOARD', 'DONE'):
+            fresh = self.state_at is not None and 0 <= self.now_s()-self.state_at <= 0.5
+            if not fresh or (not self.offboard_active and not self.landed):
+                self.tube_guidance.clear()
+                if not self.offboard_active and self.state != 'PAUSED':
+                    self.goto('PAUSED')
+                return  # let the existing flight interface own loss-of-stream behavior
         if self.state not in IDLE_STATES and not self.offboard_active:
             if self.state == 'LAND' and self.landed and (
                     self.fly_home and not self.going_home):
@@ -606,6 +657,26 @@ class CourseMission(Node):
                 point = self.position
             else:
                 point = self.carrot.point
+        if self.stereo_tube:
+            inside = False
+            if self.frame is not None and not self.going_home:
+                x, y, _ = odom_to_course(self.position, self.frame[0], self.frame[1])
+                gx, gy, _ = odom_to_course(point, self.frame[0], self.frame[1])
+                height = self.position[2] + float(self.get_parameter('start_height_m').value)
+                inside = (TUBE_X[0] < x < TUBE_X[1] and TUBE_Y[0] < y < TUBE_Y[1]
+                          and TUBE_X[0] < gx < TUBE_X[1] and TUBE_Y[0] < gy < TUBE_Y[1]
+                          and 0.3 < height < 1.5)
+            healthy = (vio_ok and self.vo_state == 1 and self.vo_at is not None
+                       and 0 <= now-self.vo_at <= 0.25 and self.armed and self.offboard_active
+                       and self.tube_status_at is not None and 0 <= now-self.tube_status_at <= 0.30)
+            if healthy and not inside:
+                # Observe the tube on approach, without steering outside it.
+                self.tube_guidance.shift = 0.0
+                self.tube_guidance.last_time = None
+            else:
+                point = self.tube_guidance.apply(
+                    point, self.position, math.radians(self.frame[1]) if self.frame else 0,
+                    now, enabled=inside and healthy, max_lead=self.max_lead)
         self.send(*point)
         if self.going_home:
             # Over the launch mark by x/y only: PX4 can hold the hop height a

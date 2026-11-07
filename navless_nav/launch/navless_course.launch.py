@@ -36,6 +36,7 @@ TOF_MOUNT_M = '0.075'
 TUBE_WIDTH_M = '1.45'
 
 ARGUMENTS = [
+    ('use_sim_time', 'false', 'use ROS simulation clock for launch-managed components'),
     ('route_file', 'gazebo_sim/course/route_centreline_window.json',
      'route to fly (repo-relative): the centreline route keeps >= 16.6 cm to every wall'),
     ('start_bearing_deg', '0.0', 'nose bearing on the launch mark at power-up (0 = north)'),
@@ -65,6 +66,8 @@ ARGUMENTS = [
     ('tof_min_range_m', '0.15', 'tube_node: reject closer readings (raise until a hand-spun prop never shows)'),
     ('relay', 'false', 'run the read-only dashboard relay (TCP 8775)'),
     ('relay_img_hz', '0.0', 'relay camera thumbnails per second; keep 0 in flight'),
+    ('stereo_tube_centering', 'false', 'experimental stereo centering; simulation validation only'),
+    ('stereo_tube_cloud_topic', '/team/stereo/points', 'qualified calibrated stereo cloud'),
 ]
 
 
@@ -78,7 +81,8 @@ def generate_launch_description():
         launch_arguments={n: LaunchConfiguration(n)
                           for n in ('route_file', 'start_bearing_deg', 'cruise_speed_mps',
                                     'max_lead_m', 'max_lat_accel_mps2', 'max_turn_sagitta_m',
-                                    'odometry_topic')}.items(),
+                                    'odometry_topic', 'stereo_tube_centering',
+                                    'stereo_tube_cloud_topic', 'use_sim_time')}.items(),
     )
     # VL53L1X: from the team image, or from ~/team_ws/pylibs (pip install --target) if it is there.
     pylibs = '/root/team_ws/pylibs'
