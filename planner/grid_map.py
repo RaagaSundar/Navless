@@ -548,45 +548,49 @@ class OccupancyGrid3D:
     def obstacle_repulsion_gradient(
         self,
         point_m: np.ndarray | Tuple[float, float, float],
-        safe_distance_m: float = 0.45,
+        safe_distance_m: float = 0.58,
     ) -> Tuple[float, np.ndarray]:
-        """Compute local collision cost and repulsive gradient away from nearby raw obstacles.
+        """Compute local collision cost and symmetric multi-voxel repulsive gradient away from nearby raw obstacles.
 
-        Mirrors EGO-Planner's ESDF-free local repulsion check within a small neighborhood.
-        Returns (cost, d_cost_d_pos).
+        By averaging repulsive vectors over all occupied voxels within `safe_distance_m`:
+        - At one-sided walls and turn corners, pushes the trajectory outward to `safe_distance_m`.
+        - Between opposing walls (corridors, tunnel, window), left/right repulsions cancel at the exact centerline.
         """
         p = np.asarray(point_m, dtype=np.float64)
         center_idx = self.world_to_voxel(p)
-        r_vox = max(1, int(math.ceil(safe_distance_m / self.resolution)))
+        r_vox_xy = max(1, int(math.ceil(safe_distance_m / self.resolution)))
+        r_vox_z = max(1, int(math.ceil(min(safe_distance_m, 0.20) / self.resolution)))
         nx, ny, nz = self.shape
 
-        ix0, ix1 = max(0, center_idx[0] - r_vox), min(nx - 1, center_idx[0] + r_vox)
-        iy0, iy1 = max(0, center_idx[1] - r_vox), min(ny - 1, center_idx[1] + r_vox)
-        iz0, iz1 = max(0, center_idx[2] - r_vox), min(nz - 1, center_idx[2] + r_vox)
+        ix0, ix1 = max(0, center_idx[0] - r_vox_xy), min(nx - 1, center_idx[0] + r_vox_xy)
+        iy0, iy1 = max(0, center_idx[1] - r_vox_xy), min(ny - 1, center_idx[1] + r_vox_xy)
+        iz0, iz1 = max(0, center_idx[2] - r_vox_z), min(nz - 1, center_idx[2] + r_vox_z)
 
         sub = self.raw_grid[ix0 : ix1 + 1, iy0 : iy1 + 1, iz0 : iz1 + 1]
         if not np.any(sub):
             return 0.0, np.zeros(3, dtype=np.float64)
 
         occ_local = np.argwhere(sub)
-        occ_global = occ_local + np.array([ix0, iy0, iz0], dtype=np.int32)
+        occ_global = occ_local + np.array([ix0, iy0, iz0], dtype=int)
         occ_centers = self.bounds_min + (occ_global.astype(np.float64) + 0.5) * self.resolution
 
         diffs = p[None, :] - occ_centers
         dists = np.linalg.norm(diffs, axis=1)
-        min_i = int(np.argmin(dists))
-        d = float(dists[min_i])
-        if d >= safe_distance_m:
+        within = dists < safe_distance_m
+        if not np.any(within):
             return 0.0, np.zeros(3, dtype=np.float64)
 
-        penetration = safe_distance_m - d
-        cost = 0.5 * (penetration ** 2)
-        if d > 1e-6:
-            direction = diffs[min_i] / d
-        else:
-            direction = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-        # Gradient of cost wrt p (points toward obstacle; subtracting gradient pushes p away)
-        grad = -penetration * direction
+        d_in = np.maximum(dists[within], 1e-6)
+        diff_in = diffs[within]
+        penetrations = safe_distance_m - d_in
+        # Weight closer voxels more strongly (inverse-distance weighting) so corner tips repel strongly
+        weights = (penetrations / safe_distance_m) ** 2
+        w_sum = float(np.sum(weights))
+        dirs = diff_in / d_in[:, None]
+        # Net repulsive gradient wrt p (points toward obstacles; subtracting grad pushes p away toward centerline)
+        grad = -np.sum((weights * penetrations)[:, None] * dirs, axis=0) / max(w_sum, 1e-6)
+        max_pen = float(np.max(penetrations))
+        cost = 0.5 * (max_pen ** 2)
         return cost, grad
 
     def inspect_window_aperture(
@@ -782,14 +786,23 @@ class OccupancyGrid3D:
             dist = math.sqrt((dx * self.resolution) ** 2 + (dy * self.resolution) ** 2 + (dz * self.resolution) ** 2)
             if dist <= self.inflation_radius or dist > buffer_radius_m:
                 continue
-            penalty = float(2.5 * ((buffer_radius_m - dist) / max(buffer_radius_m - self.inflation_radius, 0.05)) ** 2)
+            penalty = float(4.2 * ((buffer_radius_m - dist) / max(buffer_radius_m - self.inflation_radius, 0.05)) ** 2)
             ix = occ[:, 0] + dx
             iy = occ[:, 1] + dy
             iz = occ[:, 2] + dz
             valid = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny) & (iz >= 0) & (iz < nz)
             np.maximum.at(cost, (ix[valid], iy[valid], iz[valid]), penalty)
+        # Keep the narrow Window aperture core low-cost when open so Window routing remains preferred over Gate B
+        if self.bounds_min[0] <= -3.0 and self.bounds_max[0] >= 3.0:
+            wmin = self.world_to_voxel((-0.62, -2.35, 0.68))
+            wmax = self.world_to_voxel((-0.32, -2.18, 0.85))
+            cost[
+                max(0, wmin[0]) : min(nx, wmax[0] + 1),
+                max(0, wmin[1]) : min(ny, wmax[1] + 1),
+                max(0, wmin[2]) : min(nz, wmax[2] + 1),
+            ] *= 0.25
 
-    def build_soft_clearance_cost(self, buffer_radius_m: float = 0.55) -> np.ndarray:
+    def build_soft_clearance_cost(self, buffer_radius_m: float = 0.72) -> np.ndarray:
         """Build a 3D soft cost field (in [0, 3.0]) that penalizes proximity to walls.
 
         Used by 3D A* so paths naturally stay centered in corridors and turn smoothly

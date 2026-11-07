@@ -281,9 +281,9 @@ class EgoBsplineOptimizer:
         grid: OccupancyGrid3D,
         *,
         control_point_spacing_m: float = 0.35,
-        smoothness_weight: float = 0.25,
-        obstacle_weight: float = 0.85,
-        safe_clearance_m: float = 0.48,
+        smoothness_weight: float = 0.18,
+        obstacle_weight: float = 0.95,
+        safe_clearance_m: float = 0.60,
         max_iterations: int = 24,
     ) -> None:
         self.grid = grid

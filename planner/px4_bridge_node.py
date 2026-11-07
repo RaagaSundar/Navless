@@ -557,11 +557,18 @@ class PX4TrajectoryTrackerCore:
         )
         # Curve-following carrot cap: if the spline point is > max_lead_m ahead of the drone,
         # walk t_eval back along the B-spline curve and pause spline_start_time_s so the carrot
+        # Cap lead distance by pulling `t_eval` back along the B-spline curve (`best_t`) so the target
         # stays ON the collision-free spline instead of cutting straight across maze/chicane corners!
-        if self.max_lead_m > 0.0:
+        # In turns (high heading change over ±0.35 s), shrink effective lead (0.55m -> 0.28m) so VIO lag never cuts corners.
+        yaw_prev = spline.evaluate_yaw(max(0.0, t_eval - 0.35), fallback_yaw=current_yaw_enu)
+        yaw_next = spline.evaluate_yaw(min(spline.duration, t_eval + 0.35), fallback_yaw=current_yaw_enu)
+        turn_angle = abs(math.atan2(math.sin(yaw_next - yaw_prev), math.cos(yaw_next - yaw_prev)))
+        turn_ratio = min(1.0, max(0.0, (turn_angle - 0.20) / 0.70))
+        effective_lead_m = self.max_lead_m * (1.0 - 0.48 * turn_ratio) if self.max_lead_m > 0.0 else 0.0
+        if effective_lead_m > 0.0:
             lead_vec = pos_enu - drone_pos_enu
             lead_dist = float(np.linalg.norm(lead_vec))
-            if lead_dist > self.max_lead_m:
+            if lead_dist > effective_lead_m:
                 t_search_min = max(0.0, t_eval - 4.0)
                 ts_grid = np.linspace(t_search_min, t_eval, 17)
                 best_t = float(ts_grid[0])
@@ -586,7 +593,7 @@ class PX4TrajectoryTrackerCore:
                         profile.z_max_enu,
                         xy_limit_m=xy_fence,
                     )
-                    if float(np.linalg.norm(pm - drone_pos_enu)) <= self.max_lead_m:
+                    if float(np.linalg.norm(pm - drone_pos_enu)) <= effective_lead_m:
                         t_lo = t_mid
                     else:
                         t_hi = t_mid
@@ -600,14 +607,14 @@ class PX4TrajectoryTrackerCore:
                 )
                 lead_vec = pos_enu - drone_pos_enu
                 lead_dist = float(np.linalg.norm(lead_vec))
-                if lead_dist > self.max_lead_m:
+                if lead_dist > effective_lead_m:
                     pos_enu = clamp_altitude_enu(
-                        drone_pos_enu + (self.max_lead_m / lead_dist) * lead_vec,
+                        drone_pos_enu + (effective_lead_m / lead_dist) * lead_vec,
                         z_min_clamp,
                         profile.z_max_enu,
                         xy_limit_m=xy_fence,
                     )
-        vel_enu = spline.evaluate_velocity(t_eval)
+        vel_enu = spline.evaluate_velocity(t_eval) * (1.0 - 0.30 * turn_ratio)
         raw_yaw_enu = spline.evaluate_yaw(t_eval, fallback_yaw=current_yaw_enu)
         yaw_enu = self._rate_limit_yaw_enu(now_s, raw_yaw_enu)
 

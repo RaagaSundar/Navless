@@ -692,8 +692,9 @@ class CourseMission(Node):
         if not self.route:
             self.goto('HOLD', self.target)
             return
+        effective_sagitta = self.max_sagitta if self.max_sagitta > 0.0 else 0.04
         carrot = Carrot(self.route, self.cruise_speed, self.max_lead,
-                        self.max_lat_accel, self.max_sagitta)
+                        self.max_lat_accel, effective_sagitta)
         carrot.advance(self.lead_m())       # never pull back behind the lean
         # Measured from where the route starts after the lean, so the lean
         # does not use up max_start_offset_m.

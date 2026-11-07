@@ -46,14 +46,33 @@ def inside(p, fence):
 class Carrot:
     """Setpoint slides along the path at `speed`, but never more than `max_lead` ahead of the drone."""
 
-    def __init__(self, path, speed, max_lead):
+    def __init__(self, path, speed, max_lead, turn_slowdown=False):
         self.path, self.speed, self.max_lead = path, speed, max_lead
+        self.turn_slowdown = bool(turn_slowdown)
         self.i, self.p = 0, tuple(path[0])
 
+    def _turn_factor(self):
+        if not self.turn_slowdown or len(self.path) < 3:
+            return 1.0
+        i0 = max(0, self.i - 1)
+        i1 = min(len(self.path) - 1, self.i + 1)
+        i2 = min(len(self.path) - 1, self.i + 3)
+        if i1 == i0 or i2 == i1:
+            return 1.0
+        dx1, dy1 = self.path[i1][0] - self.path[i0][0], self.path[i1][1] - self.path[i0][1]
+        dx2, dy2 = self.path[i2][0] - self.path[i1][0], self.path[i2][1] - self.path[i1][1]
+        n1, n2 = math.hypot(dx1, dy1), math.hypot(dx2, dy2)
+        if n1 < 1e-4 or n2 < 1e-4:
+            return 1.0
+        cos_a = max(-1.0, min(1.0, (dx1 * dx2 + dy1 * dy2) / (n1 * n2)))
+        ang = math.acos(cos_a)
+        return max(0.50, 1.0 - 0.50 * min(1.0, max(0.0, (ang - 0.20) / 0.80)))
+
     def step(self, drone, dt):
-        if dist(drone, self.p) > self.max_lead:
-            return self.p  # drone is lagging (wind, contact, bad estimate): wait for it
-        budget = self.speed * dt
+        tf = self._turn_factor()
+        if dist(drone, self.p) > self.max_lead * tf:
+            return self.p  # drone is lagging or rounding a tight turn: wait for it
+        budget = self.speed * tf * dt
         while budget > 0 and self.i < len(self.path) - 1:
             nxt = self.path[self.i + 1]
             d = dist(self.p, nxt)
@@ -216,7 +235,7 @@ def run(route, a):
             self.prev_pos = here
             path = [here] + route  # climb from zeroed launch pad origin
             self.fence = fence_for(path, a.fence_margin)
-            self.carrot = Carrot(path, a.speed, a.max_lead)
+            self.carrot = Carrot(path, a.speed, a.max_lead, turn_slowdown=True)
             self.yaw = self.msg["pos"].heading  # ponytail: fixed heading; face-travel if depth needs it
             self.state = "STREAM"
             self.timer = self.create_timer(1.0 / RATE_HZ, self.tick)
