@@ -3,25 +3,27 @@
 This package fills the missing runner between the public Mac simulator and the
 organiser's NVIDIA companion image. The Mac renders stereo and runs PX4 SITL;
 the Jetson runs actual cuVSLAM and the companion controller. The preview and
-video workers run on the Mac. ROS domain219 is simulation-only; physical domain19
-and Mac-only domain220 are separate.
+video workers run on the Mac. ROS domain 219 is simulation-only; physical domain 19
+and Mac-only domain 220 are separate.
 
-The packaged controller is the exact32-file source manifest retained from run
+The packaged controller is the exact 32-file source manifest retained from run
 `20261107T213553Z-split-astar-flight`. **That airborne run stopped at the elevated sill because its new guard required
 continuously active conditional range/terrain fusion, despite healthy EV/baro
 height. This package does not claim a course pass.** `PROVENANCE.json` records its
-archive identity. The height correction is a separate reviewed change; apply the
-referenced height PR before selecting `ev-terrain`. The default `range` profile
+archive identity. The corrected conditional-range guard and ROS range transport are tracked in
+[height follow-up #43](https://github.com/RaagaSundar/Navless/pull/43). It is
+stacked on this harness. Apply its final reviewed source and run its doctor/tests
+before selecting `ev-terrain`; this baseline deliberately retains the failure. The default `range` profile
 remains available. Do not weaken readiness gates to make setup appear successful.
 
 ## What is available in GitHub
 
-As checked2026-11-07:
+As checked 2026-11-07:
 
 | Change | Actual availability |
 |---|---|
 | [#32](https://github.com/RaagaSundar/Navless/pull/32) | Mac ARM64 base image and PX4 build recipe, merged main |
-| [#35](https://github.com/RaagaSundar/Navless/pull/35) | Mac-only domain220 course + RTAB-Map environment, merged main; expressly excludes flight controller |
+| [#35](https://github.com/RaagaSundar/Navless/pull/35) | Mac-only domain 220 course + RTAB-Map environment, merged main; expressly excludes flight controller |
 | [#36](https://github.com/RaagaSundar/Navless/pull/36) | Network setup doctor/fix, merged **into `codex/macos-local-course` after its main merge**; `split_setup/` was not present on main `c967e27` |
 | [#40](https://github.com/RaagaSundar/Navless/pull/40), [#41](https://github.com/RaagaSundar/Navless/pull/41) | Portable synthetic appearance/open-net generators, merged main; no automatic flight readiness |
 | This package | Complete split runner, frozen controller/route, source gate, recorders, install scripts and preview/video workers; no private sibling workspace required |
@@ -36,7 +38,7 @@ build output, passwords or private keys are distributed.
 Use an Apple Silicon Mac, Git, Python3.10+, Docker Desktop with Linux ARM64,
 OpenSSH and sufficient free disk for PX4/Gazebo. Coordinate build ownership;
 compilation must not compete with another flight. The build-only PX4 container
-uses two CPUs and6GiB. Full image/PX4 clean builds were not rerun for this PR.
+uses two CPUs and 6 GiB. Full image/PX4 clean builds were not rerun for this PR.
 
 The Jetson must already have its **organiser-provided compatible `skybeta:0.3.3`
 image**, NVIDIA runtime, and authorised SSH account. This image contains ROS2
@@ -102,7 +104,7 @@ simulation files into `~/team_ws/split_sim` and creates a **stopped** container
 aircraft service is started. An existing installation needs a separately reviewed
 update, not deletion or force replacement.
 
-Default estimator is stereo-only. To use the measured250Hz body-IMU transport,
+Default estimator is stereo-only. To use the measured250 Hz body-IMU transport,
 select it while the separate simulation container is stopped:
 
 ```bash
@@ -134,7 +136,7 @@ requests Offboard. Initial original renderer uses tracked Gazebo assets. Endpoin
 
 The authenticated SSH server address determines the XRCE target; optional
 `JETSON_IP` must be a literal reviewed IPv4. Do not use a stale mDNS address or
-change physical PX4 parameters. SITL alone uses domain219, UDP8889 and
+change physical PX4 parameters. SITL alone uses domain 219, UDP8889 and
 `UXRCE_DDS_SYNCT=0` to retain shared simulation time.
 
 Inspect fresh actual images/CameraInfo, `/clock`, validated odometry and
@@ -203,7 +205,7 @@ the independent grader or fabricates a position fix.
 
 Run evidence is stored at `local_course/state/nvidia-runs/RUN_ID/`: original
 mission/source hashes, sensor recording, ULog, logs, actual track and independent
-grade. A mission exit0 alone is not a pass. Preview/video workers use these files;
+grade. A mission exit 0 alone is not a pass. Preview/video workers use these files;
 see [preview/README.md](preview/README.md). Failed recordings/grading remain visible.
 
 After a recorder-confirmed landed/disarmed stop, `reset_split_after_flight.sh`
