@@ -43,7 +43,7 @@ RUN="/root/px4-runs/$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$RUN"
 ln -sfn "$RUN" /root/px4-current
 cd "$RUN"
-python3 /split/range_sensor.py > range.log 2>&1 & range_pid=$!
+bash -c 'source /opt/ros/jazzy/setup.bash && exec python3 /split/range_sensor.py' > range.log 2>&1 & range_pid=$!
 trap 'kill "$range_pid" 2>/dev/null || true' EXIT
 "$BUILD/bin/px4" -i 0 -d "$BUILD/etc" > px4.log 2>&1 & px4_pid=$!
 trap 'kill "$range_pid" "$px4_pid" 2>/dev/null || true; wait || true' EXIT TERM INT

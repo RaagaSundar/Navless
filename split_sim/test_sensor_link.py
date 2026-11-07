@@ -14,7 +14,7 @@ class SensorProtocolTests(unittest.TestCase):
             self.assertEqual(decode(topic, packet[HEADER.size:]), payload)
 
     def test_rejects_unlisted_topics_and_large_payloads(self):
-        for index in [-1, 5, 255]:
+        for index in [-1, len(TOPICS), 255]:
             with self.assertRaises(ValueError):
                 encode(index, b'x')
             with self.assertRaises(ValueError):

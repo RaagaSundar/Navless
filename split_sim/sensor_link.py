@@ -2,7 +2,7 @@
 """Allowlisted ROS sensor transport over an SSH-forwarded TCP connection.
 
 CDR preserves standard ROS messages across the Humble/Jazzy boundary. Only the
-five declared sensor topics can travel; no commands, truth or PX4 input topics.
+declared sensor topics can travel; no commands, truth or PX4 input topics.
 Both ends must run in isolated ROS domain 219. No credentials live here.
 """
 import argparse
@@ -21,6 +21,7 @@ TOPICS = [
     ('/oak/right/image_raw', 'sensor_msgs/msg/Image'),
     ('/oak/left/camera_info', 'sensor_msgs/msg/CameraInfo'),
     ('/oak/right/camera_info', 'sensor_msgs/msg/CameraInfo'),
+    ('/split/downward_range', 'sensor_msgs/msg/Range'),
 ]
 MAX_BYTES = 4 * 1024 * 1024
 HEADER = struct.Struct('!BI')

@@ -51,3 +51,28 @@ the overly strict frozen guard and is **not ready for flight integration**.
 The pilot owns the correction with actual range freshness, replay and fault
 controls. This draft will replace that predicate with the final reviewed
 implementation and record the trial's failure before review readiness.
+
+Retrievable prerequisite: [split-runner PR #44](https://github.com/RaagaSundar/Navless/pull/44),
+upstream branch `codex/split-sim-portable-install` at
+`5da63f59dc78930c04e723dfd518485eb084554a`. This height PR stacks on it.
+Its [installation guide](../split_sim/INSTALL.md) supplies tracked dependencies,
+Mac image/PX4 build, organizer Jetson image checks, asset generation, disarmed
+startup, camera/estimator profile selection, preview/video workers and actual
+health/grade inspection. The organizer's NVIDIA image and authorized fleet
+access remain explicit external prerequisites. No credentials are distributed.
+
+The Range source/transport in this follow-up mirrors exactly the existing
+modeled, centimeter-quantized PX4 laser reading to `/split/downward_range`,
+retaining the same acquisition stamp and invalid/out-of-range behavior. It
+creates no new position source. The producer is simulation-only and uses
+Gazebo truth solely inside the separate ray-cast sensor model; navigation sees
+ordinary ROS Range. The native startup sources Jazzy before starting it.
+
+Installed Jazzy serialization into installed Jetson Humble deserialization was
+verified on common fields: frame `downward_range_link`, time 128.776 s, range
+0.47 m survived. Jazzy's trailing Range variance is absent in Humble and is not
+used by the consumer; this does not establish general ROS ABI compatibility.
+A separate live matched-source observation preserved 84/84 exact centimeter
+values over simulation 7.544–10.532 s, ranges 2–5 cm while landed. The tiny
+[evidence summary](evidence/range-common-fields.json) records that comparison;
+it is not an airborne transport/estimator qualification or a flight pass.
