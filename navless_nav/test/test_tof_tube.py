@@ -202,7 +202,7 @@ def test_closed_loop_on_the_course_model(off_centre):
             c = odom_to_course(pos, node.frame[0], node.frame[1], node.start_height)
             real = (c[0] + misplaced, c[1], c[2])
             r = side_ranges(real, math.pi / 2)              # nose north
-            res = tube_offset(r['left'][0], r['right'][0], 0.15, 1.3, 0.075, 0.075, 1.45, 0.15)
+            res = tube_offset(r['left'][0], r['right'][0], 0.18, 1.3, 0.075, 0.075, 1.45, 0.15)
             if res is not None:
                 heard += 1
                 node.tof_offset_cb(offset_msg(res[0]))
@@ -226,3 +226,16 @@ def test_launch_is_opt_in_and_forwarded():
     defaults = dict(cm.PARAMETERS)
     for name in ('tof_tube_max_shift_m', 'tof_tube_rate_mps', 'tof_tube_timeout_s'):
         assert float(launch._arguments(launch.BASE)[name]) == defaults[name]
+
+
+def test_tube_node_never_steers_on_a_reading_inside_the_props():
+    # The prop tips reach PROP_REACH_M past each sensor face: anything closer is the drone's own prop,
+    # or a wall the props already touch. The launch's tube_node cutoff must sit above that.
+    import test_course_launch as launch
+    sys.path.insert(0, os.path.join(REPO_ROOT, 'tube'))
+    from tof_driver import PROP_REACH_M
+    from tube_node import tube_offset
+    cutoff = float(launch._arguments(launch.COURSE)['tof_min_range_m'])
+    assert cutoff > PROP_REACH_M
+    assert tube_offset(PROP_REACH_M, 1.0, cutoff, 1.3, 0.075, 0.075, 1.45, 0.15) is None
+    assert tube_offset(cutoff, 1.05, cutoff, 1.3, 0.075, 0.075, 1.45, 0.15) is not None
