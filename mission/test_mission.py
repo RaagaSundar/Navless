@@ -1,7 +1,7 @@
 import math
 import os
 
-from mission import Carrot, course_to_local, fence_for, inside, load_route, check
+from mission import Carrot, course_to_local, fence_for, inside, load_route, check, turn_toward
 
 close = lambda a, b: all(abs(x - y) < 1e-9 for x, y in zip(a, b))
 
@@ -21,6 +21,17 @@ assert close(c.step((0, 0, 0), 1.0), (1, 0.25, 0))  # 1.03 m behind -> hold
 for _ in range(10):
     c.step(c.p, 0.1)
 assert c.done((1, 1, 0), 0.15) and not c.done((1, 0.5, 0), 0.15)
+
+# camera faces travel: local NED x = north, y = east, so yaw 0 = north, +pi/2 = east
+h = Carrot([(0, 0, 0), (0, 0, -1), (1, 0, -1), (1, 1, -1)], speed=1.0, max_lead=5.0)
+assert abs(h.heading() - 0.0) < 1e-9  # skips the vertical climb, looks at the first sideways leg
+h.step(h.p, 2.5)  # carrot now on the east-going leg
+assert abs(h.heading() - math.pi / 2) < 1e-9
+assert Carrot([(0, 0, 0), (0, 0, -1)], 1.0, 1.0).heading(0.7) == 0.7  # straight up: keep current yaw
+# rate limit, and turns the short way across +-pi
+assert abs(turn_toward(0.0, 1.0, 0.1) - 0.1) < 1e-9
+assert abs(turn_toward(0.0, 0.05, 0.1) - 0.05) < 1e-9
+assert abs(turn_toward(3.0, -3.0, 0.1) - 3.1) < 1e-9  # 0.28 rad gap across pi: step +0.1, not -6.0
 
 f = fence_for([(0, 0, 0), (1, 1, -1)], 0.5)
 assert inside((1.4, -0.4, -1.4), f) and not inside((1.6, 0, 0), f)
