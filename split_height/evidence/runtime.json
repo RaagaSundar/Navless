@@ -1,6 +1,6 @@
 {
   "snapshot": "215431",
-  "qualification": "unit/replay checked; moving trial result pending",
+  "qualification": "unit/replay checked; first moving attempt early integrity stop, sill/window not exercised; next trial pending",
   "source_archive_sha256": "da629f673084ff390a77bb0e194f3a620ab1829b0c9b16ac5a1ce220f7bac22e",
   "frozen_manifest_sha256": "3db735f123cb65ef711669c0f052f7bb62cca2dddd557e63d4913de794aa7796",
   "packaged_manifest_sha256": "bba9f4cbaf32b16be7cdcb160ab284fa627486cf04a27dd590a85f2619f747c3",

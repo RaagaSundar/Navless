@@ -12,7 +12,9 @@ The normal runner is published under `split_sim/`, with the final frozen
 215431 companion and explicit conditional-range policy integrated in the
 standard `run_split_course.sh` → `course_runtime/mission.py` path. Follow the
 [installation guide](../split_sim/INSTALL.md). The moving candidate result is
-still pending; this is a reviewable draft, not flight approval.
+not a pass: the first moving attempt stopped before the corridor on a yaw
+consistency bound. The sill/window behaviors were not exercised. A subsequent
+trial is pending; this remains a reviewable draft, not flight approval.
 
 From a clean checkout (Python 3.10+, no ROS/Docker/aircraft required):
 
@@ -123,3 +125,15 @@ authority assumed over the retained interval; it is not a full flight replay,
 proof of recovery, or a fabricated grade. No raw log or physical truth is
 required by the ordinary unit tests. [Runtime identity](evidence/runtime.json)
 records the source/packaged manifest identities and pending moving result.
+
+## First moving candidate outcome
+
+The first moving attempt with the same frozen runtime and synthetic open-net
+appearance failed before the corridor checkpoint. The unchanged acquisition-
+aligned guard rejected EV/PX4 yaw disagreement of 10.70° with XY residual
+0.047 m. Independent grading recorded zero contacts and a final landed/disarmed
+state, but no corridor/window completion and no course pass. Thus this trial
+does **not** qualify the height correction or forward-window behavior. The
+next trial uses the prior ground-inclusive textured perimeter; its result is
+pending. The [sanitized summary](evidence/moving-trial.json) preserves grade
+reasons and evidence hashes without publishing raw captures or private paths.

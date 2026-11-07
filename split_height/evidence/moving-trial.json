@@ -1,0 +1,25 @@
+{
+  "run_label": "215630",
+  "source_manifest_matches_frozen_215431": true,
+  "appearance": "synthetic open-net candidate",
+  "passed": false,
+  "stop": "EV/PX4 acquisition-aligned inconsistency",
+  "stop_xy_m": 0.047,
+  "stop_yaw_deg": 10.7,
+  "checkpoints_completed": [],
+  "contacts": 0,
+  "final_landed_disarmed": true,
+  "height_and_window_crossing_qualified": false,
+  "reason_scope": "stopped before corridor; bounded sill crossing and forward-window behavior not exercised",
+  "grade_reasons": [
+    "missing ordered checkpoint: corridor_done",
+    "missing ordered window crossing",
+    "full aircraft not contained inside outer landing pad ring"
+  ],
+  "source_hashes": {
+    "sources.sha256": "3db735f123cb65ef711669c0f052f7bb62cca2dddd557e63d4913de794aa7796",
+    "flight/grade.json": "b27c5c7ff32068b36e6b5f97482dac5ad798e340d6d831faedce9caf9eb567a3",
+    "review.json": "dcd2a234ecd3c9691d0c034833c8122d7b2a9ff9b353bd8c7b95438d80cb66ca"
+  },
+  "next_trial": "prior ground-inclusive texture perimeter; outcome pending"
+}
