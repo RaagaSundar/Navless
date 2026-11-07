@@ -6,18 +6,12 @@ the Jetson runs actual cuVSLAM and the companion controller. The preview and
 video workers run on the Mac. ROS domain 219 is simulation-only; physical domain 19
 and Mac-only domain 220 are separate.
 
-The packaged controller is the exact 32-file source manifest retained from run
-`20261107T213553Z-split-astar-flight`. **That airborne run stopped at the elevated sill because its new guard required
-continuously active conditional range/terrain fusion, despite healthy EV/baro
-height. This package does not claim a course pass.** `PROVENANCE.json` records its
-archive identity. The corrected conditional-range guard and ROS range transport are tracked in
-[height integration follow-up #46](https://github.com/RaagaSundar/Navless/pull/46),
-stacked on this harness. It is a draft pending the final measured Range-based
-guard; do not treat its current state as flight-qualified. The earlier
-[#43](https://github.com/RaagaSundar/Navless/pull/43) merged utility/tests only,
-not complete runner integration. Apply #46 only after its final source and tests
-are reviewed; this baseline deliberately retains the failure. The default `range` profile
-remains available. Do not weaken readiness gates to make setup appear successful.
+The packaged controller now includes the frozen 215431 height/conditional-range
+candidate and optional window-forward yaw. The original 213553 airborne sill-stop
+failure and manifests are preserved for provenance. The newer moving trial's
+result is pending; this package does not claim a course pass. Actual laser
+freshness, fixed EV/barometer height, bounded sill-event evidence and all
+existing authority/estimator/recorder gates remain mandatory.
 
 ## What is available in GitHub
 
@@ -57,15 +51,17 @@ ID. If unavailable, obtain it from the organiser; do not replace hardware driver
 Check out this PR's branch in a new folder. Once merged, ordinary main suffices:
 
 ```bash
-git clone https://github.com/zoutei/Navless.git Navless-split
+git clone https://github.com/RaagaSundar/Navless.git Navless-split
 cd Navless-split
-git switch codex/split-sim-portable-install
+# Until height PR #46 merges, explicitly fetch its reviewed head:
+git fetch origin pull/46/head:review-height-46
+git switch review-height-46
 python3 split_sim/doctor.py --source-only
 python3 -m unittest split_sim.test_install -v
 bash split_sim/setup_jetson.sh --dry-run
 ```
 
-The doctor verifies every tracked dependency and all frozen runtime hashes.
+The doctor verifies every tracked dependency and all 38 packaged runtime hashes.
 The dry-run invokes neither SSH nor Docker. Preserve the checkout commit in your
 run notes. Existing hardware/team checkouts need no changes.
 
@@ -123,7 +119,9 @@ noise assumptions; they do not alter the physical camera or qualify hardware.
 ## Start the disarmed environment and inspect
 
 ```bash
-# From split_sim; use explicit split mode, never the auto Jetson-local selection.
+# From split_sim, inactive setup; select reviewed simulated height profile.
+export SPLIT_HEIGHT_PROFILE=ev-terrain
+# Explicit split mode, never the auto Jetson-local selection.
 bash start.sh --split
 bash start_px4_from_mac.sh
 ```
@@ -201,8 +199,10 @@ same world. No old marker authorizes a new world. The runtime retains the full
 stream before the existing single-arm arbiter acts. Stop publication on stale
 telemetry or lost authority. No second keyboard/controller/program may run.
 
-Baseline exposes `first-exterior` only; forward-window and corrected height
-options belong to separately referenced, tested follow-ups. Do not pass an
+The default yaw remains `first-exterior`; the explicit `SPLIT_YAW_POLICY=window-forward`
+option selects the now-integrated route-pinned camera candidate. The corrected
+`ev-terrain` height profile is selected before starting the disarmed container.
+Both remain candidates while the moving outcome is pending. Do not pass an
 unsupported flag because it exists in another workspace. No argument disables
 the independent grader or fabricates a position fix.
 
@@ -225,3 +225,19 @@ readiness/runtime tests; viewer HTTP/ranges and actual synthetic video/chase
 rendering. No clean NVIDIA build, remote installation, simulator lifecycle,
 arming or flight was performed for packaging. Preserve that boundary when
 reporting installation success.
+
+## Height-candidate checks from the retrieved checkout
+
+```bash
+python3 -m unittest split_height.test_height_profile -v
+python3 -m unittest discover -s split_sim/course_runtime -v
+python3 -m unittest discover -s split_sim -p test_sensor_link.py -v
+```
+
+The runtime suite needs NumPy; optional retained-ULog replay needs `pyulog` and
+an operator-retained original log. No raw logs are distributed. The source doctor,
+fresh-layout checks and dry-run need only Python. See `../split_height/README.md`
+for exact candidate provenance, known prior failure, finite measured transition
+conditions, replay limits and pending flight status. Do not change a running
+container's profile: coordinate a disarmed fresh world, preserve failed evidence,
+and use the documented setup/start sequence under the team's approval workflow.

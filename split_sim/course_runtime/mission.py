@@ -61,7 +61,7 @@ def main():
     parser.add_argument('--route', default=str(NAVLESS / 'gazebo_sim/course/route_centreline_window.json'))
     parser.add_argument('--start-height', type=float, default=0.07)
     parser.add_argument('--start-bearing', type=float, default=None, help='measured launch nose bearing clockwise from course north, degrees; must match EV bridge')
-    parser.add_argument('--yaw-policy', choices=('off','first-exterior','map-scheduled'), default='off', help='optional camera look; first-exterior requires calibrated north start, max60deg at10deg/s')
+    parser.add_argument('--yaw-policy', choices=('off','first-exterior','map-scheduled','window-forward'), default='off', help='optional camera look; first-exterior requires calibrated north start, max60deg at10deg/s')
     parser.add_argument('--px4-localization', action=argparse.BooleanOptionalAction, default=True,
                         help='required PX4 fused-position navigation on split SITL')
     parser.add_argument('--qualified-astar', action='store_true', help='checkpoint interior A* settings .40 cruise/.18 lead/.12 lateral acceleration/.015 sagitta')
@@ -153,6 +153,14 @@ def main():
                 self.map_rate = float(schedule['rate_limit_deg_s'])
                 self.map_yaw = MapYaw(route['waypoints_enu'], schedule['route_arc_m'], schedule['bearing_unwrapped_deg'], max_rate_deg_s=self.map_rate)
                 self.get_logger().info(f'mapped camera bearing enabled: geographic north startup, {self.map_rate:g} deg/s maximum')
+            self.window_look = None
+            if args.yaw_policy == 'window-forward':
+                from window_forward_camera_candidate import WindowForwardLook
+                self.window_look = WindowForwardLook.from_files(
+                    args.route, Path(__file__).parent/'window-forward-camera-candidate.json',
+                    launch_height_m=args.start_height)
+                self.yaw_origin = json.loads(Path(args.route).read_text())['launch_origin_enu']
+                self.get_logger().info('window-forward camera profile active; route-hash pinned, max 10deg/s')
             if args.yaw_policy == 'first-exterior':
                 from yaw_policy import FirstExteriorLook
                 with open(args.route) as route_stream:
@@ -167,6 +175,15 @@ def main():
                 from px4_navigation import FusedNavigationGate
                 self.nav_guard = FusedNavigationGate(registered_split_frame=self.split_frame)
                 self.nav_pub = self.create_publisher(Odometry,'/split_course/px4_navigation',10)
+            self.range_health = None
+            self.range_state = None
+            if args.height_profile == 'ev-terrain':
+                from sensor_msgs.msg import Range
+                from conditional_range import WindowRangeHealth
+                course = json.loads((NAVLESS/'gazebo_sim/course/course_v3.json').read_text())
+                self.range_health = WindowRangeHealth(next(w for w in course['walls'] if 'window' in w))
+                self.range_origin = json.loads(Path(args.route).read_text())['launch_origin_enu']
+                self.create_subscription(Range,'/split/downward_range',self.downward_range,10)
             self.create_subscription(EstimatorStatusFlags,'/fmu/out/estimator_status_flags',lambda m:self.receive('fusion',m),qos)
             self.exit_code, self.done = 1, False
             input_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -205,6 +222,11 @@ def main():
             self.wall_rx[key] = time.monotonic()
             if key == 'pos' and self.pose_history is not None:
                 self.pose_history.add(msg)
+
+        def downward_range(self, msg):
+            stamp=msg.header.stamp.sec+msg.header.stamp.nanosec/1e9
+            self.range_health.receive(stamp,float(msg.range),msg.header.frame_id,
+                                      float(msg.min_range),float(msg.max_range))
 
         def ack(self, msg):
             self.get_logger().info(f'PX4 command ACK command={msg.command} result={msg.result}')
@@ -322,13 +344,26 @@ def main():
                 if not ok:
                     self.stop(f'simulation companion integrity: {reason}; stopped all control publication')
                     return
-            if args.height_profile == 'ev-terrain':
-                flags = self.msg.get('fusion')
-                if (flags is None or not flags.cs_ev_hgt or not flags.cs_baro_hgt
-                        or not flags.cs_rng_terrain or flags.cs_fake_hgt or flags.cs_baro_fault or flags.fs_bad_acc_vertical):
+            conditional_range = False
+            if self.range_health is not None:
+                from navless_nav.route import odom_to_course
+                measured = ned_to_odom(self.launch_datum.from_px4((p.x,p.y,p.z)), self.control_bearing)
+                east,north,_ = odom_to_course(measured,self.range_origin,args.start_bearing,args.start_height)
+                def range_position_at(stamp):
+                    pose=self.pose_history.at(stamp)
+                    if pose is None:
+                        return None
+                    relative=ned_to_odom(self.launch_datum.from_px4(pose[:3]),self.control_bearing)
+                    return odom_to_course(relative,self.range_origin,args.start_bearing,args.start_height)[:2]
+                range_ok,conditional_range,reason = self.range_health.check(now,self.msg.get('fusion'),east,north,
+                    armed and not land.landed,self.phase=='ACTIVE' and offboard and not status.failsafe,range_position_at)
+                if reason != self.range_state:
+                    self.get_logger().info(f'down range: {reason}')
+                    self.range_state=reason
+                if not range_ok:
                     self.healthy_wall = self.ready_at = None
                     if self.phase != 'WAIT':
-                        self.stop('qualified EV height/barometer/range terrain fusion lost; stopped publication')
+                        self.stop(f'measured range or fixed height integrity: {reason}; stopped publication')
                     return
             if self.phase in ('WAIT', 'MODE_CHECK', 'REQUEST'):
                 flags = self.msg.get('fusion')
@@ -352,7 +387,8 @@ def main():
                     None if self.odom_position is None else self.launch_datum.to_px4(odom_to_ned(self.odom_position,self.control_bearing)),
                     self.vision_yaw,self.msg.get('fusion'),
                     None if 'fusion' not in self.source else self.source['fusion']/1e6,
-                    aligned_pose=self.pose_history.at(self.source.get('odom')))
+                    aligned_pose=self.pose_history.at(self.source.get('odom')),
+                    measured_conditional_range=conditional_range)
                 if state != self.nav_state:
                     self.get_logger().info(f'PX4 navigation {self.nav_state}->{state}: {reason}')
                     self.nav_state=state
@@ -528,6 +564,16 @@ def main():
                     bound = math.radians(self.map_rate)*dt
                     self.map_bearing += min(bound,max(-bound,turn))
                 sp.yaw = self.split_frame.course_yaw_to_control(self.map_bearing)
+            if self.window_look is not None:
+                local = self.split_frame.course_position(yaw_pose)
+                phase = 'COAST' if braking else mission.state
+                yaw = self.window_look.step(self.yaw_origin[0]+local[1],self.yaw_origin[1]+local[0],
+                                            yaw_pose[2],now,yaw_stamp,armed,phase)
+                if yaw is None:
+                    self.stop('window-forward yaw stale or invalid: stopped control publication')
+                    return
+                if not braking:
+                    sp.yaw = self.split_frame.course_yaw_to_control(yaw)
             if self.yaw_policy is not None and not braking:
                 local = self.split_frame.course_position(yaw_pose)
                 yaw = self.yaw_policy.step(self.yaw_origin[0]+local[1],

@@ -7,7 +7,7 @@ class CleanInstall(unittest.TestCase):
   with tempfile.TemporaryDirectory(prefix='split clean install ') as name:
    target=Path(name)/'Navless fresh checkout'
    shutil.copytree(d.ROOT,target,ignore=shutil.ignore_patterns('.git','state','__pycache__','*.pyc'))
-   report=d.check_source(target);self.assertEqual(report['frozen_runtime_members'],32)
+   report=d.check_source(target);self.assertEqual(report['frozen_runtime_members'],38)
  def test_missing_prerequisite_rejected(self):
   with tempfile.TemporaryDirectory() as name:
    with self.assertRaisesRegex(ValueError,'missing tracked'):d.check_source(Path(name))

@@ -1,10 +1,10 @@
 from types import SimpleNamespace
 import unittest
-from split_height.height_profile import settings, fusion_problem, preflight_problem
+from split_height.height_profile import settings, preflight_problem
 
 
 def flags(**changes):
-    values = dict(cs_rng_hgt=True, cs_rng_stuck=False, cs_rng_fault=False,
+    values = dict(timestamp=1000000,cs_rng_kin_consistent=True,cs_rng_hgt=True, cs_rng_stuck=False, cs_rng_fault=False,
                   cs_ev_hgt=True, cs_baro_hgt=True, cs_rng_terrain=True,
                   cs_fake_hgt=False, cs_baro_fault=False, fs_bad_acc_vertical=False)
     values.update(changes)
@@ -34,14 +34,20 @@ class HeightTests(unittest.TestCase):
         self.assertEqual(settings('range')['EKF2_HGT_REF'], 2)
         with self.assertRaises(ValueError):settings('invented')
 
-    def test_all_required_flags_and_faults_fail_closed(self):
-        self.assertIsNone(fusion_problem('ev-terrain', flags()))
-        for name in ('cs_rng_hgt','cs_ev_hgt','cs_baro_hgt','cs_rng_terrain'):
-            self.assertIsNotNone(fusion_problem('ev-terrain', flags(**{name:False})))
+    def test_actual_companion_fixed_height_fault_controls(self):
+        import json
+        from pathlib import Path
+        from split_sim.course_runtime.conditional_range import WindowRangeHealth
+        course=json.loads((Path(__file__).resolve().parents[1]/'split_sim/course_runtime/navless/gazebo_sim/course/course_v3.json').read_text())
+        guard=WindowRangeHealth(next(w for w in course['walls'] if 'window' in w))
+        guard.receive(1.,.82,'downward_range_link',.02,4.)
+        def check(value):return guard.check(1.,value,*guard.center,True,True)[0]
+        self.assertTrue(check(flags()))
+        for name in ('cs_ev_hgt','cs_baro_hgt'):
+            self.assertFalse(check(flags(**{name:False})))
         for name in ('cs_rng_stuck','cs_rng_fault','cs_fake_hgt','cs_baro_fault','fs_bad_acc_vertical'):
-            self.assertIsNotNone(fusion_problem('ev-terrain', flags(**{name:True})))
-        self.assertIsNotNone(fusion_problem('ev-terrain', SimpleNamespace()))
-        self.assertIsNotNone(fusion_problem('ev-terrain', None))
+            self.assertFalse(check(flags(**{name:True})))
+        self.assertFalse(check(None))
 
     def test_actual_parameters_and_timestamps_are_required(self):
         self.assertIsNone(preflight_problem('ev-terrain',listener(),parameters()))

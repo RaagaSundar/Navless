@@ -17,23 +17,6 @@ def settings(profile):
     return dict(PROFILES[profile])
 
 
-def fusion_problem(profile, flags):
-    """Mirror the frozen companion guard; no missing flag is considered healthy."""
-    settings(profile)
-    if flags is None:
-        return 'missing estimator fusion flags'
-    required = ['cs_rng_hgt']
-    faults = ['cs_rng_stuck', 'cs_rng_fault']
-    if profile == 'ev-terrain':
-        required += ['cs_ev_hgt', 'cs_baro_hgt', 'cs_rng_terrain']
-        faults += ['cs_fake_hgt', 'cs_baro_fault', 'fs_bad_acc_vertical']
-    if any(getattr(flags, name, None) is not True for name in required):
-        return 'required height/terrain fusion inactive or missing'
-    if any(getattr(flags, name, None) is not False for name in faults):
-        return 'height/terrain integrity fault or missing flag'
-    return None
-
-
 def preflight_problem(profile, listener_text, parameter_text):
     """Validate actual passive PX4 listener/parameter output; no fabricated fix."""
     expected = settings(profile)
