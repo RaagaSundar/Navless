@@ -204,6 +204,8 @@ class FlightInterface:
         self.clamped = []
         self.saw_disarmed = False
         self.takeover_at = None       # sim time the takeover started (stand-in for the pilot's arm)
+        self.height_settled_since = None
+        self.height_err = None
         self.armed_at = None
         self._last_cmd = -1e9
         BUS[pose_topic].append(self.on_pose)
@@ -301,7 +303,16 @@ class FlightInterface:
             self.saw_disarmed = True
         if self.takeover_at is None:
             fresh = self.last_setpoint is not None and CLOCK.t - self.last_setpoint <= 1.0
-            if (self.saw_disarmed and fresh and px4.landed_state == LANDED_ON_GROUND
+            # PX4's height can boot ~0.6 m off and park the error in its terrain estimate; with
+            # EV_CTRL 9 nothing pulls it back, and every odom-z setpoint is then flown that far low
+            # (lap 2 of the live demo). Hand over only once PX4 agrees the drone is on the floor.
+            if px4.local is not None:
+                dz = abs(self.px4_to_world(px4.local)[2] - self.p0[2])
+                self.height_settled_since = ((self.height_settled_since or CLOCK.t) if dz < 0.05 else None)
+                self.height_err = dz
+            settled = (self.height_settled_since is not None
+                       and CLOCK.t - self.height_settled_since >= 2.0)
+            if (self.saw_disarmed and fresh and settled and px4.landed_state == LANDED_ON_GROUND
                     and px4.local is not None):
                 self.takeover_at = CLOCK.t
                 print(f"  [{CLOCK.t:7.2f}] flight_interface: takeover (stand-in for arm -> Position)", flush=True)
@@ -497,7 +508,8 @@ def main():
                 result = "HELD then pilot-landed"
                 break
             if fi.takeover_at is None and st - t_start > 30:
-                raise SystemExit("no takeover in 30 s: the node never published, or PX4 is not landed/ready")
+                raise SystemExit("no takeover in 30 s: the node never published, PX4 is not landed/ready, "
+                                 f"or PX4's height never settled (off by {fi.height_err} m on the ground)")
             if fi.takeover_at is not None and fi.armed_at is None and st - fi.takeover_at > 10:
                 raise SystemExit("PX4 refused offboard/arm; PX4 said: " + " | ".join(px4.texts[-5:]))
             if st - t_start > a.timeout:
