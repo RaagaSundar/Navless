@@ -258,3 +258,11 @@ Until PR49 merges, the actual passing code must be fetched explicitly using
 `git fetch origin pull/49/head:review-pass-49`; do not assume it is already in
 main. The normal launcher now actually archives/invokes the passing route/config.
 No new return-hop, heading-all or obstacle prototype belongs to this profile.
+
+## Optional bounded M3 capture pair
+
+The separate [M3 recipe](m3_bench/README.md) provides reproducible nominal and
+physically rotated-M3 worlds, exact frozen finite-capture contract, explicit
+compose/prepared-launch selection and independent replay. Both met bounded
+capture goals, not full-course or avoidance goals. Ordinary grades are unchanged
+and incomplete. The passing49 profile remains unchanged without this opt-in.

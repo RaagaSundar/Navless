@@ -7,8 +7,16 @@ source ./prepare_split.sh
 if [[ "${1:-}" == --approve-prepared && $# == 2 ]]; then approve_prepared "$2"; exit; fi
 [[ $# == 1 && ( "$1" == --approve-flight || "$1" == --prepare-flight ) ]] || { echo 'Usage: run_split_course.sh --prepare-flight | --approve-prepared RUN_ID | --approve-flight'; exit 2; }
 launch_mode="$1"
+experiment="${SPLIT_EXPERIMENT:-course}"
+case "$experiment" in course|m3-bounded) ;; *) echo 'unreviewed simulation experiment' >&2; exit 2;; esac
 yaw_policy="${SPLIT_YAW_POLICY:-first-exterior}"
 case "$yaw_policy" in first-exterior|window-forward) ;; *) echo "unreviewed split yaw policy" >&2; exit 2;; esac
+if [[ "$experiment" == m3-bounded ]]; then
+  [[ "$yaw_policy" == first-exterior ]] || { echo 'M3 pair requires frozen first-exterior yaw' >&2; exit 2; }
+  : "${SPLIT_M3_SCENE_DIR:?select the same reviewed scene used by the renderer}"
+  python3 m3_bench/mission_m3_capture.py --runtime course_runtime --contract m3_bench/m3-capture-contract.json --check-contract >/dev/null
+  python3 m3_bench/scene.py verify "$SPLIT_M3_SCENE_DIR" --expected-sha256 "${SPLIT_M3_BUNDLE_SHA256:?review scene digest}" >/dev/null
+fi
 # Kernel-owned lock is released on exit, including interruption.
 if [[ "${SPLIT_FLIGHT_LOCK_HELD:-}" != 1 ]]; then
   exec python3 -c 'import fcntl,os,sys
@@ -26,7 +34,7 @@ mkdir -p ../local_course/state/nvidia-runs
 container=drone19-split-sim-laptop-1
 [[ "$(docker inspect -f '{{.State.Running}}' "$container")" == true ]]
 [[ "$(docker exec "$container" printenv ROS_DOMAIN_ID)" == 219 ]]
-if "${SSH[@]}" 'docker exec drone19-split-sim pgrep -f "^python3 .*course_runtime/mission.py"'; then
+if "${SSH[@]}" 'docker exec drone19-split-sim pgrep -f "^python3 .*/(mission|mission_m3_capture)\.py"'; then
   echo "existing domain219 companion mission detected" >&2
   exit 1
 fi
@@ -36,7 +44,18 @@ run="$(cd ../local_course/state/nvidia-runs && pwd)/$runid"
 mkdir "$run"
 mkdir "$run/flight"
 printf '%s\n' "$run" > /tmp/nvidia-current-run
-cp course_runtime/astar-route.json "$run/flight/planned-route.json"
+if [[ "$experiment" == m3-bounded ]]; then
+  mkdir "$run/m3-capture" "$run/m3-tools"
+  cp m3_bench/{scene.py,evaluate_m3_capture.py,physical_clearance.py,screen_m3_capture.py} "$run/m3-tools/"
+  cp range_sensor.py "$run/m3-tools/"
+  cp m3_bench/{mission_m3_capture.py,m3-capture-contract.json,m3-capture-route.json} "$run/m3-capture/"
+  cp m3_bench/evaluate_m3_capture.py "$run/evaluate_m3_capture.py"
+  cp m3_bench/physical_clearance.py "$run/physical_clearance.py"
+  cp m3_bench/m3-capture-route.json "$run/flight/planned-route.json"
+else
+  cp course_runtime/astar-route.json "$run/flight/planned-route.json"
+fi
+printf '%s\n' "$experiment" > "$run/experiment"
 cp course_runtime/sources.sha256 "$run/sources.sha256"
 height_profile="$(docker exec "$container" printenv SPLIT_HEIGHT_PROFILE 2>/dev/null || echo range)"
 case "$height_profile" in range|ev-terrain) ;; *) echo 'unreviewed height configuration' >&2; exit 2;; esac
@@ -50,7 +69,12 @@ if [[ -f state/render-profile.json ]]; then
   grep -Fq -- "$chosen_world" "$run/renderer-process.log"
   if [[ "$chosen_world" == /split-appearance/worlds/dronehacks-synthetic.sdf ]]; then
     docker cp "$container:/split-appearance/appearance.json" "$run/appearance.json"
+  elif [[ "$chosen_world" == /split-m3-fixture/assets/worlds/dronehacks-synthetic.sdf ]]; then
+    docker cp "$container:/split-m3-fixture/assets/appearance.json" "$run/appearance.json"
   fi
+fi
+if [[ "$experiment" == m3-bounded ]]; then
+  python3 m3_bench/scene.py archive "$SPLIT_M3_SCENE_DIR" "$run" > "$run/scene-verified.json"
 fi
 mkdir "$run/pre-ekf-source"
 cp viewer/{odom_gate.py,source_admission.py} "$run/pre-ekf-source/"
@@ -76,6 +100,13 @@ from pathlib import Path
 p=Path(sys.argv[1]); estimator='NVIDIA cuVSLAM stereo + 250Hz body IMU GPU' if sys.argv[2]=='stereo-imu' else 'NVIDIA cuVSLAM stereo-only GPU'
 (p/'platform.json').write_text(json.dumps(dict(renderer_host='Mac',px4_host='Mac',estimator_host='Jetson',onboard_host='Jetson',estimator=estimator,setup_status='preparing' if sys.argv[3]=='--prepare-flight' else 'ready',verified=sys.argv[3]!='--prepare-flight'),indent=2)+'\n')
 (p/'settings.json').write_text(json.dumps(dict(label='NVIDIA SIM',estimator=estimator,height_profile=(p/'height-profile').read_text().strip(),ros_domain=219,gazebo_partition='drone19_split',route=json.loads((p/'flight/planned-route.json').read_text())['route_type'],start_bearing_deg=0,takeoff_height_m=json.loads((p/'flight/planned-route.json').read_text())['waypoints_enu'][0][2],cruise_m_s=.40,max_lead_m=.18,takeoff_vertical_lead_m=None,max_lat_accel_m_s2=.12,max_sagitta_m=.015,yaw_policy=(p/'yaw-profile').read_text().strip(),yaw_rate_deg_s=10,navigation_source='PX4 fused local position from NVIDIA stereo VO, body IMU and range',hardware_qualification=False),indent=2)+'\n')
+if (p/'experiment').read_text().strip()=='m3-bounded':
+    config=json.loads((p/'m3-capture/m3-capture-contract.json').read_text())
+    settings=json.loads((p/'settings.json').read_text())
+    settings['base_controller_cruise_m_s']=settings.pop('cruise_m_s')
+    settings['capture_target_pacing_m_s']={'prefix':config['prefix_speed_cap_mps'],'terminal':config['terminal_speed_cap_mps']}
+    settings['experiment_goal']='bounded capture/observed stop, not full course or avoidance'
+    (p/'settings.json').write_text(json.dumps(settings,indent=2)+'\n')
 PY
 # Freeze exactly the reviewed manifest, excluding later staged planner work.
 python3 - "$run/sources.sha256" > "$run/archive-files.txt" <<'PYFILES'
@@ -98,6 +129,17 @@ scp -o ControlPath="$SOCKET" -o BatchMode=yes /tmp/nvidia-course-runtime.tgz "$T
 "${SSH[@]}" 'set -e; tar -xzf ~/team_ws/split_sim_state/course-runtime.tgz -C ~/team_ws/split_sim_state/course_stage; docker cp ~/team_ws/split_sim_state/course_stage/course_runtime drone19-split-sim:/root/split_state/; docker exec drone19-split-sim bash -lc "cd /root/split_state/course_runtime; sha256sum -c sources.sha256 && python3 -m unittest discover -v"' > "$run/deployed-sources.log" 2>&1
 scp -o ControlPath="$SOCKET" -o BatchMode=yes split_record.py "$TARGET":team_ws/split_sim_state/split_record.py
 "${SSH[@]}" 'docker cp ~/team_ws/split_sim_state/split_record.py drone19-split-sim:/root/split_state/split_record.py'
+mission_exec='/root/split_state/course_runtime/mission.py'
+mission_route_args='--route /root/split_state/course_runtime/astar-route.json --duration 180'
+if [[ "$experiment" == m3-bounded ]]; then
+  COPYFILE_DISABLE=1 tar --format ustar -C "$run/m3-capture" -czf "$run/m3-capture.tgz" .
+  scp -o ControlPath="$SOCKET" -o BatchMode=yes "$run/m3-capture.tgz" "$TARGET:team_ws/split_sim_state/$runid-m3-capture.tgz"
+  remote_bundle="/root/split_state/$runid-m3-capture"
+  "${SSH[@]}" "docker exec drone19-split-sim bash -c 'set -e; mkdir $remote_bundle; tar --no-same-owner --no-same-permissions -C $remote_bundle -xzf /root/split_state/$runid-m3-capture.tgz'"
+  mission_exec="$remote_bundle/mission_m3_capture.py --runtime /root/split_state/course_runtime --contract $remote_bundle/m3-capture-contract.json"
+  mission_route_args=''
+  "${SSH[@]}" "docker exec drone19-split-sim python3 $mission_exec --check-contract" > "$run/m3-contract-verified.json"
+fi
 check_px4_sensors() {
 docker exec "$container" bash -c 'set -e; cd /root/px4-current; b=/root/PX4-Autopilot/build/px4_sitl_default/bin; for topic in distance_sensor vehicle_imu estimator_aid_src_rng_hgt estimator_status_flags; do "$b/px4-listener" "$topic" -n 1; done' > "$run/px4-sensor-preflight.log" || return 1
 docker exec "$container" bash -c 'cd /root/px4-current; b=/root/PX4-Autopilot/build/px4_sitl_default/bin; for key in EKF2_HGT_REF EKF2_EV_CTRL EKF2_RNG_CTRL EKF2_BARO_CTRL; do echo "$key"; "$b/px4-param" show -q "$key"; done' > "$run/px4-height-parameters.log"
@@ -185,7 +227,7 @@ refresh_recorder() {
 }
 refresh_recorder > "$run/recorder-readiness.log" 2>&1 & recorder_gate_pid=$!
 result=0
-"${SSH[@]}" "docker exec drone19-split-sim bash -lc 'export SKYBETA_UNDERLAY_ONLY=1; source /usr/local/bin/skybeta_env.sh; python3 /root/split_state/course_runtime/mission.py $launch_mode --px4-localization --height-profile $height_profile --qualified-astar --yaw-policy $yaw_policy --route /root/split_state/course_runtime/astar-route.json --preflight-observe 30 --recorder-token $token_path --run-id $runid --duration 180 --wall-timeout 600'" > "$run/flight/mission.log" 2>&1 || result=$?
+"${SSH[@]}" "docker exec drone19-split-sim bash -lc 'export SKYBETA_UNDERLAY_ONLY=1; source /usr/local/bin/skybeta_env.sh; python3 $mission_exec $launch_mode --px4-localization --height-profile $height_profile --qualified-astar --yaw-policy $yaw_policy $mission_route_args --preflight-observe 30 --recorder-token $token_path --run-id $runid --wall-timeout 600'" > "$run/flight/mission.log" 2>&1 || result=$?
 kill "$recorder_gate_pid" 2>/dev/null || true
 wait "$recorder_gate_pid" 2>/dev/null || true
 sed -n '1,/requesting Offboard/p' "$run/flight/mission.log" > "$run/preflight.log"
@@ -206,6 +248,19 @@ docker exec "$container" python3 /split/course_runtime/score_course.py "/root/$r
 docker cp "$container:/root/$runid-grade.json" "$run/flight/grade.json" || true
 px4path="$(docker exec "$container" readlink -f /root/px4-current)"
 docker cp "$container:$px4path" "$run/px4"
+if [[ "$experiment" == m3-bounded ]]; then
+  "${SSH[@]}" "docker exec drone19-split-sim cat /root/split_state/$runid-m3-capture-events.jsonl" > "$run/m3-capture-events.jsonl" || result=1
+  actual_sdf="$run/map-assets/actual/models/dh_course/model.sdf"
+  variant="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["variant"])' "$run/map-comparison.json")"
+  "${SPLIT_ANALYSIS_PYTHON:-python3}" m3_bench/evaluate_m3_capture.py \
+    --contract "$run/m3-capture/m3-capture-contract.json" --route "$run/flight/planned-route.json" \
+    --events "$run/m3-capture-events.jsonl" --telemetry "$run/flight/telemetry.jsonl" --truth "$run/flight/truth.json" \
+    --actual-course-sdf "$actual_sdf" --sensors "state/$runid-camera-imu.sqlite" --ordinary-grade "$run/flight/grade.json" \
+    --name "M3 $variant · bounded stereo capture" --experiment-id "$runid" --baseline-source-id 20261107T221438Z-split-astar-flight \
+    --world-difference "$variant physical M3; original onboard prior unchanged" --output "$run/m3-capture-result.json" > "$run/m3-capture-result.log" || result=1
+  "${SPLIT_ANALYSIS_PYTHON:-python3}" m3_bench/physical_clearance.py "$run/flight/track.json" --repo "$(cd .. && pwd)" \
+    --map-comparison "$run/map-comparison.json" --output "$run/m3-physical-clearance.json" > "$run/m3-physical-clearance.log" || result=1
+fi
 cp state/split-station.log "$run/station.log"
 "${SSH[@]}" 'docker exec drone19-split-sim tar -czf - -C /root/split_state logs' > "$run/jetson-node-logs.tgz"
 python3 course_runtime/review_run.py "$run"

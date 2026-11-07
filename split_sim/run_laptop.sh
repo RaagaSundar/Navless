@@ -11,6 +11,10 @@ case "${SPLIT_APPEARANCE:-original}" in
     world=/split-appearance/worlds/dronehacks-synthetic.sdf
     export GZ_SIM_RESOURCE_PATH="/split-appearance/models:$GZ_SIM_RESOURCE_PATH"
     ;;
+  m3-bounded)
+    world=/split-m3-fixture/assets/worlds/dronehacks-synthetic.sdf
+    export GZ_SIM_RESOURCE_PATH="/split-m3-fixture/assets/models:$GZ_SIM_RESOURCE_PATH"
+    ;;
   *) echo 'unknown portable appearance profile' >&2; exit 2 ;;
 esac
 mkdir -p /root/logs
@@ -21,6 +25,9 @@ import hashlib,json,sys
 from pathlib import Path
 p=Path(sys.argv[1]);print(json.dumps({'profile':'original','world':str(p),'world_sha256':hashlib.sha256(p.read_bytes()).hexdigest()}))
 PYMETA
+elif [[ "${SPLIT_APPEARANCE:-original}" == m3-bounded ]]; then
+  python3 /split/m3_bench/scene.py verify /split-m3-fixture \
+    --expected-sha256 "${SPLIT_M3_BUNDLE_SHA256:?reviewed M3 bundle required}" > /root/render-profile.json
 else
   python3 /workspace/Navless/appearance_profile/verify.py --overlay /split-appearance \
     --manifest-sha256 "${APPEARANCE_MANIFEST_SHA256:?reviewed appearance manifest required}" \

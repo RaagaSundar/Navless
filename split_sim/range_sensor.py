@@ -15,7 +15,7 @@ import numpy as np
 os.environ['MAVLINK20'] = '1'
 from pymavlink import mavutil
 sys.path.insert(0, '/workspace/Navless/gazebo_sim')
-from dh.geom import RayCaster
+from dh.geom import RayCaster, Obstacles
 from sensor_bridge import quat_to_mat, RNG_OFFSET_FLU
 from gz.transport13 import Node
 from gz.msgs10.odometry_pb2 import Odometry
@@ -40,7 +40,22 @@ def main():
                          p=np.array([p.x, p.y, p.z]), R=quat_to_mat(q.w, q.x, q.y, q.z))
     node.subscribe(Odometry, '/model/dh_quad_0/odometry', capture)
     mav = mavutil.mavlink_connection('udpout:127.0.0.1:14280', source_system=2, source_component=197)
-    caster, noise, last = RayCaster(), np.random.default_rng(19), -1.0
+    physical_sdf = os.environ.get('SPLIT_PHYSICAL_COURSE_SDF')
+    if physical_sdf:
+        if os.environ.get('SPLIT_APPEARANCE') != 'm3-bounded' or not os.environ.get('SPLIT_M3_BUNDLE_SHA256'):
+            raise ValueError('actual range geometry requires the matching pinned M3 renderer profile')
+        from pathlib import Path
+        from m3_bench.scene import verify_bundle
+        bundle = Path('/split-m3-fixture')
+        verify_bundle(bundle, os.environ.get('SPLIT_M3_BUNDLE_SHA256'))
+        expected = bundle/'assets/models/dh_course/model.sdf'
+        if Path(physical_sdf).resolve() != expected.resolve():
+            raise ValueError('range sensor model must use the selected physical collision SDF')
+        caster = RayCaster(Obstacles(str(expected)))
+        print('SIMULATION SENSOR ORACLE: verified actual M3 collision model; unchanged ray/noise/rate/mount', flush=True)
+    else:
+        caster = RayCaster()
+    noise, last = np.random.default_rng(19), -1.0
     while True:
         with lock:
             sample = dict(state)

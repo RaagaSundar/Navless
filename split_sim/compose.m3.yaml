@@ -1,0 +1,9 @@
+# Explicit simulation-only scene override; defaults and onboard prior stay unchanged.
+services:
+  laptop:
+    environment:
+      SPLIT_APPEARANCE: m3-bounded
+      SPLIT_PHYSICAL_COURSE_SDF: /split-m3-fixture/assets/models/dh_course/model.sdf
+      SPLIT_M3_BUNDLE_SHA256: "${SPLIT_M3_BUNDLE_SHA256:?review the scene bundle digest}"
+    volumes:
+      - ${SPLIT_M3_SCENE_DIR:?select an immutable M3 scene bundle}:/split-m3-fixture:ro

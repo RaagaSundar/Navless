@@ -1,0 +1,40 @@
+{
+  "schema": "m3_capture/v1",
+  "name": "M3 bounded real-flight stereo capture with one actual open-corridor stop",
+  "experiment_family_id": "m3-bounded-physics-capture-v1-20261107",
+  "baseline_source_id": "20261107T221438Z-split-astar-flight",
+  "shadow_only": true,
+  "base_mission_sha256": "f480cbac9323b165d318e8032f4075c9979e0b9d77079140fea31b94983ff608",
+  "route_file": "m3-capture-route.json",
+  "route_sha256": "fd09b658339f7e2286c2cf2ba4397a2e9de438f4a19fd9eba83d0db741e95a05",
+  "parent_route_sha256": "e25ce78ebb68f9b3ed2d65d30a01f0a66ad007b4fb597e35120a438ca5755b8a",
+  "parent_last_index": 232,
+  "prefix_speed_cap_mps": 0.2,
+  "slow_from_parent_index": 200,
+  "terminal_speed_cap_mps": 0.08,
+  "terminal_arrival_radius_m": 0.05,
+  "braking_trigger_parent_index": 35,
+  "braking_hold_s": 2.0,
+  "braking_timeout_s": 5.0,
+  "stationary_speed_mps": 0.03,
+  "stationary_settle_s": 0.5,
+  "endpoint_hold_s": 3.0,
+  "duration_sim_s": 180,
+  "independent_geometry_screen_passed": true,
+  "assurance_scope": "screened nominal geometry only, not hardware or guaranteed dynamic clearance; actual source/authority/recording gates unchanged",
+  "changes": [
+    "Original nominal A* route truncated atparentindex232; not fullcourse/avoidance",
+    "CourseMission target pacing reduced .20prefix/.08terminal (actualspeeds recorded, not guaranteed bycarrot alone)",
+    "One actual position-hold stop in original north straightcorridor atCarrotindex35,2sminimum/.5sstationary/5smax",
+    "Final endpoint actualhold3s thenexisting soleInterface normalNAV_LAND",
+    "Same originalfirst-exterior yawpolicy/sensors/calibration/navguard oncleanandchanged; no changedgeometry suppliedtoplanner",
+    "Independent realtruth/SLAM/PX4/actualstereo recorders must be running; obstacledecision shadow only"
+  ],
+  "not_claimed": [
+    "No successful obstacle avoidance",
+    "No dynamicA*qualification",
+    "No measured stoppingbound until actual telemetry analyzed",
+    "No grade relaxation; ordinary fullcoursegrade expectedincomplete"
+  ],
+  "wrapper_sha256": "4ab34d70c0079f03c301a97af0a3444dccb802f0e8a28ae7ebc748e26c96cb7b"
+}
