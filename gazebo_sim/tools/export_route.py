@@ -32,7 +32,9 @@ ap.add_argument("--end-z", type=float, default=0.40, help="last point above the 
 # navless_nav's carrot cuts the turn before the window and crosses off-centre towards C2a_a: -5.5 cm at the
 # course launch's 0.7 m/s, -2.8 cm at 0.5 m/s. Aiming 4 cm the other way keeps >= 10.9 cm to every wall (the
 # maze; the window >= 11.5 cm) at both speeds for a +-1 deg placement error (Gazebo, drone profile, 6 laps).
-# Unshifted, 1 deg east left 7.4 cm at the window.
+# Unshifted, 1 deg east left 7.4 cm at the window. The aim matches that cut, so re-check it if the course
+# launch's speeds or max_turn_sagitta_m change. A smaller cut turns the 4 cm into a bias towards C2a_b,
+# which has room (21.0 cm planned).
 ap.add_argument("--window-shift-m", type=float, default=0.04,
                 help="window route: move the crossing along the wall, + towards C2a_b (dh/route.py window_route); "
                      "0 = the geometric centreline")
