@@ -284,9 +284,11 @@ def tukey_w(r, c):
 # ICP settings; the self-test can override them (icp.kernel=tukey icp.c=0.1 icp.schedule=0.3,0.2,0.1)
 # Tukey + a tight schedule keeps people/chairs near modelled surfaces from dragging the pose
 # (self-test with clutter=1.0: BAD 0 for tracking-sized and reset-sized start errors).
-ICP_OPTS = {"schedule": (0.3, 0.2, 0.12, 0.08), "kernel": "tukey", "c": 0.06, "keep": 0.03, "anneal": 0.0}
+ICP_OPTS = {"schedule": (0.3, 0.2, 0.12, 0.08), "kernel": "tukey", "c": 0.06, "keep": 0.03, "anneal": 0.5}
 # anneal > 0: the robust cut-off for each pass is max(c, anneal x that pass's search radius), so the
 # coarse passes can still pull a heading that's 10-15 deg off before the tight passes refine it.
+# 0.5 beat 0 on every comparison: window-route flights (median ~9 vs ~28 cm) and the clutter=1.0
+# single-frame test (PASS 23 / BAD 1 vs PASS 17 / BAD 2 of 40).
 
 
 def icp(src, T0, model, schedule=None, iters=5, huber=None, min_pts=150,
@@ -352,7 +354,8 @@ class Localizer:
     """Frame-to-model tracking with sanity gates; keeps the last good pose when a frame is rejected."""
 
     def __init__(self, model, T0, max_range=5.0, voxel=0.05, max_points=1500,
-                 min_fitness=0.35, min_matches=300, max_rmse=0.06, max_jump=0.6, max_turn_deg=30.0):
+                 min_fitness=0.35, min_matches=300, max_rmse=0.06, max_jump=0.6, max_turn_deg=30.0,
+                 max_speed=3.0, max_turn_rate=360.0):
         """A frame is accepted if its matched points fit tightly (rmse) AND there are enough of them:
         either min_fitness of the cloud, or at least min_matches points. The absolute count matters in
         a room full of people and chairs that aren't in the model, where most points can't match."""
@@ -365,6 +368,8 @@ class Localizer:
         self.last_good, self.measured = None, {}                   # monotonic time, what was measured
         self.trail = deque(maxlen=600)
         self.searching, self.odom = False, False
+        self.max_speed, self.max_turn_rate = max_speed, max_turn_rate      # m/s, deg/s: odometry sanity
+        self.odom_rejects, self.odom_note, self.last_delta = 0, "", None
 
     def reset(self, T, search_heading=False):
         """New start pose. With search_heading, the next frames try every heading from this position
@@ -411,12 +416,32 @@ class Localizer:
             p = p[self.rng.choice(len(p), self.max_points, replace=False)]
         return p
 
-    def update(self, pts_cam, delta=None):
+    def odom_plausible(self, delta, dt):
+        """Reject odometry steps the drone can't physically make (a VSLAM reset / relocalization jump
+        looks like a teleport). dt = seconds since the previous frame."""
+        dt = max(dt if dt is not None else 1.0 / 3.0, 0.05)
+        step = float(np.linalg.norm(delta[:3, 3]))
+        turn = math.degrees(math.acos(max(-1.0, min(1.0, (np.trace(delta[:3, :3]) - 1) / 2))))
+        return step <= self.max_speed * dt + 0.05 and turn <= self.max_turn_rate * dt + 2.0, step, turn
+
+    def update(self, pts_cam, delta=None, dt=None):
         """One frame. `delta` (optional, 4x4) is the camera's motion since the previous frame from
         odometry (VSLAM), in the previous camera's optical frame: T_now = T_prev @ delta. It's applied
         first as a prediction, so ICP starts from where the drone should be, directions the view can't
         pin down follow odometry instead of freezing, and frames with nothing to match (looking through
-        the net) still move the estimate. Without it, the tracker holds the last pose."""
+        the net) still move the estimate. Without it, the tracker holds the last pose.
+        A delta faster than max_speed / max_turn_rate is treated as a VSLAM reset and ignored."""
+        self.odom_note = ""
+        if delta is not None:
+            ok, step, turn = self.odom_plausible(delta, dt)
+            if ok:
+                self.last_delta = delta
+            else:
+                self.odom_rejects += 1
+                self.odom_note = f"odometry jump rejected ({100 * step:.0f} cm, {turn:.0f}°): VSLAM reset?"
+                # Don't assume the drone stopped: it was probably mid-move (or mid-turn, which the
+                # camera may not be able to correct later). Repeat the last good step instead.
+                delta = self.last_delta
         if delta is not None:
             self.T = self.T @ delta
         self.odom = delta is not None
@@ -628,6 +653,9 @@ async function pollState() {
     $('est').innerHTML = `measured: ${tag('x', 'x')} ${tag('y', 'y')} ${tag('height', 'height')} ${tag('heading', 'heading')}`;
     $('fit').innerHTML = s.fitness == null ? '<small>fit: -</small>' :
       `<small>fit ${(100*s.fitness).toFixed(0)}%  rmse ${(100*s.rmse).toFixed(1)} cm  ${s.ms.toFixed(0)} ms  ${s.hz.toFixed(1)} Hz</small>`;
+    if (s.odom_source || s.odom_rejects)
+      $('fit').innerHTML += `<br><small>odometry: ${s.odom_source || '-'}${s.odom_rejects ? ` · ${s.odom_rejects} jump(s) rejected` : ''}` +
+        `${s.odom_note ? ` · <span class="held">${s.odom_note}</span>` : ''}</small>`;
     drone = s;
     fill(B.drone, new Float32Array(s.position), new Uint8Array(col));
     // heading arrow on the floor
@@ -759,10 +787,10 @@ class Tracker:
         self.ms, self.hz, self.last_t, self.view_req = 0.0, 0.0, None, 0.0
         self.display = None                                        # (camera-frame points, matched flags)
 
-    def process(self, pts_cam, delta=None):
+    def process(self, pts_cam, delta=None, dt=None):
         t0 = time.perf_counter()
         with self.lock:
-            self.loc.update(pts_cam, delta)
+            self.loc.update(pts_cam, delta, dt)
             T = self.loc.T.copy()
         disp = None
         if time.monotonic() - self.view_req < 3.0:                    # only when someone is watching
@@ -799,6 +827,8 @@ class Tracker:
                     "yaw": yaw, "pitch": pitch, "roll": roll,
                     "fitness": info.get("fitness"), "rmse": info.get("rmse"), "ms": self.ms, "hz": self.hz,
                     "measured": loc.measured, "odom": loc.odom, "truth": getattr(self, "truth", None),
+                    "odom_source": getattr(self, "odom_source", ""), "odom_note": loc.odom_note,
+                    "odom_rejects": loc.odom_rejects,
                     "age": None if loc.last_good is None else time.monotonic() - loc.last_good,
                     "trail": list(loc.trail)}
 
@@ -929,7 +959,7 @@ def selftest(obj_path, up="z", scale=1.0, trials=20, max_range=5.0, perturb=0.4,
 
 def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutter=0.3, max_range=5.0,
               points=1500, seed=11, every=10, odom=True, odom_scale=0.03, odom_yaw_dps=0.3, odom_only=False,
-              view=0):
+              view=0, odom_drop=0.0, odom_resets=(), max_speed=3.0):
     """Fly a route in simulation, frame by frame, the way the live node tracks: the localizer starts on
     the launch mark facing 90 deg (north, along the guideline) and each frame starts from the previous
     estimate. The drone sits on the mark (camera ~0.2 m up), climbs to the route height, then follows
@@ -938,7 +968,11 @@ def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutte
     odom: feed the tracker odometry deltas with realistic drift (odom_scale distance error, odom_yaw_dps
     heading drift, plus per-frame noise), like the stack's VSLAM.
     view: an HTTP port. Serves the same 3D viewer as the live node (plus the TRUE pose as a white
-    marker), runs in real time, and repeats the route until stopped (Ctrl+C)."""
+    marker), runs in real time, and repeats the route until stopped (Ctrl+C).
+    odom_drop: chance per frame that VSLAM isn't trusted (lost tracking / gate rejects it): no delta that
+    frame, and the odometry chain restarts, exactly like the live node.
+    odom_resets: frame numbers where VSLAM 'resets' and its odometry jumps 1.5 m + 40 deg; the tracker
+    must reject that step instead of teleporting."""
     model = CourseModel(obj_path)
     route = json.load(open(route_path))
     W = np.asarray(route["waypoints_enu"], float)
@@ -958,10 +992,13 @@ def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutte
     if yawmode == "travel":
         for i in range(1, len(P)):
             d = P[min(i + 2, len(P) - 1), :2] - P[i - 1, :2]
-            yaws[i] = math.degrees(math.atan2(d[1], d[0])) if np.linalg.norm(d) > 1e-3 else yaws[i - 1]
+            want = math.degrees(math.atan2(d[1], d[0])) if np.linalg.norm(d) > 1e-3 else yaws[i - 1]
+            turn = (want - yaws[i - 1] + 180) % 360 - 180            # a real drone yaws <= ~90 deg/s
+            yaws[i] = yaws[i - 1] + max(-90.0 / rate, min(90.0 / rate, turn))
     start = lambda: camera_pose(lm[0] + rng.normal(0, 0.05), lm[1] + rng.normal(0, 0.05), 0.2,
                                 90 + rng.normal(0, 5), 0.0)
-    tracker = Tracker(model, start(), max_range=max_range, max_points=points)
+    tracker = Tracker(model, start(), max_range=max_range, max_points=points,
+                      max_speed=max_speed, max_turn_rate=360.0 if max_speed < 100 else 1e9)
     loc = tracker.loc
     loc.status = "reset"
     if odom_only:                                                     # baseline: never accept a course match
@@ -981,20 +1018,33 @@ def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutte
             print(f"\n--- lap {lap} ---")
         print("   t(s)  true x,y,h        est x,y,h         pos err  hdg err  status    measured x/y/h/hdg")
         perr, herr, stat = [], [], {}
-        T_prev = None
+        T_prev, gap, odt = None, 1, 1.0 / rate
         for i, (p, yw) in enumerate(zip(P, yaws)):
             t_frame = time.monotonic()
             T_true = camera_pose(p[0], p[1], p[2], yw, rng.normal(0, 2), rng.normal(0, 2))
             delta = None
-            if odom and T_prev is not None:
-                delta = np.linalg.inv(T_prev) @ T_true                # true camera motion...
+            # untrusted frame (lost tracking / gate rejected it): no odometry now, but VSLAM's frame is
+            # continuous, so the next trusted frame bridges the gap from the last trusted one (live node too)
+            dropped = odom and odom_drop > 0 and rng.random() < odom_drop
+            if odom and T_prev is not None and not dropped:
+                delta = np.linalg.inv(T_prev) @ T_true                # true camera motion since last trusted...
                 delta[:3, 3] = delta[:3, 3] * (1 + odom_scale) + rng.normal(0, 0.005, 3)   # ...distance error
-                drift = math.radians(odom_yaw_dps / rate) + rng.normal(0, math.radians(0.1))
+                drift = math.radians(odom_yaw_dps * gap / rate) + rng.normal(0, math.radians(0.1))
                 delta[:3, :3] = rot_y(drift) @ delta[:3, :3]           # heading drift (optical y = down)
-            T_prev = T_true
+                if i in odom_resets:                                  # VSLAM reset: odometry teleports
+                    jump = np.eye(4)
+                    jump[:3, :3] = rot_y(math.radians(40))
+                    jump[:3, 3] = (1.2, 0.0, 0.9)
+                    delta = delta @ jump
+                    print(f"   [frame {i}: injected VSLAM reset jump 1.5 m / 40°]")
+            if not dropped:
+                odt, T_prev, gap = gap / rate, T_true, 1
+            else:
+                gap += 1
             tracker.truth = {"position": T_true[:3, 3].round(3).tolist(),
                              "forward": (T_true[:3, :3] @ R_OPT_TO_FLU.T)[:, 0].round(3).tolist()}
-            tracker.process(simulate_view(model, T_true, rng, max_range=max(5.0, max_range), outliers=clutter), delta)
+            tracker.process(simulate_view(model, T_true, rng, max_range=max(5.0, max_range), outliers=clutter),
+                            delta, odt if delta is not None else 1.0 / rate)
             e = np.linalg.norm(loc.T[:3, 3] - T_true[:3, 3])
             h = abs((pose_angles(loc.T)[0] - yw + 180) % 360 - 180)
             perr.append(e)
@@ -1039,7 +1089,14 @@ def main():
     from rclpy.time import Time
     from sensor_msgs.msg import PointCloud2
     from geometry_msgs.msg import PoseStamped
+    from nav_msgs.msg import Odometry
+    from std_msgs.msg import String
+    from rclpy.qos import qos_profile_sensor_data
     import tf2_ros
+    try:                                                              # cuVSLAM tracking status (Isaac ROS)
+        from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
+    except ImportError:
+        VisualSlamStatus = None
 
     class CloudLocalize(Node):
         def __init__(self):
@@ -1076,57 +1133,121 @@ def main():
             self.tracker.loc.reset(T0, search_heading=search)
             self.period = 1.0 / p("rate_hz", 3.0)
             self.last = 0.0
-            # odometry prediction: the camera's pose in VSLAM's odom frame, from TF, at each cloud's time
+            # --- odometry prediction (camera motion between frames) ---------------------------------
+            # Preferred: Koji's fail-closed gate, /mapping/validated_odometry (odom -> base_link): only
+            # samples that passed its checks (cuVSLAM tracking, <= 250 ms old, right frames, finite,
+            # valid covariance). Fallback: raw TF odom -> camera, used only while /visual_slam/status
+            # says tracking. Either way, a step faster than the drone can fly is rejected as a reset.
             self.use_odom, self.odom_frame = bool(p("use_odometry", True)), p("odom_frame", "odom")
+            self.base_frame = p("base_frame", "base_link")
+            self.validated = deque(maxlen=300)                       # (stamp ns, 4x4 odom<-base_link)
+            self.vo_tracking, self.vo_time = None, 0.0               # None = no status topic seen
             self.tf_buffer = tf2_ros.Buffer()
             self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-            self.prev_odom, self.warned_odom = None, False
+            self.prev_odom, self.prev_stamp, self.T_base_cam = None, None, None
+            self.tracker.odom_source = "waiting"
+            if self.use_odom:
+                self.create_subscription(Odometry, p("validated_odom_topic", "/mapping/validated_odometry"),
+                                         self.on_validated, qos_profile_sensor_data)
+                if VisualSlamStatus is not None:
+                    self.create_subscription(VisualSlamStatus, "/visual_slam/status", self.on_vo_status,
+                                             qos_profile_sensor_data)
             port = int(p("http_port", 8082))
             self.web = WebServer(port, model, self.tracker)
-            self.pub = self.create_publisher(PoseStamped, "/team/localize/pose", 5)
+            # --- outputs: fail-closed consumers should check /team/localize/status before using a pose
+            self.pub = self.create_publisher(PoseStamped, "/team/localize/pose", 5)          # camera
+            self.pub_base = self.create_publisher(PoseStamped, "/team/localize/base_pose", 5)  # base_link
+            self.pub_status = self.create_publisher(String, "/team/localize/status", 5)
             self.create_subscription(PointCloud2, p("cloud_topic", "/team/stereo/points"), self.on_cloud, 2)
             self.get_logger().info("Waiting for /team/stereo/points (is stereo_cloud.py running?) ... "
                                    f"view at http://<jetson>:{port}")
 
-        def odom_pose(self, msg):
-            """4x4 camera (optical) pose in the odom frame at the cloud's timestamp, or None."""
-            for t in (Time.from_msg(msg.header.stamp), Time()):        # exact time, else latest
+        @staticmethod
+        def to_mat(q, v):
+            M = np.eye(4)
+            M[:3, :3] = quat_to_mat(q.x, q.y, q.z, q.w)
+            M[:3, 3] = (v.x, v.y, v.z)
+            return M
+
+        def on_validated(self, msg):
+            st = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+            self.validated.append((st, self.to_mat(msg.pose.pose.orientation, msg.pose.pose.position)))
+
+        def on_vo_status(self, msg):
+            self.vo_tracking, self.vo_time = msg.vo_state == 1, time.monotonic()
+
+        def base_to_cam(self, cam_frame):
+            """Static base_link -> camera optical transform (cached)."""
+            if self.T_base_cam is None:
                 try:
-                    tf = self.tf_buffer.lookup_transform(self.odom_frame, msg.header.frame_id, t,
-                                                         Duration(seconds=0.05))
-                    q, v = tf.transform.rotation, tf.transform.translation
-                    M = np.eye(4)
-                    M[:3, :3] = quat_to_mat(q.x, q.y, q.z, q.w)
-                    M[:3, 3] = (v.x, v.y, v.z)
-                    return M
+                    tf = self.tf_buffer.lookup_transform(self.base_frame, cam_frame, Time(), Duration(seconds=0.1))
+                    self.T_base_cam = self.to_mat(tf.transform.rotation, tf.transform.translation)
                 except tf2_ros.TransformException:
-                    continue
-            if not self.warned_odom:
-                self.get_logger().warn(f"no TF {self.odom_frame} -> {msg.header.frame_id}: tracking without odometry")
-                self.warned_odom = True
-            return None
+                    return None
+            return self.T_base_cam
+
+        def odom_pose(self, msg):
+            """(4x4 camera optical pose in the odom frame at the cloud's timestamp, source) or (None, why)."""
+            st = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+            Tbc = self.base_to_cam(msg.header.frame_id)
+            if Tbc is None:
+                return None, "no base_link->camera TF"
+            if self.validated:
+                near = min(self.validated, key=lambda s: abs(s[0] - st))
+                if abs(near[0] - st) <= 60_000_000:                    # validated sample within 60 ms
+                    return near[1] @ Tbc, "validated (Koji gate)"
+                if abs(self.validated[-1][0] - st) < 2_000_000_000:
+                    return None, "validated odometry gap"            # gate is alive but rejected these
+                # gate silent for > 2 s: assume it isn't running and fall back to TF below
+            # fallback: raw TF, but only while cuVSLAM reports tracking (fail closed)
+            if self.vo_tracking is False or (self.vo_tracking and time.monotonic() - self.vo_time > 0.25):
+                return None, "VSLAM not tracking"
+            try:
+                tf = self.tf_buffer.lookup_transform(self.odom_frame, msg.header.frame_id,
+                                                     Time.from_msg(msg.header.stamp), Duration(seconds=0.05))
+                return self.to_mat(tf.transform.rotation, tf.transform.translation), \
+                    "tf" + (" (status unchecked)" if self.vo_tracking is None else "")
+            except tf2_ros.TransformException:
+                return None, "no odom TF at cloud time"
+
+        def pose_msg(self, stamp, M, R_flu):
+            out = PoseStamped()
+            out.header.stamp, out.header.frame_id = stamp, "course"
+            out.pose.position.x, out.pose.position.y, out.pose.position.z = (float(t) for t in M[:3, 3])
+            q = quat_xyzw(R_flu)
+            out.pose.orientation.x, out.pose.orientation.y, out.pose.orientation.z, out.pose.orientation.w = q
+            return out
 
         def on_cloud(self, msg):
             now = time.monotonic()
             if now - self.last < self.period:
                 return
             self.last = now
-            delta = None
+            delta, dt = None, None
+            st = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
             if self.use_odom:
-                O = self.odom_pose(msg)
-                if O is not None and self.prev_odom is not None:
-                    delta = np.linalg.inv(self.prev_odom) @ O             # camera motion since last frame
-                self.prev_odom = O
-            T, status = self.tracker.process(cloud_to_xyz(msg), delta)
+                O, src = self.odom_pose(msg)
+                self.tracker.odom_source = src
+                if O is not None:
+                    # bridge short gaps: VSLAM's odom frame is continuous, so the motion since the last
+                    # trusted sample is still right (a reset in between shows up as an impossible jump
+                    # and is rejected by the tracker). Gaps over 3 s restart the chain.
+                    if self.prev_odom is not None and st - self.prev_stamp < 3.0:
+                        delta, dt = np.linalg.inv(self.prev_odom) @ O, st - self.prev_stamp
+                    self.prev_odom, self.prev_stamp = O, st
+            else:
+                self.tracker.odom_source = "off"
+            T, status = self.tracker.process(cloud_to_xyz(msg), delta, dt)
+            s = self.tracker.state()
+            s.pop("trail", None)
+            s.pop("truth", None)
+            self.pub_status.publish(String(data=json.dumps(s)))
             if status not in ("tracking", "weak", "odometry"):
-                return
-            out = PoseStamped()
-            out.header.stamp = msg.header.stamp
-            out.header.frame_id = "course"
-            out.pose.position.x, out.pose.position.y, out.pose.position.z = (float(t) for t in T[:3, 3])
-            q = quat_xyzw(T[:3, :3] @ R_OPT_TO_FLU.T)
-            out.pose.orientation.x, out.pose.orientation.y, out.pose.orientation.z, out.pose.orientation.w = q
-            self.pub.publish(out)
+                return                                               # fail closed: no pose
+            self.pub.publish(self.pose_msg(msg.header.stamp, T, T[:3, :3] @ R_OPT_TO_FLU.T))
+            if self.T_base_cam is not None:
+                Tb = T @ np.linalg.inv(self.T_base_cam)              # course <- base_link (FLU)
+                self.pub_base.publish(self.pose_msg(msg.header.stamp, Tb, Tb[:3, :3]))
 
     rclpy.init()
     node = CloudLocalize()
@@ -1152,7 +1273,10 @@ if __name__ == "__main__":
                   yawmode=opts.get("yaw", "fixed"), clutter=float(opts.get("clutter", 0.3)),
                   every=int(opts.get("every", 10)), odom=opts.get("odom", "1") not in ("0", "false"),
                   odom_scale=float(opts.get("odom_scale", 0.03)), odom_yaw_dps=float(opts.get("odom_yaw", 0.3)),
-                  odom_only=opts.get("odom_only", "0") not in ("0", "false"), view=int(opts.get("view", 0)))
+                  odom_only=opts.get("odom_only", "0") not in ("0", "false"), view=int(opts.get("view", 0)),
+                  odom_drop=float(opts.get("odom_drop", 0.0)),
+                  odom_resets=tuple(int(t) for t in opts["odom_resets"].split(",")) if "odom_resets" in opts else (),
+                  max_speed=float(opts.get("max_speed", 3.0)), seed=int(opts.get("seed", 11)))
         sys.exit(0)
     if len(sys.argv) >= 3 and sys.argv[1] == "--selftest":
         # --selftest model.obj [up=z|y] [trials=20] [range=5] [perturb=0.4] [points=1500] [clutter=0.05]
