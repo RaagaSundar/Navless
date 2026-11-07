@@ -196,6 +196,26 @@ def test_fly_home_hop_leaves_when_px4_says_it_is_at_hop_height():
     assert node.state == 'ROUTE'
 
 
+def test_fly_home_lands_over_the_mark_even_with_px4_holding_low():
+    # The 0.10 m landing radius is horizontal: 0.12 m below the hop by odom
+    # (PX4 on its setpoint) must still land, not stall over the mark.
+    node, px4, pad = run(fly_home=True, takeoff_timeout_s=8.0)
+    t0 = T[0]
+    fly(node, px4, pad, lambda: T[0] - t0 >= 2.5, max_s=5.0)
+    pos = list(pad)
+    arm(px4)
+    cap = node.home_z - 0.12
+    t0 = T[0]
+    while node.state in ('WAIT_FOR_OFFBOARD', 'TAKEOFF', 'ROUTE') and T[0] - t0 < 60.0:
+        Z_BIAS[0] = 0.12 if pos[2] >= cap - 1e-9 else 0.0
+        fly(node, px4, pos, lambda: True, max_s=1.0)
+        if node.state != 'LAND':
+            pos[2] = min(pos[2], cap)
+    Z_BIAS[0] = 0.0
+    assert node.state == 'LAND'
+    assert math.hypot(*pos[:2]) <= node.home_arrival_radius + 0.2
+
+
 def test_fly_home_hop_that_never_reaches_height_holds_over_the_pad():
     # e.g. a ceiling clamp below the hop: takeoff_timeout_s -> HOLD, and the
     # leg over the wall never starts.

@@ -528,9 +528,16 @@ class CourseMission(Node):
         point = (self.carrot.step(self.position, dt) if vio_ok
                  else self.carrot.point)
         self.send(*point)
-        radius = (self.home_arrival_radius if self.going_home
-                  else self.arrival_radius)
-        if vio_ok and self.carrot.done(self.position, radius):
+        if self.going_home:
+            # Over the launch mark by x/y only: PX4 can hold the hop height a
+            # few cm off odom (7 cm in SITL), which a 3D 0.10 m test could
+            # never meet.
+            arrived = (self.carrot.at_end and math.dist(
+                self.position[:2], self.carrot.point[:2])
+                <= self.home_arrival_radius)
+        else:
+            arrived = self.carrot.done(self.position, self.arrival_radius)
+        if vio_ok and arrived:
             if self.land_at_end:
                 self.get_logger().info('route complete; landing on its end.')
                 self.goto('LAND', point)
