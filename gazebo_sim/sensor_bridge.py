@@ -6,13 +6,16 @@ Visual odometry
   base_link), sent to PX4 as the drone's odometry bridge does: (odom.y, odom.x, -odom.z), FRD pose frame. Each sample is delivered after a random transport latency (lognormal,
   p50 60 ms / p95 106 ms by default, the measured image -> flight controller chain), with small noise. PX4 stamps
   it on arrival and EKF2_EV_DELAY takes the latency out; EKF2_EV_CTRL=9 fuses horizontal position + yaw only.
-  --tube-blackout drops vision inside the dark tube and bumps reset_counter when tracking comes back.
+  --tube-blackout stop|freeze (default DH_TUBE_BLACKOUT): inside the dark tube no vision reaches PX4 (stop) or
+  the last tracked pose repeats (freeze), as the drone's bridge forwards whatever cuVSLAM publishes; reset_counter
+  goes up when tracking comes back. DH_TUBE_RECOVER_DELAY / DH_TUBE_RESET_JUMP add a late recovery and a pose
+  jump (dh/tube.py). fly_navless.py reads the same variables, so the node's odometry does exactly the same.
 Rangefinder
   A downward laser (2.7 cm left of / 3.4 cm below the body origin) ray-cast against the course collision model:
   MAVLink DISTANCE_SENSOR at 40 Hz, 0.02-4 m, 1 cm noise. The EKF uses it as the height reference while low and slow
   (EKF2_HGT_REF=2, EKF2_RNG_CTRL=1), with the barometer behind it.
 
-  python3 sensor_bridge.py [--instance N] [--tube-blackout] [--ev-lat-p50 0.06 --ev-lat-p95 0.106]
+  python3 sensor_bridge.py [--instance N] [--tube-blackout [stop|freeze]] [--ev-lat-p50 0.06 --ev-lat-p95 0.106]
 """
 import argparse
 import heapq
@@ -29,10 +32,10 @@ from pymavlink import mavutil              # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dh.geom import RayCaster  # noqa: E402
+from dh.tube import MODES, TubeBlackout, env_settings  # noqa: E402
 
 MODEL = "dh_quad_0"
 RNG_OFFSET_FLU = np.array([0.0, 0.027432, -0.03445])     # measured mount: FRD y -0.027, z +0.034
-TUBE = ((1.5748, 3.048), (-0.3048, 1.2192))              # x, y extent of the tube footprint (world)
 
 
 def quat_to_mat(w, x, y, z):
@@ -75,7 +78,13 @@ def main():
     ap.add_argument("--ev-lat-p95", type=float, default=0.106)
     ap.add_argument("--ev-noise", type=float, default=0.005, help="position noise (m, 1 sigma)")
     ap.add_argument("--ev-yaw-noise-deg", type=float, default=0.3)
-    ap.add_argument("--tube-blackout", action="store_true", default=os.environ.get("DH_TUBE_BLACKOUT") == "1")
+    env_mode, env_delay, env_jump = env_settings()
+    ap.add_argument("--tube-blackout", choices=MODES, nargs="?", const="stop", default=env_mode,
+                    help="camera blind in the tube (default DH_TUBE_BLACKOUT; bare flag = stop)")
+    ap.add_argument("--tube-recover-delay", type=float, default=env_delay,
+                    help="s after leaving the tube before tracking returns (default DH_TUBE_RECOVER_DELAY)")
+    ap.add_argument("--tube-reset-jump", default=env_jump, metavar="DX,DY,DZ|resume",
+                    help="odom-frame pose jump when tracking returns (default DH_TUBE_RESET_JUMP)")
     ap.add_argument("--rng-rate", type=float, default=40.0)
     ap.add_argument("--rng-noise", type=float, default=0.01)
     ap.add_argument("--rng-min", type=float, default=0.02)
@@ -104,14 +113,14 @@ def main():
     rng = np.random.default_rng()
     sigma = math.log(a.ev_lat_p95 / a.ev_lat_p50) / 1.645           # lognormal latency
     print(f"sensor bridge: instance {a.instance}, EV {a.ev_rate:.0f} Hz latency p50 {a.ev_lat_p50 * 1e3:.0f} / "
-          f"p95 {a.ev_lat_p95 * 1e3:.0f} ms, rangefinder {a.rng_rate:.0f} Hz, tube blackout {a.tube_blackout}", flush=True)
+          f"p95 {a.ev_lat_p95 * 1e3:.0f} ms, rangefinder {a.rng_rate:.0f} Hz", flush=True)
 
     anchor = None                 # (p0 NED, R_frd_ned) of the start pose
     queue = []                    # (deliver_at_sim_t, seq, payload)
     seq = 0
     next_ev = next_rng = None
     reset_counter = 0
-    blind = False
+    tube = R_last = None
     while True:
         with lock:
             t, p, R = state["t"], state["p"], state["R"]
@@ -126,25 +135,27 @@ def main():
             anchor = (p.copy(), rz(-psi0))
             next_ev = next_rng = t
             print(f"anchored VIO frame at world ({p[0]:.3f}, {p[1]:.3f}, {p[2]:.3f}), ENU heading {math.degrees(psi0):.1f} deg", flush=True)
+            tube = TubeBlackout(a.tube_blackout, psi0, a.tube_recover_delay, a.tube_reset_jump,
+                                log=lambda text: print(text, flush=True))
+            print(f"tube blackout: {tube.describe()}", flush=True)
 
         if t >= next_ev:
             next_ev += 1.0 / a.ev_rate
-            in_tube = TUBE[0][0] < p[0] < TUBE[0][1] and TUBE[1][0] < p[1] < TUBE[1][1]
-            if a.tube_blackout and in_tube:
-                if not blind:
-                    print(f"t={t:.2f} vision lost in the tube", flush=True)
-                blind = True
-            else:
-                if blind:
+            was_tracking = tube.tracking
+            tracking, pr = tube.step(t, p)               # pr: the world position cuVSLAM reports, None = nothing
+            if tracking:
+                R_last = R
+                if not was_tracking:                     # the drone's bridge: every lost -> tracking transition
                     reset_counter = (reset_counter + 1) % 256
-                    print(f"t={t:.2f} vision back, reset_counter {reset_counter}", flush=True)
-                blind = False
+                    print(f"t={t:.2f} reset_counter {reset_counter}", flush=True)
+            if pr is not None:
                 p0, Ra = anchor
-                odom_p = Ra @ (p - p0)                       # start-FLU position
-                odom_R = Ra @ R                              # body FLU -> start-FLU
-                pos = ENU_TO_NED @ odom_p + rng.normal(0, a.ev_noise, 3)
+                odom_p = Ra @ (pr - p0)                      # start-FLU position
+                odom_R = Ra @ R_last                         # body FLU -> start-FLU (frozen with the pose)
+                pos = ENU_TO_NED @ odom_p + (rng.normal(0, a.ev_noise, 3) if tracking else 0.0)
                 Rb = ENU_TO_NED @ odom_R @ FLU_TO_FRD
-                Rb = rz(math.radians(rng.normal(0, a.ev_yaw_noise_deg))) @ Rb
+                if tracking:
+                    Rb = rz(math.radians(rng.normal(0, a.ev_yaw_noise_deg))) @ Rb
                 lat = a.ev_lat_p50 * math.exp(sigma * rng.normal())
                 heapq.heappush(queue, (t + lat, seq, (pos, mat_to_quat(Rb), reset_counter)))
                 seq += 1

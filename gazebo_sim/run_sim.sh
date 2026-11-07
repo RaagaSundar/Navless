@@ -16,7 +16,9 @@
 #                              60-106 ms latency in a start-anchored FRD frame (horizontal position + yaw fused,
 #                              EKF2_EV_DELAY 60), plus a downward laser rangefinder as the height reference
 #                              (EKF2_HGT_REF 2, conditional range aid, barometer behind it).
-#   DH_TUBE_BLACKOUT=1  drone profile only: no vision inside the dark tube.
+#   DH_TUBE_BLACKOUT=stop|freeze  drone profile only: no vision (or the last pose repeated) inside the dark tube;
+#                       DH_TUBE_RECOVER_DELAY / DH_TUBE_RESET_JUMP as in dh/tube.py. Export the same values for
+#                       fly_navless.py, which blinds the node's odometry identically.
 #   PX4_PARAM_<NAME>=   any extra PX4 parameter override (applied every boot)
 #
 # Leaves gz + PX4 (+ sensor bridge) running in the background. Stop this instance with ./stop_sim.sh (same DH_INSTANCE).

@@ -6,6 +6,7 @@
   python3 fly_navless.py --instance 1 --tag fast -p cruise_speed_mps=0.8 -p max_lead_m=0.8
   python3 fly_navless.py --route route_window.json --noise 0.01 --vio-dropout 20:23
   python3 fly_navless.py --pilot modes -p fly_home=true    # pad, then the pilot re-arms for the home leg
+  export DH_TUBE_BLACKOUT=stop DH_TUBE_RESET_JUMP=resume   # blind in the tube: export for run_sim.sh as well
 
 navless_nav is a ROS 2 node and this machine has no ROS, so the node runs UNMODIFIED on a small
 in-process rclpy stand-in. FlightInterface below stands in for the stack's flight_interface. It
@@ -23,6 +24,10 @@ the old SITL shortcut, Offboard + arm straight away. Either way the pilot only a
 has sat within --settle-tol (15 cm, as navless_nav's pre-arm check) of the floor for 2 s, and with fly_home it re-arms after the pad landing.
 Odometry is Gazebo ground truth in the power-up frame: origin and heading at start, like cuVSLAM.
 Noise and latency are optional. Scoring reuses fly_course.py's (read-only import).
+--tube-blackout stop|freeze makes the camera blind inside the dark tube: vo_state 2, and no odometry (stop) or
+the last tracked pose repeated (freeze), optionally with a late recovery and a pose jump on the way out. It
+defaults to the DH_TUBE_* variables that sensor_bridge.py (drone profile) reads too, so PX4's vision loses,
+regains and jumps with the node's odometry, as through the drone's odometry bridge (dh/tube.py).
 
 Outputs runs/<timestamp>-navless[-tag]/: log.csv, summary.json
 """
@@ -44,6 +49,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(REPO, "navless_nav"))
+from dh.tube import MODES as TUBE_MODES, TubeBlackout, env_settings as tube_env, parse_jump  # noqa: E402
 
 ODOM_TOPIC = "/visual_slam/tracking/odometry"
 STATUS_TOPIC = "/visual_slam/status"
@@ -565,7 +571,31 @@ def main():
     ap.add_argument("--ceiling", type=float, default=2.5, help="room ceiling above the floor, m (home-leg report)")
     ap.add_argument("--settle-tol", type=float, default=0.15,
                     help="the pilot arms only once PX4's height has stayed within this of the floor for 2 s, m")
+    env_tube = tube_env()
+    ap.add_argument("--tube-blackout", choices=TUBE_MODES, default=env_tube[0],
+                    help="camera blind inside the tube: vo_state 2 and the odometry stops (stop) or repeats its last "
+                         "value (freeze). Default DH_TUBE_BLACKOUT, which sensor_bridge.py also reads")
+    ap.add_argument("--tube-recover-delay", type=float, default=env_tube[1],
+                    help="s after leaving the tube before tracking returns (default DH_TUBE_RECOVER_DELAY)")
+    ap.add_argument("--tube-reset-jump", default=env_tube[2], metavar="DX,DY,DZ|resume",
+                    help="odometry jump when tracking returns: odom-frame metres, or 'resume' to restart from the "
+                         "last tracked pose as if the drone had not moved while blind (default DH_TUBE_RESET_JUMP)")
     a = ap.parse_args()
+
+    def jump_key(text):
+        v = parse_jump(text)
+        return v if v is None or isinstance(v, str) else tuple(round(float(x), 4) for x in v)
+    try:
+        ours, theirs = (a.tube_blackout, a.tube_recover_delay, jump_key(a.tube_reset_jump)), \
+            (env_tube[0], env_tube[1], jump_key(env_tube[2]))
+    except ValueError as e:
+        ap.error(str(e))
+    if os.environ.get("DH_PX4_PROFILE") == "drone" and ours != theirs:
+        print(f"WARNING: tube settings {ours} differ from DH_TUBE_* {theirs}, which sensor_bridge.py reads: PX4's "
+              "vision and the node's odometry will not lose, regain and jump together", flush=True)
+    elif os.environ.get("DH_PX4_PROFILE") != "drone" and a.tube_blackout != "off":
+        print("note: PX4 is not on vision in this profile, so only the node is blind in the tube"
+              + ("; PX4 never sees the reset jump, so the drone physically moves by it" if ours[2] else ""), flush=True)
 
     os.environ["GZ_PARTITION"] = f"dh{a.instance}"     # before any gz Node exists
     os.environ.setdefault("GZ_IP", "127.0.0.1")
@@ -606,6 +636,11 @@ def main():
     CLOCK.t = st
     print(f"power-up pose: world ({p0[0]:.3f}, {p0[1]:.3f}, {p0[2]:.3f}), nose {math.degrees(yaw0):.1f} deg "
           f"ENU (bearing {(90 - math.degrees(yaw0)) % 360:.1f} deg from north)", flush=True)
+    tube = None
+    if a.tube_blackout != "off":
+        tube = TubeBlackout(a.tube_blackout, yaw0, a.tube_recover_delay, a.tube_reset_jump,
+                            log=lambda text: print(f"  [tube] {text}", flush=True))
+        print(f"tube blackout: {tube.describe()}", flush=True)
 
     node = course_mission.CourseMission()
     fi = FlightInterface(px4, p0, yaw0, course_mission.POSE_TOPIC, course_mission.TWIST_TOPIC,
@@ -643,23 +678,28 @@ def main():
         CLOCK.t = max(CLOCK.t, st)
         pilot.sticks()
 
-        # cuVSLAM stand-in: ground truth in the power-up frame at 30 Hz, delayed and noisy
+        # cuVSLAM stand-in: ground truth in the power-up frame at 30 Hz, delayed and noisy; blind in the tube
         if st - t_odom >= 1 / 30:
             t_odom = st
             c, s = math.cos(-yaw0), math.sin(-yaw0)
             d = p - p0
-            qv = np.array([c * d[0] - s * d[1], s * d[0] + c * d[1], d[2]])
-            if a.noise:
-                qv = qv + np.array([random.gauss(0, a.noise) for _ in range(3)])
-            odom_buf.append((st, qv))
+            qv = np.array([c * d[0] - s * d[1], s * d[0] + c * d[1], d[2]])     # true pose (dashboard)
+            tracking, pr = tube.step(st, p) if tube is not None else (True, p)
+            ov = None                                                        # what cuVSLAM publishes, if anything
+            if pr is not None:
+                d = pr - p0
+                ov = np.array([c * d[0] - s * d[1], s * d[0] + c * d[1], d[2]])
+                if a.noise and tracking:
+                    ov = ov + np.array([random.gauss(0, a.noise) for _ in range(3)])
+            odom_buf.append((st, ov))
             while len(odom_buf) > 1 and odom_buf[1][0] <= st - a.odom_delay:
                 odom_buf.popleft()
-            if odom_buf[0][0] <= st - a.odom_delay + 1e-9:
+            if odom_buf[0][0] <= st - a.odom_delay + 1e-9 and odom_buf[0][1] is not None:
                 msg = Odometry()
                 msg.pose.pose.position.x, msg.pose.pose.position.y, msg.pose.pose.position.z = map(float, odom_buf[0][1])
                 publish(ODOM_TOPIC, msg)
             since = st - (fi.armed_at or 1e18)
-            lost = bool(dropout and dropout[0] <= since < dropout[1])
+            lost = bool(dropout and dropout[0] <= since < dropout[1]) or not tracking
             publish(STATUS_TOPIC, VisualSlamStatus(2 if lost else 1))
             if relay is not None and relay.n_clients:
                 # The live dashboard (gazebo_sim/mirror/mirror.py --run): the drone's true pose in the
@@ -807,6 +847,7 @@ def main():
             "touchdown_from_second_takeover_s": None if td2 is None else round(float(SIMT[td2] - t2), 2),
             "touchdown_offset_from_launch_mark_cm": None if td2 is None else round(float(np.linalg.norm(P[td2, :2] - p0[:2])) * 100, 1),
         }
+    t_ref = fi.takeovers[0] if fi.takeovers else t_start
     summary = {
         "result": ("COLLISION + " if contacts else "") + (result or "?"),
         "route": OVERRIDES["route_file"],
@@ -829,6 +870,11 @@ def main():
         "takeovers_after_first_s": [round(t - fi.takeovers[0], 2) for t in fi.takeovers],
         "landings": landings,
         "home_leg": home,
+        "tube_blackout": None if tube is None else {
+            "mode": tube.mode, "recover_delay_s": tube.delay, "reset_jump": a.tube_reset_jump or None,
+            "times_from": "first takeover" if fi.takeovers else "start",
+            "passes": [{k: (None if v is None else round(v - t_ref, 2)) if k.endswith("_t") else v
+                        for k, v in ps.items()} for ps in tube.passes]},
     }
     with open(os.path.join(out, "log.csv"), "w", newline="") as f:
         wr = csv.writer(f)
