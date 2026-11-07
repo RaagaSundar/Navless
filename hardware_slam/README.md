@@ -9,6 +9,61 @@ Double-click **Open SLAM.command** if the SSH tunnel needs reopening. It asks
 for the Jetson's existing password when required; credentials are not stored.
 The laptop and Jetson must be on a network that can reach skybeta-11.local.
 
+## Modes: flight (default) and mapping
+
+`handheld-slam.service` runs in one of two modes, set per drone with `HANDHELD_SLAM_MODE=` in
+`/etc/skybeta/drone.env`. With nothing set, it uses `flight`.
+
+| | `flight` (default) | `mapping` |
+|---|---|---|
+| Stack `competitor` window | **left alone**, so `COMPETITOR_PKG` (the team's flight code) runs | replaced by `sleep infinity`, so **no flight code runs** |
+| SLAM | the stack's stock settings | localization + mapping, with visualisation |
+| PX4 vision feed | the stack's stock bridge, or the gate with `HANDHELD_SLAM_PX4_GATE=1` (below) | fed through `odom_gate.py` |
+| Runs | `odom_gate.py` only, in its own tmux window `gate` (→ `/mapping/validated_odometry`, used by `depthcloud/cloud_localize.py` and the planner), restarted by the service if it exits | `odom_gate.py` + `map_server.py` (viewer, ~50% CPU) as children of the service |
+
+Flight mode also **undoes** a previous mapping session: if the competitor window is `sleep infinity`,
+SLAM is in mapping mode, or the bridge is gated (without `HANDHELD_SLAM_PX4_GATE=1`), those windows are
+restarted with the stack's own commands (`run_competitor.sh`, `run_slam.sh <camera pose>`,
+`run_bridge.sh`). Restarting SLAM resets odometry, so only switch modes with the drone on the ground.
+It's idempotent: windows that are already right are left alone, so the service's automatic restarts
+never disturb a running stack.
+
+### Feeding PX4 through the gate: `HANDHELD_SLAM_PX4_GATE=1` (flight mode, default 0)
+
+- **Stock (0):** the bridge forwards every cuVSLAM sample. While tracking is lost (the dark tube, a
+  covered lens), a frozen pose can keep arriving, so PX4 believes the drone is stationary, doesn't brake,
+  and coasts blind.
+- **Gate (1):** PX4 gets only samples that pass the gate (tracking, ≤ 250 ms old, sane). During a loss
+  PX4 gets nothing, knows it's blind, and dead-reckons. The bridge is rerouted only after the gate is
+  seen passing samples. If it isn't (cuVSLAM not tracking, CPU starved), PX4 stays on the stock feed and
+  the service log says why.
+- **Costs (a team decision):**
+  - Team code sits in the VIO → PX4 path. The gate runs in its own window (`Ctrl-b`, window `gate`),
+    so stopping or restarting this service doesn't cut PX4's vision, and the service restarts the
+    gate within 5 s if it exits.
+  - It's CPU-sensitive: at 5 Hz stereo plus the map viewer, sample age reached about 245 ms of its
+    250 ms limit and most samples were dropped. Keep `stereo_cloud` at ≤ 3 Hz, run no `map_server.py`,
+    and watch `/mapping/gate_status` `sample_age_ms` with the whole flight stack up.
+  - With the magnetometer on (`EKF2_MAG_TYPE` 0), PX4 swings its heading about 90° after a 0.5 s vision
+    gap (Gazebo finding). `EKF2_MAG_TYPE=5` avoids it.
+- These are the manual tmux steps from the team's tube thread, automated.
+
+Preview without changing anything:
+
+```bash
+HANDHELD_SLAM_DRYRUN=1 ~/team_ws/handheld_slam/run_mapping.sh
+```
+
+To make a map, set `HANDHELD_SLAM_MODE=mapping` in `/etc/skybeta/drone.env`, then run
+`sudo systemctl restart handheld-slam.service`. Set it back to `flight` (or delete the line) and restart
+the service before the drone flies. Mapping mode closes the flight-mode `gate` window, so only one gate
+ever runs.
+
+To install or update on a drone, copy `run_mapping.sh`, `container_mode.sh`, `stop_mapping.sh`,
+`odom_gate.py` and `map_server.py` to `~/team_ws/handheld_slam/`. Run the dry run above, then
+`sudo systemctl enable --now handheld-slam.service` (or `restart`). All of this is on the ground,
+disarmed.
+
 ## Make a map
 
 1. Keep the drone disarmed, with props removed for hand-carried testing.
