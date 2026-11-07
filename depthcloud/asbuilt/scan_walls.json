@@ -1,0 +1,122 @@
+{
+ "note": "best guess from the phone scan, not tape-measured; course frame as the .obj (m, origin floor centre) and course_v3.json (in, origin SW net corner)",
+ "thickness_in": 4,
+ "height_in": 68,
+ "walls": [
+  {
+   "name": "M1 maze divider",
+   "start_m": [
+    -2.066,
+    0.508
+   ],
+   "end_m": [
+    -1.786,
+    2.456
+   ],
+   "start_in": [
+    38.7,
+    140.0
+   ],
+   "end_in": [
+    49.7,
+    216.7
+   ],
+   "length_m": 1.968,
+   "bearing_deg": 8.2,
+   "scan_support": 1.0,
+   "moved_from_plan_m": 0.168
+  },
+  {
+   "name": "M2 maze divider",
+   "start_m": [
+    -0.59,
+    1.539
+   ],
+   "end_m": [
+    -0.458,
+    3.048
+   ],
+   "start_in": [
+    96.8,
+    180.6
+   ],
+   "end_in": [
+    102.0,
+    240.0
+   ],
+   "length_m": 1.515,
+   "bearing_deg": 5.0,
+   "scan_support": 1.0,
+   "moved_from_plan_m": 0.293
+  },
+  {
+   "name": "M3 maze divider",
+   "start_m": [
+    1.019,
+    0.508
+   ],
+   "end_m": [
+    1.078,
+    2.431
+   ],
+   "start_in": [
+    160.1,
+    140.0
+   ],
+   "end_in": [
+    162.4,
+    215.7
+   ],
+   "length_m": 1.924,
+   "bearing_deg": 1.8,
+   "scan_support": 1.0,
+   "moved_from_plan_m": 0.76
+  },
+  {
+   "name": "A1 approach wall",
+   "start_m": [
+    -1.56,
+    -0.871
+   ],
+   "end_m": [
+    -1.264,
+    0.406
+   ],
+   "start_in": [
+    58.6,
+    85.7
+   ],
+   "end_in": [
+    70.2,
+    136.0
+   ],
+   "length_m": 1.311,
+   "bearing_deg": 13.0,
+   "scan_support": 1.0,
+   "moved_from_plan_m": 0.454
+  },
+  {
+   "name": "C1 chicane wall",
+   "start_m": [
+    1.517,
+    -1.135
+   ],
+   "end_m": [
+    1.169,
+    0.406
+   ],
+   "start_in": [
+    179.7,
+    75.3
+   ],
+   "end_in": [
+    166.0,
+    136.0
+   ],
+   "length_m": 1.58,
+   "bearing_deg": 167.3,
+   "scan_support": 1.0,
+   "moved_from_plan_m": 0.094
+  }
+ ]
+}

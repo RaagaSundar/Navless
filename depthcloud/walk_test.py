@@ -24,8 +24,11 @@ b = go back one, q = finish and write the results.
   python3 walk_test.py --selftest            synthetic walk, no ROS: checks the maths and the outputs
 
 Course coordinates: metres, x east, y north, origin at the floor centre (same as the .obj and the
-routes). Checkpoints come from gazebo_sim/course/course_v3.json: inches from the net's south-west
-corner, converted as (inches - 120) * 0.0254.
+routes). Checkpoints come from the course json, the AS-BUILT one by default
+(gazebo_sim/course/course_asbuilt.json; --course plan for course_v3.json): inches from the net's
+south-west corner, converted as (inches - 120) * 0.0254. Run cloud_localize on the same course.
+On the as-built course the floor-line corners are computed from the scanned walls, not observed: if the
+real tape corner is elsewhere, put the drone on the computed spot (measure from the west net), not the tape.
 """
 import argparse
 import csv
@@ -43,21 +46,34 @@ def course_m(x_in, y_in):
     return round((x_in - 120) * IN, 4), round((y_in - 120) * IN, 4)
 
 
-# (name, x, y, what to look for). In the window route's order. The floor-line corners are the taped
-# line's corners: put the drone's centre over the corner.
-CHECKPOINTS = [
-    ("launch mark", *course_m(21, 156), "start here, nose north, BEFORE starting cloud_localize"),
-    ("line corner 1", *course_m(21, 221.75), "floor line: first corner, north end of the first corridor"),
-    ("line corner 2", *course_m(66, 221.75), "floor line: east end of that top stretch"),
-    ("line corner 3", *course_m(66, 158.25), "floor line: south end, between M1 and M2"),
-    ("line corner 4", *course_m(110, 158.25), "floor line: east end of that bottom stretch"),
-    ("line corner 5", *course_m(110, 221.75), "floor line: north end, between M2 and M3"),
-    ("line end", *course_m(132, 221.75), "floor line: its end, at gate A (maze exit)"),
-    ("tube north mouth", *course_m(211, 168), "centre of the tube's north opening, on the floor"),
-    ("tube middle", *course_m(211, 138), "halfway through the tube (dark: the hard one)"),
-    ("tube south mouth", *course_m(211, 108), "centre of the tube's south opening"),
-    ("landing pad", *course_m(39.6, 88.8), "centre of the landing pad rings"),
-]
+COURSE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "gazebo_sim", "course")
+COURSES = {"asbuilt": os.path.join(COURSE_DIR, "course_asbuilt.json"),
+           "plan": os.path.join(COURSE_DIR, "course_v3.json")}
+LINE_HINTS = ["first corner, north end of the first corridor", "east end of that top stretch (over M1)",
+              "south end, between M1 and M2", "east end of that bottom stretch (under M2)",
+              "north end, between M2 and M3"]
+
+
+def checkpoints_from(course_json):
+    """(name, x, y, what to look for) in the window route's order, from a course json: launch mark, the
+    floor line's corners and end (gate A), the tube's mouths and middle, the landing pad centre."""
+    c = json.load(open(course_json))
+    line = c["floor_line_in"]
+    tube = c["tunnel"]["footprint_in"]
+    tx = (tube["x_min"] + tube["x_max"]) / 2
+    cps = [("launch mark", *course_m(*c["launch_mark_in"]), "start here, nose north, BEFORE starting cloud_localize")]
+    for k, p in enumerate(line[1:-1]):
+        hint = LINE_HINTS[k] if k < len(LINE_HINTS) else "floor line corner"
+        cps.append((f"line corner {k + 1}", *course_m(*p), f"floor line: {hint}"))
+    cps.append(("line end", *course_m(*line[-1]), "floor line: its end, at gate A (maze exit)"))
+    cps += [("tube north mouth", *course_m(tx, tube["y_max"]), "centre of the tube's north opening, on the floor"),
+            ("tube middle", *course_m(tx, (tube["y_min"] + tube["y_max"]) / 2), "halfway through the tube (dark: the hard one)"),
+            ("tube south mouth", *course_m(tx, tube["y_min"]), "centre of the tube's south opening"),
+            ("landing pad", *course_m(*c["landing_pad_in"]["center"]), "centre of the landing pad rings")]
+    return cps
+
+
+CHECKPOINTS = checkpoints_from(COURSES["asbuilt"] if os.path.exists(COURSES["asbuilt"]) else COURSES["plan"])
 LAUNCH_YAW_DEG = 90.0                      # facing north, as cloud_localize and navless_nav assume
 WINDOW_S = 2.0                             # seconds of samples averaged at each checkpoint
 GOOD = ("tracking", "weak")                # statuses where the pose was checked against the model
@@ -268,9 +284,9 @@ class WalkLog:
 
 
 # ---------------------------------------------------------------------------------------------
-def selftest():
+def selftest(course_json=COURSES["asbuilt"]):
     """Synthetic walk: the localizer sits 3 cm off the truth, odometry drifts 5% and 2 deg."""
-    log = WalkLog()
+    log = WalkLog(CHECKPOINTS)
     t = 100.0
     odom_yaw0 = 30.0                              # odom frame starts rotated, like real cuVSLAM
     for i, (name, tx, ty, _) in enumerate(CHECKPOINTS):
@@ -295,8 +311,7 @@ def selftest():
     want = 0.05 * math.hypot(far["truth"][0] - CHECKPOINTS[0][1], far["truth"][1] - CHECKPOINTS[0][2])
     assert far["odom_only_error_m"] > want, far           # 5% scale + 2 deg drift shows up
     here = os.path.dirname(os.path.abspath(__file__))
-    out = log.write(os.path.join(here, "walk_test_selftest"),
-                    os.path.join(here, "..", "gazebo_sim", "course", "course_v3.json"))
+    out = log.write(os.path.join(here, "walk_test_selftest"), course_json)
     print(log.summary())
     print(f"selftest OK, outputs in {out}")
 
@@ -308,7 +323,7 @@ def run(out, course_json):
     from nav_msgs.msg import Odometry
     from std_msgs.msg import String
 
-    log = WalkLog()
+    log = WalkLog(CHECKPOINTS)
     rclpy.init()
     node = rclpy.create_node("walk_test")
     deg = math.degrees
@@ -389,21 +404,25 @@ def run(out, course_json):
 
 
 def main():
-    here = os.path.dirname(os.path.abspath(__file__))
+    global CHECKPOINTS
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", default=os.path.join("/root/team_ws/walk_tests", time.strftime("%Y%m%d-%H%M%S")))
-    ap.add_argument("--course", default=os.path.join(here, "..", "gazebo_sim", "course", "course_v3.json"),
-                    help="course_v3.json, for the walls on plan.svg (optional)")
+    ap.add_argument("--course", default="asbuilt",
+                    help="asbuilt (the real course, default), plan (course_v3.json, FlyX Lab), or a course json "
+                         "path: the checkpoints and the walls on plan.svg. Run cloud_localize on the same course.")
     ap.add_argument("--list", action="store_true", help="print the checkpoints and exit")
     ap.add_argument("--selftest", action="store_true", help="synthetic walk, no ROS")
     a = ap.parse_args()
+    course_json = COURSES.get(a.course, a.course)
+    CHECKPOINTS = checkpoints_from(course_json)
+    print(f"course: {a.course} ({os.path.normpath(course_json)})")
     if a.list:
         for i, (n, x, y, h) in enumerate(CHECKPOINTS):
             print(f"{i:2d}  {n:<18} ({x:+.3f}, {y:+.3f})  {h}")
     elif a.selftest:
-        selftest()
+        selftest(course_json)
     else:
-        run(a.out, a.course)
+        run(a.out, course_json)
 
 
 if __name__ == "__main__":

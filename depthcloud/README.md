@@ -75,10 +75,55 @@ Check the maths offline first (no ROS needed):
 python3 cloud_localize.py --selftest test_room.obj
 ```
 
-On the drone, with `stereo_cloud.py` already running, start it against the course model (`dronehacks-course-v3.obj`: metres, Z up, origin at the centre of the floor). With no `init_*` parameters, the **drone's centre (`base_link`)** starts on the model's **launch mark** (−2.515, 0.914), standing at `init_base_z` (0.07 m, like `navless_nav`'s `start_height_m`), facing **north (90°)**. The drone is always placed facing forward along the guideline, which runs north from the mark. The camera is placed from that through the `base_link` → camera mount from TF, on the first cloud. If TF has no mount after 3 s, it uses `mount_fallback` (Koji's measured `0.1053,0,0.0304`). `-p init_z:=<camera height>` gives the old behaviour, putting the camera itself at (`init_x`, `init_y`, `init_z`).
+### Two courses: as-built (real) and plan (FlyX Lab)
+
+The organisers' `course_v3.json` / `dronehacks-course-v3.obj` were a **temporary plan**. The real course, from a phone LiDAR scan on 2026-11-06, matches the plan for the net, the barrier line, the window wall C2a, the tube and the boulders (within about 2–6 cm). But five walls are elsewhere:
+
+| Wall | Moved | Leans |
+|---|---|---|
+| M1 | 17 cm | 8° |
+| M2 | 29 cm | 5° |
+| M3 | **76 cm east** | 2° |
+| A1 | 45 cm | 13° |
+| C1 | 9 cm | 13° |
+
+FlyX Lab still simulates the plan. So there are two courses, and every tool picks one:
+
+| Course | json | .obj | For |
+|---|---|---|---|
+| `asbuilt` | `gazebo_sim/course/course_asbuilt.json` | `dronehacks-course-asbuilt.obj` | the real drone, and our own sims of it |
+| `plan` | `gazebo_sim/course/course_v3.json` | `dronehacks-course-v3.obj` | FlyX Lab |
+
+- **How the as-built course is made:** `asbuilt/make_asbuilt.py` takes the plan plus the scanned walls (`asbuilt/scan_walls.json`, fitted by `asbuilt/scan/`). It writes the as-built json and, given the plan .obj, the as-built .obj. It needs only Python 3, no numpy:
+  ```bash
+  python3 depthcloud/asbuilt/make_asbuilt.py --obj path/to/dronehacks-course-v3.obj
+  ```
+  The .obj lands next to the plan's. Neither .obj is in git.
+- **What it recomputes:** the moved walls keep their names. The floor line, gate A and the wall-bounded checkpoint zones are worked out from the walls, using the same rule that reproduces the plan's own floor line exactly.
+- **What it can't give you:** the floor line isn't observed (the tape doesn't show in the scan), and **nothing is tape-measured yet**. Fine for localization and simulation. Measure the moved walls' ends from the west net before planning a flight route on it.
+
+`cloud_localize.py` uses the **as-built** course by default: `-p course:=asbuilt` (default) or `plan`. It finds the .obj next to the script, in `~/team_ws/src/dronehacks`, or in the repo root; `-p obj:=...` overrides it. `walk_test.py --course asbuilt|plan` works the same way.
+
+Simulated on the as-built course (2026-11-07, generated camera data, so this tests the matching on the new walls, not real stereo):
+
+| Test | As-built | Plan, same test |
+|---|---|---|
+| Self-test, 40 random views | 24 pass / 9 close / 5 held / **2 bad** | 28 / 7 / 5 / 0 bad |
+| Bench, drone still on the launch mark | 0.0–0.3 cm, fit 0.75–0.81 | 0.0–0.2 cm |
+| Window route (test route from `course_asbuilt.json`), facing travel, drifting odometry, 2 seeds | median 4–5 cm, 90% 8–10 cm, max 18–23 cm; heading median 1.5° | median 3–4 cm, max 9–11 cm |
+| Same, with 15% VSLAM dropouts + 2 reset jumps | median 10 cm, 90% 22 cm, max 40 cm | median 8–10 cm, max 23–37 cm |
+| Same route, odometry only (no course matching) | median 26 cm, max 143 cm | |
+
+- **The 2 bad views are borderline:** both have status `weak` and fewer than 100 matched points. One looks north-west from beside A1, the other looks at the tube from the south-east. Treat `weak` as "don't steer on it", as the planner already does (it fuses only `tracking`).
+- **Flying the plan's route through the as-built walls:** 26 of its 341 points come within 24 cm (the drone's half-width) of a wall, and its centre line passes **3.6 cm** from one. The drone needs a route exported from the as-built course.
+
+### Running it
+
+On the drone, with `stereo_cloud.py` already running, start it against the course model (metres, Z up, origin at the centre of the floor). With no `init_*` parameters, the **drone's centre (`base_link`)** starts on the model's **launch mark** (−2.515, 0.914), standing at `init_base_z` (0.07 m, like `navless_nav`'s `start_height_m`), facing **north (90°)**. The drone is always placed facing forward along the guideline, which runs north from the mark. The camera is placed from that through the `base_link` → camera mount from TF, on the first cloud. If TF has no mount after 3 s, it uses `mount_fallback` (Koji's measured `0.1053,0,0.0304`). `-p init_z:=<camera height>` gives the old behaviour, putting the camera itself at (`init_x`, `init_y`, `init_z`).
 
 ```bash
-python3 /root/team_ws/src/dronehacks/cloud_localize.py --ros-args -p obj:=/root/team_ws/src/dronehacks/dronehacks-course-v3.obj
+python3 /root/team_ws/src/dronehacks/cloud_localize.py                         # as-built course
+python3 /root/team_ws/src/dronehacks/cloud_localize.py --ros-args -p course:=plan   # FlyX Lab's plan
 ```
 
 Start it with `docker exec -d ...` or in its own shell: a background `&` inside a plain `docker exec` is killed when that exec ends.
@@ -144,7 +189,7 @@ Other options: `yaw=fixed|travel`, `seed=`, `odom_drop=0.15` (untrusted VSLAM fr
 
 **What the simulations do NOT show:** the camera data in them is generated from the .obj, with made-up noise and clutter. They test the matching and fusion logic, not real stereo depth, the real net, real lighting, or the real VSLAM's drift. See the team Slack post for the full list.
 
-The course .obj (`dronehacks-course-v3.obj`, 5.7 MB, from the organisers' zip) is not in the repo. Copy it next to the script.
+The course .objs are not in the repo: `dronehacks-course-v3.obj` (5.7 MB) comes from the organisers' zip, and `dronehacks-course-asbuilt.obj` is made from it by `asbuilt/make_asbuilt.py`. Copy both next to the script, or into `~/team_ws/src/dronehacks` on the drone.
 
 `search_heading:=true` (or the viewer's checkbox) tries every heading from the start position instead. That's unreliable on the launch mark, because Barrier 1 and the M1 divider, both about 0.5 m away, look alike.
 
@@ -162,7 +207,7 @@ Self-test options: `trials=`, `range=`, `perturb=` (0.4 is about frame-to-frame 
 2. Start `stereo_cloud.py` (3 Hz) and `cloud_localize.py` as above, in their own `docker exec -d` shells.
 3. Start the walk test in an interactive shell, still on the mark:
    ```bash
-   docker exec -it skybeta-stack bash -lc "source skybeta_env.sh; python3 /root/team_ws/src/dronehacks/walk_test.py --course /root/team_ws/src/Navless/gazebo_sim/course/course_v3.json"
+   docker exec -it skybeta-stack bash -lc "source skybeta_env.sh; python3 /root/team_ws/src/dronehacks/walk_test.py --course /root/team_ws/src/Navless/gazebo_sim/course/course_asbuilt.json"
    ```
 4. Press Enter for checkpoint 0 (the launch mark) straight away. That also anchors the odometry-only comparison.
 5. Carry the drone at a steady walk, roughly along the route, facing the direction of travel, and put it down on each checkpoint. Wait 3 s, press Enter. `s` skips a checkpoint, `b` goes back one, `q` finishes. A live line every 2 s shows the status, fit, current estimate and distance to the next checkpoint. Watch `http://<drone>:8082/` too.

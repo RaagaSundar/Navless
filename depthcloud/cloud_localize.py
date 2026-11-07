@@ -46,6 +46,24 @@ import numpy as np
 R_OPT_TO_FLU = np.array([[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
 FT = 0.3048
 
+# The two courses. asbuilt = the real course (phone scan; made by depthcloud/asbuilt/make_asbuilt.py from the
+# plan .obj), plan = the organisers' temporary plan, which FlyX Lab still simulates. Neither .obj is in git.
+COURSE_OBJ = {"asbuilt": "dronehacks-course-asbuilt.obj", "plan": "dronehacks-course-v3.obj"}
+
+
+def find_course_obj(course):
+    """Path of the course's .obj: next to this script, in ~/team_ws/src/dronehacks (the drone), the repo root,
+    or its parent. '' if not found."""
+    name = COURSE_OBJ.get(course)
+    if name is None:
+        raise SystemExit(f"course must be one of {sorted(COURSE_OBJ)}, not {course!r}")
+    here = os.path.dirname(os.path.abspath(__file__))
+    for d in (here, os.path.expanduser("~/team_ws/src/dronehacks"), "/root/team_ws/src/dronehacks",
+              os.path.join(here, ".."), os.path.join(here, "..", "..")):
+        if os.path.exists(os.path.join(d, name)):
+            return os.path.normpath(os.path.join(d, name))
+    return ""
+
 
 # ----------------------------------------------------------------------------------------------
 # Course model
@@ -1223,9 +1241,15 @@ def main():
                 # dynamic typing so `-p init_yaw_deg:=90` (an int) works as well as 90.0
                 v = self.declare_parameter(name, default, ParameterDescriptor(dynamic_typing=True)).value
                 return float(v) if isinstance(default, float) else v
-            obj = p("obj", "")
+            # Course model: the AS-BUILT course by default (the real course, from the phone scan; see
+            # depthcloud/asbuilt/). course:=plan is the organisers' temporary plan, which FlyX Lab uses.
+            # obj:= overrides both.
+            course, obj_param = str(p("course", "asbuilt")), p("obj", "")
+            obj = obj_param or find_course_obj(course)
             if not obj:
-                raise SystemExit("set the course model: --ros-args -p obj:=/path/to/course.obj")
+                raise SystemExit(f"no {COURSE_OBJ.get(course, course)} found next to this script, in "
+                                 "~/team_ws/src/dronehacks or the repo root: set -p obj:=/path/to/course.obj")
+            self.get_logger().info(f"course: {'obj:= override' if obj_param else course} ({obj})")
             t0 = time.perf_counter()
             model = CourseModel(obj, p("obj_up", "z"), p("obj_scale", 1.0),
                                 p("model_spacing", 0.04), p("match_ceiling", True))
