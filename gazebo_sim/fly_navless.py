@@ -336,7 +336,10 @@ class FlightInterface:
             "landed": self.px4.landed_state == LANDED_ON_GROUND,
             "nav_state_name": "OFFBOARD" if self.px4.main_mode == PX4_OFFBOARD else str(self.px4.main_mode),
             "offboard_active": self.offboard_active,
-            "local_enu": None if loc is None else [float(x) for x in loc],
+            # The real flight_interface reports ned_to_enu(PX4 local), which on the drone is the odom frame.
+            # Report PX4's estimate in odom too (exactly ned_to_enu in the drone profile), not in world
+            # coordinates, which carried a constant +0.07 m (the base_link height) into height checks.
+            "local_enu": None if loc is None else [float(x) for x in self.unrot(loc - self.p0)],
             "setpoint_mode": self.mode, "clamped": self.clamped, "frozen": False,
             "envelope": {"min_altitude_m": self.min_alt, "max_altitude_m": self.max_alt,
                          "max_speed_mps": self.max_speed},

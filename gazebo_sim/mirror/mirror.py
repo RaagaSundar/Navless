@@ -45,6 +45,23 @@ try:                                    # simulated side ToF, from the course co
 except Exception:                       # noqa: BLE001 - optional; the page says it is missing
     side_ranges_q = None
 
+sys.path.insert(0, os.path.join(REPO, "tube"))
+try:                                    # the drone's own centring maths (tube/tube_node.py), same gate
+    from tube_node import tube_offset   # noqa: E402
+except Exception:                       # noqa: BLE001
+    tube_offset = None
+# navless_course.launch.py's tube_node settings, so the page shows what the drone would publish.
+TUBE_GATE = dict(min_range=0.15, max_range=1.3, left_mount=0.075, right_mount=0.075,
+                 expected_width=1.45, width_tol=0.15)
+
+
+def tube_view(tof):
+    """(offset_left_m, width_m) as tube_node would publish it, or None when it would stay silent."""
+    if tube_offset is None or not tof or tof.get("left") is None or tof.get("right") is None:
+        return None
+    r = tube_offset(tof["left"], tof["right"], **TUBE_GATE)
+    return None if r is None else [round(r[0], 3), round(r[1], 3)]
+
 IN = 0.0254
 HALF = 3.048
 LAUNCH = (-2.5146, 0.9144)
@@ -320,7 +337,10 @@ document.getElementById('tof').innerHTML=['left','right'].map(k=>`<span class="l
 const f=v=>v==null?'—':v.map(x=>x.toFixed(2)).join(', ');
 document.getElementById('info').innerHTML=`<dt>pose from</dt><dd>${s.pose_src||'—'}</dd><dt>course xyz (m)</dt><dd>${f(s.world)}</dd>
 <dt>heading</dt><dd>${s.world?(90-s.yaw_enu*57.2958).toFixed(0)+'° from north':'—'}</dd><dt>speed</dt><dd>${s.speed==null?'—':s.speed.toFixed(2)+' m/s'}</dd>
-<dt>setpoint</dt><dd>${f(s.setpoint)}</dd><dt>sim ToF</dt><dd>${s.tof_sim_note}</dd><dt>real ToF</dt><dd>${s.tof_real_note}</dd>
+<dt>setpoint</dt><dd>${f(s.setpoint)}</dd>
+<dt>tube offset (sim)</dt><dd>${s.tube_sim?`${(s.tube_sim[0]*100).toFixed(1)} cm to the left · width ${s.tube_sim[1].toFixed(2)} m`:'— (tube_node silent: not in the tube)'}</dd>
+<dt>tube offset (real)</dt><dd>${s.tube_real?`${(s.tube_real[0]*100).toFixed(1)} cm to the left · width ${s.tube_real[1].toFixed(2)} m`:'—'}</dd>
+<dt>sim ToF</dt><dd>${s.tof_sim_note}</dd><dt>real ToF</dt><dd>${s.tof_real_note}</dd>
 <dt>placed by</dt><dd>${s.placement}</dd><dt>camera mount</dt><dd>${s.cam_source}</dd><dt>sim camera</dt><dd>${s.camera_hz.toFixed(0)} Hz</dd>`;
 document.getElementById('pre').innerHTML=(s.preflight||[]).map(([n,ok,d])=>`<div><b style="color:${ok===true?'var(--ok)':ok===false?'var(--bad)':'var(--warn)'}">${ok===true?'✓':ok===false?'✗':'?'}</b><div>${n}<br><span>${d}</span></div></div>`).join('');
 draw(s);}catch(e){pill('run','dashboard offline','var(--bad)');}setTimeout(poll,150);}poll();
@@ -448,7 +468,7 @@ def main():
               "tof_sim": None, "tof_real": None,
               "tof_sim_note": "course model raycast" if side_ranges_q else "dh/tof.py not available yet",
               "tof_real_note": "waiting", "placement": "power-up pose (launch mark, nose north)",
-              "preflight": []}
+              "preflight": [], "tube_sim": None, "tube_real": None}
     status_lock = threading.Lock()
     cmap = json.dumps(course_map(a.route))
 
@@ -573,8 +593,10 @@ def main():
                               yaw_enu=round(yaw_of(q), 4), speed=None if speed is None else round(speed, 2),
                               setpoint=None if sp is None else [round(v, 3) for v in sp],
                               vo_state=f.get("vo_state"), armed=f.get("armed"), offboard=f.get("offboard"),
-                              tof_sim=tof_sim,
+                              tof_sim=tof_sim, tube_sim=tube_view(tof_sim),
                               cam_source="drone's static TF" if cam else "sister airframe's measured mount")
+        with status_lock:
+            status["tube_real"] = tube_view(status.get("tof_real"))
         with status_lock:
             status["preflight"] = preflight_checks(fd, status["real_cam"])
         time.sleep(1 / 30)
