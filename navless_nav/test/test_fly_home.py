@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 T = [0.0]           # sim time, s
 OVERRIDES = {}      # parameter overrides for the next node
 SENT = []           # (topic, msg) the node published
+Z_BIAS = [0.0]      # PX4's height error vs odom, m (pre-arm check tests)
 
 
 class Msg:
@@ -94,6 +95,7 @@ def fly(node, px4, pos, until, max_s=600.0, dt=0.1):
         node.odometry_cb(types.SimpleNamespace(pose=types.SimpleNamespace(
             pose=types.SimpleNamespace(position=types.SimpleNamespace(
                 x=pos[0], y=pos[1], z=pos[2])))))
+        px4['local_enu'] = [pos[0], pos[1], pos[2] + Z_BIAS[0]]
         node.state_cb(types.SimpleNamespace(data=json.dumps(px4)))
         SENT.clear()
         node.tick()
@@ -109,7 +111,7 @@ def fly(node, px4, pos, until, max_s=600.0, dt=0.1):
                 pos[:] = [pos[0] + v.x * dt, pos[1] + v.y * dt, pos[2] + v.z * dt]
             pos[2] = max(0.0, pos[2])
             px4['landed'] = pos[2] == 0.0
-            if px4['landed'] and node.state == 'LAND':       # COM_DISARM_LAND
+            if px4['landed'] and node.state in ('LAND', 'REFUSED'):   # COM_DISARM_LAND
                 px4.update(armed=False, offboard_active=False)
         top = max(top, pos[2])
         T[0] += dt
@@ -122,12 +124,14 @@ def arm(px4):
 
 def run(**overrides):
     T[0] = 0.0
+    Z_BIAS[0] = 0.0
     OVERRIDES.clear()
     OVERRIDES.update(route_file='route_gate_b.json', cruise_speed_mps=1.0, **overrides)
     node = course_mission.CourseMission()
     px4 = {'armed': False, 'offboard_active': False, 'landed': True}
     pos = [0.0, 0.0, 0.0]
-    fly(node, px4, pos, lambda: True)          # one disarmed tick: streams position
+    # disarmed on the floor past the pre-arm settle: streams position
+    fly(node, px4, pos, lambda: T[0] >= 2.5)
     arm(px4)
     fly(node, px4, pos, lambda: not px4['armed'])
     return node, px4, pos
@@ -144,7 +148,8 @@ def test_fly_home_rearm_flies_back_to_the_launch_mark():
     node, px4, pad = run(fly_home=True)
     assert node.state == 'WAIT_FOR_OFFBOARD' and node.going_home
     assert math.dist(pad[:2], (0.0, 0.0)) > 1.0     # landed on the pad, not home
-    fly(node, px4, pad, lambda: True, max_s=5.0)    # disarmed: nothing moves
+    t0 = T[0]                                       # disarmed: nothing moves,
+    fly(node, px4, pad, lambda: T[0] - t0 >= 2.5, max_s=5.0)   # heights re-checked
     assert node.state == 'WAIT_FOR_OFFBOARD'
     pos = list(pad)
     arm(px4)

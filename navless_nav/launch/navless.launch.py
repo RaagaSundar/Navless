@@ -46,6 +46,11 @@ ARGUMENTS = [
      'after the pad landing, the next arming flies back over the wall to '
      'the launch mark and lands there'),
     ('home_altitude_m', '2.03', 'fly-home hop height above the floor, m'),
+    ('prearm_height_tol_m', '0.15',
+     'pre-arm check: no setpoint stream (so no takeover) until PX4 height '
+     'and odom z agree to this, m; 0 = off'),
+    ('prearm_settle_s', '2.0',
+     'pre-arm check: how long they must agree without a break, s'),
     ('competitor', 'true', 'also start the course node'),
 ]
 
@@ -57,7 +62,7 @@ MISSION_PARAMS = ('takeoff_altitude_m', 'arrival_radius_m', 'takeoff_timeout_s',
                   'cruise_speed_mps', 'max_lead_m', 'max_lat_accel_mps2',
                   'net_margin_m',
                   'land_at_end', 'land_speed_mps', 'fly_home',
-                  'home_altitude_m')
+                  'home_altitude_m', 'prearm_height_tol_m', 'prearm_settle_s')
 
 
 def generate_launch_description():
