@@ -68,6 +68,14 @@ def test_slow_launch_uses_the_base_defaults():
         assert slow[name] == base[name], name
 
 
+def test_blind_carry_is_on_and_forwarded():
+    # The team turned blind_carry on (tube only) for the course launches. If it weren't forwarded,
+    # navless.launch.py's default (false) would silently apply instead.
+    assert _arguments(COURSE).get('blind_carry') == 'true'
+    assert 'blind_carry' in _forwarded(COURSE)
+    assert 'blind_carry' not in _slow_values()             # the slow launch inherits it
+
+
 def test_slow_launch_overrides_only_what_the_course_launch_forwards():
     assert set(_slow_values()) <= set(_arguments(COURSE)) & _forwarded(COURSE)
     assert "'navless_course.launch.py'" in open(SLOW, encoding='utf-8').read()

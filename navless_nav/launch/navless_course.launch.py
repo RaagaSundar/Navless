@@ -60,6 +60,14 @@ ARGUMENTS = [
     ('odometry_topic', '/visual_slam/tracking/odometry',
      'odometry for flight_interface and course_mission: the topic that feeds the PX4 vision '
      "fusion (/mapping/validated_odometry if PX4 is fed through Koji's gate)"),
+    # Dark tube: on a VIO loss INSIDE the tube (or within blind_zone_margin_m of a mouth), keep pacing
+    # PX4's own estimate along the route for up to blind_carry_max_s, instead of freezing blind in the
+    # dark. A loss anywhere else still freezes the route. Turned on by the team (Shining, 2026-11-07).
+    # Evidence: the default (freeze) hit the tube 3/3 in the master sim; blind_carry landed 4/4 there and
+    # made 6/6 clean 2.8-3.9 s passes in Gazebo, all at the SLOW launch's 0.5 m/s. At this launch's
+    # 0.7 m/s it is untested in Gazebo (a 1.0 m/s carry touched the tube). It assumes PX4's heading
+    # stays sane while blind: see the EKF2_MAG_TYPE finding (magnetometer yaw reset ~0.5 s into a gap).
+    ('blind_carry', 'true', 'dark tube: keep moving on PX4 estimate through a VIO loss (tube only)'),
     ('tof', 'true', 'run the side ToF driver'),
     ('tube', 'true', 'run tube_node (needs tof)'),
     ('tof_min_range_m', '0.15', 'tube_node: reject closer readings (raise until a hand-spun prop never shows)'),
@@ -78,7 +86,7 @@ def generate_launch_description():
         launch_arguments={n: LaunchConfiguration(n)
                           for n in ('route_file', 'start_bearing_deg', 'cruise_speed_mps',
                                     'max_lead_m', 'max_lat_accel_mps2', 'max_turn_sagitta_m',
-                                    'odometry_topic')}.items(),
+                                    'odometry_topic', 'blind_carry')}.items(),
     )
     # VL53L1X: from the team image, or from ~/team_ws/pylibs (pip install --target) if it is there.
     pylibs = '/root/team_ws/pylibs'
