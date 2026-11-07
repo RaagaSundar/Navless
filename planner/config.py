@@ -88,21 +88,21 @@ class PlannerConfig:
     replan_period_s: float = 1.00  # Re-check route every 1.0 second
     tracker_rate_hz: float = 30.0  # 30-50 Hz PX4 TrajectorySetpoint streaming
     fast_mode: bool = False
-    fast_mode_multiplier: float = 1.30
+    fast_mode_multiplier: float = 1.65
     enable_fly_home: bool = True
 
-    # Stage kinematic profiles (Step 3)
+    # Stage kinematic profiles (Step 3) — tuned to 0.60 m/s for reliable 15 Hz cuVSLAM tracking around corners
     maze_profile: StageProfile = field(
-        default_factory=lambda: StageProfile(v_max=1.1, a_max=1.5, j_max=4.0, z_min_enu=0.5, z_max_enu=1.1)
+        default_factory=lambda: StageProfile(v_max=0.60, a_max=1.0, j_max=3.0, z_min_enu=0.5, z_max_enu=1.1)
     )
     tunnel_profile: StageProfile = field(
-        default_factory=lambda: StageProfile(v_max=0.8, a_max=1.0, j_max=3.0, z_min_enu=0.5, z_max_enu=1.1)
+        default_factory=lambda: StageProfile(v_max=0.55, a_max=0.9, j_max=2.5, z_min_enu=0.5, z_max_enu=1.1)
     )
     chicane_profile: StageProfile = field(
-        default_factory=lambda: StageProfile(v_max=1.1, a_max=1.5, j_max=4.0, z_min_enu=0.5, z_max_enu=1.1)
+        default_factory=lambda: StageProfile(v_max=0.60, a_max=1.0, j_max=3.0, z_min_enu=0.5, z_max_enu=1.1)
     )
     fly_home_profile: StageProfile = field(
-        default_factory=lambda: StageProfile(v_max=2.0, a_max=2.0, j_max=6.0, z_min_enu=1.85, z_max_enu=2.3)
+        default_factory=lambda: StageProfile(v_max=1.20, a_max=1.5, j_max=4.0, z_min_enu=1.85, z_max_enu=2.3)
     )
 
     checkpoints: CourseCheckpoints = field(default_factory=CourseCheckpoints)

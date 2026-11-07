@@ -124,7 +124,8 @@ def plan_route(route_arg, launch, heading):
             sys.path.insert(0, p)
     from navless_nav.route import plan_dynamic_course_route
     branch = "gate_b" if "gate_b" in str(route_arg).lower() else "window"
-    enu, launch_xy, _ = plan_dynamic_course_route(branch=branch)
+    start_enu = (float(launch[0]), float(launch[1]), 0.85) if launch is not None else None
+    enu, launch_xy, _ = plan_dynamic_course_route(branch=branch, start_enu=start_enu)
     if launch is None:
         launch = (float(launch_xy[0]), float(launch_xy[1]), 0.0)
     return [course_to_local(p, launch, heading) for p in enu], launch
@@ -180,6 +181,7 @@ def run(route, a):
             self.prearm_anchor = None
             self.prearm_stable_since_ns = None
             self.prev_pos = None
+            self.unhealthy_ticks = 0
             self.exit_code = 0
 
         def _rx(self, k, m):
@@ -277,8 +279,13 @@ def run(route, a):
                     self.cmd(VehicleCommand.VEHICLE_CMD_NAV_LAND)  # re-send once a second until landed
                 return
             if not self.fresh() or not self.est_ok():
+                self.unhealthy_ticks += 1
+                if self.unhealthy_ticks <= int(RATE_HZ) and s in ("TAKEOFF", "FLY", "HOVER"):
+                    self.publish_sp(route[0] if s == "TAKEOFF" else self.carrot.p)
+                    return
                 self.exit_code = 2
                 return self.land("telemetry stale or estimator invalid")
+            self.unhealthy_ticks = 0
             here = self.pos()
             if self.prev_pos is not None and self.armed() and dist(here, self.prev_pos) > 0.85:
                 self.exit_code = 6

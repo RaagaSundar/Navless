@@ -445,8 +445,18 @@ class GlobalCourseRouter:
             if ahead_wps:
                 mids = ahead_wps
                 use_clearance = False
+        plan_start = np.array(
+            [
+                float(pos[0]),
+                float(pos[1]),
+                max(float(pos[2]), float(self.config.checkpoints.start_pad[2]))
+                if self.stage == CourseStage.STAGE_1_MAZE
+                else float(pos[2]),
+            ],
+            dtype=np.float64,
+        )
         spline, elapsed_ms = self.optimizer.plan_spline(
-            pos,
+            plan_start,
             goal_enu,
             profile,
             intermediate_waypoints=mids,

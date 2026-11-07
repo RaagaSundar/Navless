@@ -163,8 +163,8 @@ class PX4TrajectoryTrackerCore:
         lookahead_s: float = 0.25,
         start_bearing_deg: float = 0.0,
         start_height_m: float = 0.0,
-        max_yaw_rate_rad_s: float = 1.40,
-        max_lead_m: float = 0.55,
+        max_yaw_rate_rad_s: float = 1.05,
+        max_lead_m: float = 0.48,
         touch_and_go_fly_home: bool = True,
         prearm_settle_s: float = 0.0,
         prearm_height_tol_m: float = 0.15,
@@ -197,6 +197,10 @@ class PX4TrajectoryTrackerCore:
         self.px4_skybeta_z_enu: Optional[float] = None
         self.px4_skybeta_z_time_s: Optional[float] = None
         self.direct_takeoff_complete: bool = False
+        self.pad_land_in_progress: bool = False
+        self.pad_landing_completed: bool = False
+        self.unhealthy_since_s: Optional[float] = None
+        self.last_sample_time_s: Optional[float] = None
         self.last_tube_offset_time_s: Optional[float] = None
         self.tube_offset_left_m: float = 0.0
         self.tube_width_m: float = 0.0
@@ -491,6 +495,21 @@ class PX4TrajectoryTrackerCore:
         external_window_confidence: Optional[float] = None,
     ) -> Tuple[Optional[PX4SetpointSample], str]:
         """Run safety gate, update 1 Hz router if due, and sample 30 Hz PX4 TrajectorySetpoint."""
+        dt_sample = (
+            max(0.0, min(0.25, float(now_s - self.last_sample_time_s)))
+            if self.last_sample_time_s is not None
+            else 0.0
+        )
+        self.last_sample_time_s = float(now_s)
+
+        # Transition from pad AUTO_LAND to pad re-arm once PX4 touches down and disarms on the Concentric Pad
+        if self.pad_land_in_progress and self.telemetry.arming_state != ARMING_STATE_ARMED:
+            self.pad_land_in_progress = False
+            self.pad_landing_completed = True
+            self.telemetry.was_in_offboard = False
+            if not self.config.enable_fly_home:
+                self.router.stage = CourseStage.MISSION_COMPLETE
+
         safety = self.config.safety
         ok, reason = self.telemetry.check_authority_and_health(
             now_s,
@@ -499,24 +518,68 @@ class PX4TrajectoryTrackerCore:
             require_z_valid=safety.require_z_valid,
             require_estimator_healthy=safety.require_estimator_healthy,
         )
+        # 1.0-second in-flight VIO / estimator health grace period when called in direct `--pilot-arms` mode:
         if not ok:
+            if (
+                self.px4_state == "PREFLIGHT"
+                and self.telemetry.arming_state == ARMING_STATE_ARMED
+                and self.last_safe_course_pos_enu is not None
+                and reason.startswith(("vslam_lost", "estimator_unhealthy", "xy_valid_false", "z_valid_false"))
+            ):
+                if self.unhealthy_since_s is None:
+                    self.unhealthy_since_s = float(now_s)
+                if (now_s - self.unhealthy_since_s) <= 1.0:
+                    self.router.spline_start_time_s += dt_sample
+                    hold_enu = np.asarray(self.last_safe_course_pos_enu, dtype=np.float64)
+                    yaw_enu = self.commanded_yaw_enu_rad if self.commanded_yaw_enu_rad is not None else 0.0
+                    pos_ned = enu_to_ned_pos(hold_enu, convention=self.frame_convention, origin_enu=self.launch_origin_enu)
+                    vel_ned = enu_to_ned_vel((0.0, 0.0, 0.0), convention=self.frame_convention)
+                    yaw_ned = enu_yaw_to_ned_yaw(yaw_enu, convention=self.frame_convention)
+                    odom_quat = enu_yaw_to_odom_quat(yaw_enu, self.start_bearing_deg)
+                    return (
+                        PX4SetpointSample(
+                            position_ned=pos_ned,
+                            velocity_ned=vel_ned,
+                            yaw_ned=yaw_ned,
+                            timestamp_us=int(now_s * 1_000_000),
+                            stage=self.router.stage,
+                            branch="VIO_GRACE_HOLD",
+                            yaw_enu=yaw_enu,
+                            odom_orientation_xyzw=odom_quat,
+                        ),
+                        f"vio_grace_hold ({reason}, {now_s - self.unhealthy_since_s:.2f}s)",
+                    )
             return None, reason
+
+        self.unhealthy_since_s = None
+        if not self.prearm_settled and self.telemetry.arming_state == ARMING_STATE_ARMED:
+            return None, "refusing_already_armed_before_prearm_settle"
 
         # 1. Pre-arm & pre-Offboard gate: never advance the B-spline clock while disarmed or outside Offboard!
         if (
             self.telemetry.arming_state != ARMING_STATE_ARMED
             or self.telemetry.nav_state != NAVIGATION_STATE_OFFBOARD
         ):
+            if self.router.stage == CourseStage.MISSION_COMPLETE:
+                return None, "mission_complete_disarmed"
             self.router.spline_start_time_s = now_s
-            prearm_ok, prearm_reason = self.check_prearm_navigation_ready(now_s)
-            if not prearm_ok:
-                return None, prearm_reason
             drone_pos_enu, current_yaw_enu = self.current_course_pose_enu(now_s)
-            takeoff_z = float(self.config.checkpoints.start_pad[2])
-            pos_enu = np.array(
-                [float(self.launch_origin_enu[0]), float(self.launch_origin_enu[1]) + 0.15, takeoff_z],
-                dtype=np.float64,
-            )
+            if not self.pad_landing_completed:
+                prearm_ok, prearm_reason = self.check_prearm_navigation_ready(now_s)
+                if not prearm_ok:
+                    return None, prearm_reason
+                takeoff_z = float(self.config.checkpoints.start_pad[2])
+                takeoff_y_offset = 0.0 if self.launch_origin_enu[1] > 1.00 else 0.15
+                pos_enu = np.array(
+                    [float(self.launch_origin_enu[0]), float(self.launch_origin_enu[1]) + takeoff_y_offset, takeoff_z],
+                    dtype=np.float64,
+                )
+            else:
+                hop_z = float(self.config.checkpoints.fly_home_altitude_m)
+                pos_enu = np.array(
+                    [float(drone_pos_enu[0]), float(drone_pos_enu[1]), hop_z],
+                    dtype=np.float64,
+                )
             yaw_enu = self._rate_limit_yaw_enu(now_s, current_yaw_enu)
             pos_ned = enu_to_ned_pos(pos_enu, convention=self.frame_convention, origin_enu=self.launch_origin_enu)
             vel_ned = enu_to_ned_vel((0.0, 0.0, 0.0), convention=self.frame_convention)
@@ -539,18 +602,22 @@ class PX4TrajectoryTrackerCore:
         drone_pos_enu, current_yaw_enu = self.current_course_pose_enu(now_s)
 
         # 2. Mandatory vertical takeoff climb gate in direct PX4 mode:
-        # Never start lateral flight along Corridor 1 while still below z = 0.65 m!
+        # Climb straight up over the launch mark and hold initial yaw before starting lateral flight!
         if self.router.stage == CourseStage.STAGE_1_MAZE and not self.direct_takeoff_complete:
-            if float(drone_pos_enu[2]) >= 0.65:
+            climb_done_z = 0.72 if self.launch_origin_enu[2] > 0.05 else 0.65
+            if float(drone_pos_enu[2]) >= climb_done_z:
                 self.direct_takeoff_complete = True
             else:
                 self.router.spline_start_time_s = now_s
                 takeoff_z = float(self.config.checkpoints.start_pad[2])
+                takeoff_y_offset = 0.0 if self.launch_origin_enu[1] > 1.00 else 0.15
                 pos_enu = np.array(
-                    [float(self.launch_origin_enu[0]), float(self.launch_origin_enu[1]) + 0.15, takeoff_z],
+                    [float(self.launch_origin_enu[0]), float(self.launch_origin_enu[1]) + takeoff_y_offset, takeoff_z],
                     dtype=np.float64,
                 )
-                yaw_enu = self._rate_limit_yaw_enu(now_s, current_yaw_enu)
+                hold_yaw = self.commanded_yaw_enu_rad if self.commanded_yaw_enu_rad is not None else current_yaw_enu
+                yaw_enu = self._rate_limit_yaw_enu(now_s, hold_yaw)
+                self.last_safe_course_pos_enu = (float(pos_enu[0]), float(pos_enu[1]), float(pos_enu[2]))
                 pos_ned = enu_to_ned_pos(pos_enu, convention=self.frame_convention, origin_enu=self.launch_origin_enu)
                 vel_ned = enu_to_ned_vel((0.0, 0.0, 0.35), convention=self.frame_convention)
                 yaw_ned = enu_yaw_to_ned_yaw(yaw_enu, convention=self.frame_convention)
@@ -574,6 +641,38 @@ class PX4TrajectoryTrackerCore:
             drone_pos_enu,
             external_window_confidence=external_window_confidence,
         )
+
+        # 3. Autonomous Concentric Pad Landing before Stage 6 Fly-Home:
+        # When the primary route reaches the Concentric Pad (`router.primary_landed`), command PX4 AUTO_LAND
+        # onto the pad until disarmed, then re-arm on the pad to fly home!
+        if (
+            self.px4_state == "PREFLIGHT"
+            and self.router.primary_landed
+            and not self.pad_landing_completed
+            and self.prearm_settle_s > 0.0
+            and not self.touch_and_go_fly_home
+        ):
+            self.pad_land_in_progress = True
+            self.router.spline_start_time_s = now_s
+            lp_enu, _ = self.router.landing_target_enu()
+            yaw_enu = self.commanded_yaw_enu_rad if self.commanded_yaw_enu_rad is not None else current_yaw_enu
+            pos_ned = enu_to_ned_pos(lp_enu, convention=self.frame_convention, origin_enu=self.launch_origin_enu)
+            vel_ned = enu_to_ned_vel((0.0, 0.0, 0.0), convention=self.frame_convention)
+            yaw_ned = enu_yaw_to_ned_yaw(yaw_enu, convention=self.frame_convention)
+            odom_quat = enu_yaw_to_odom_quat(yaw_enu, self.start_bearing_deg)
+            return (
+                PX4SetpointSample(
+                    position_ned=pos_ned,
+                    velocity_ned=vel_ned,
+                    yaw_ned=yaw_ned,
+                    timestamp_us=int(now_s * 1_000_000),
+                    stage=CourseStage.STAGE_5_LANDING_PAD,
+                    branch="PAD_LAND",
+                    yaw_enu=yaw_enu,
+                    odom_orientation_xyzw=odom_quat,
+                ),
+                "landing_on_concentric_pad",
+            )
 
         spline = decision.spline
         if spline is None:
@@ -650,7 +749,8 @@ class PX4TrajectoryTrackerCore:
                         xy_limit_m=xy_fence,
                     )
         vel_enu = spline.evaluate_velocity(t_eval) * (1.0 - 0.30 * turn_ratio)
-        raw_yaw_enu = spline.evaluate_yaw(t_eval, fallback_yaw=current_yaw_enu)
+        t_yaw = max(0.0, t_eval - self.lookahead_s)
+        raw_yaw_enu = spline.evaluate_yaw(t_yaw, fallback_yaw=current_yaw_enu)
         yaw_enu = self._rate_limit_yaw_enu(now_s, raw_yaw_enu)
 
         # If inside STAGE_3_TUNNEL and fresh `/tube/offset` is available, blend lateral centering nudge
@@ -1164,6 +1264,9 @@ class PX4TrajectoryTrackerCore:
                 if now_s - self.px4_unhealthy_since_s > 1.0:
                     self._px4_enter("LAND", now_s)
                     return PX4MissionCommand(None, self._px4_cmd(now_s, land_cmd), "LAND", f"unhealthy ({why})")
+                if self.last_sample_time_s is not None:
+                    self.router.spline_start_time_s += max(0.0, min(0.25, float(now_s - self.last_sample_time_s)))
+                self.last_sample_time_s = float(now_s)
                 hold_enu = self.last_safe_course_pos_enu or self.px4_takeoff_enu or tuple(pos_enu)
                 return PX4MissionCommand(self._px4_hold(now_s, hold_enu, self.commanded_yaw_enu_rad or yaw_enu),
                                          (), state, f"hold ({why})")
@@ -1389,6 +1492,12 @@ def run_ros2_node(argv=None) -> int:
         help="Direct PX4 mode: wait for an external pilot/script to switch to Offboard and arm, instead of "
         "the autonomous preflight -> arm -> takeoff -> route -> NAV_LAND sequence (step_px4_mission)",
     )
+    parser.add_argument(
+        "--speed",
+        type=float,
+        default=None,
+        help="Optional override for horizontal stage cruise speed v_max (m/s)",
+    )
     args, unknown_args = parser.parse_known_args(argv)
     # Support `-p fly_home:=true` passed by master_sim/run_master.sh
     fly_home_arg = any("fly_home:=true" in str(u).lower() for u in unknown_args)
@@ -1396,6 +1505,13 @@ def run_ros2_node(argv=None) -> int:
     cfg = PlannerConfig.from_json(args.config) if args.config.exists() else PlannerConfig()
     if args.fast_mode:
         cfg.fast_mode = True
+    if args.speed is not None and args.speed > 0.0:
+        from dataclasses import replace
+
+        v_override = float(args.speed)
+        cfg.maze_profile = replace(cfg.maze_profile, v_max=v_override)
+        cfg.tunnel_profile = replace(cfg.tunnel_profile, v_max=min(v_override, cfg.tunnel_profile.v_max))
+        cfg.chicane_profile = replace(cfg.chicane_profile, v_max=v_override)
     if args.stop_on_pad and not fly_home_arg:
         cfg.enable_fly_home = False
 
@@ -1696,7 +1812,7 @@ def run_ros2_node(argv=None) -> int:
     def publish_px4_setpoint(sample: PX4SetpointSample) -> None:
         ocm = OffboardControlMode()
         ocm.position = True
-        ocm.velocity = True
+        ocm.velocity = False
         ocm.acceleration = False
         ocm.attitude = False
         ocm.body_rate = False
@@ -1705,10 +1821,14 @@ def run_ros2_node(argv=None) -> int:
 
         sp = TrajectorySetpoint()
         sp.position = list(tracker.to_px4_frame(sample.position_ned))  # tracker works in the zero-tared frame
-        sp.velocity = [float(sample.velocity_ned[0]), float(sample.velocity_ned[1]), float(sample.velocity_ned[2])]
+        sp.velocity = [math.nan, math.nan, math.nan]
+        sp.acceleration = [math.nan, math.nan, math.nan]
         sp.yaw = float(sample.yaw_ned)
         sp.timestamp = sample.timestamp_us
         setpoint_pub.publish(sp)
+
+    abort_landing_active: List[bool] = [False]
+    exit_code_holder: List[Optional[int]] = [None]
 
     def _send_vehicle_cmd(t_now: float, command: int, param1: float = 0.0, param2: float = 0.0) -> None:
         if cmd_pub is None or not args.approve_flight:
@@ -1736,6 +1856,8 @@ def run_ros2_node(argv=None) -> int:
 
     def timer_callback() -> None:
         t_now = now_sec()
+        if t_now <= 0.0:
+            return
         if args.skybeta_mode:
             if not args.approve_flight:
                 return
@@ -1785,17 +1907,38 @@ def run_ros2_node(argv=None) -> int:
 
         sample, status_reason = tracker.sample_setpoint(t_now)
         if sample is None:
+            if status_reason == "mission_complete_disarmed":
+                node.get_logger().info("Mission complete: landed and disarmed.")
+                exit_code_holder[0] = 0
+                raise SystemExit(0)
+            if abort_landing_active[0] and tracker.telemetry.arming_state != ARMING_STATE_ARMED:
+                node.get_logger().info("Emergency land complete: disarmed.")
+                exit_code_holder[0] = 2
+                raise SystemExit(2)
             if tracker.telemetry.arming_state == ARMING_STATE_ARMED and (
                 "geofence_breach" in status_reason
                 or "estimator_position_jump" in status_reason
                 or "vslam_lost" in status_reason
+                or "estimator_unhealthy" in status_reason
+                or "xy_valid_false" in status_reason
+                or "z_valid_false" in status_reason
                 or "stale_" in status_reason
             ):
+                abort_landing_active[0] = True
                 _send_nav_land(t_now, status_reason)
             node.get_logger().debug(f"Planner holding publishing: {status_reason}")
             return
-        if sample.stage == CourseStage.MISSION_COMPLETE and tracker.telemetry.arming_state == ARMING_STATE_ARMED:
-            _send_nav_land(t_now, "mission_complete")
+        if sample.branch == "PAD_LAND":
+            if tracker.telemetry.arming_state == ARMING_STATE_ARMED:
+                _send_nav_land(t_now, "landing_on_concentric_pad")
+            return
+        if sample.stage == CourseStage.MISSION_COMPLETE:
+            if tracker.telemetry.arming_state == ARMING_STATE_ARMED:
+                _send_nav_land(t_now, "mission_complete")
+            else:
+                node.get_logger().info("Mission complete: landed and disarmed.")
+                exit_code_holder[0] = 0
+                raise SystemExit(0)
             return
         if not args.approve_flight:
             # Read-only / dry-run planning mode until team explicitly approves flight (AGENTS.md)
@@ -1817,6 +1960,8 @@ def run_ros2_node(argv=None) -> int:
                 rclpy.spin_once(node, timeout_sec=0.1)
         else:
             rclpy.spin(node)
+    except SystemExit as exc:
+        return int(exc.code) if isinstance(exc.code, int) else 0
     except KeyboardInterrupt:  # Ctrl-C mid-flight means land, not "stop streaming into a failsafe"
         if cmd_pub is not None and tracker.telemetry.arming_state == ARMING_STATE_ARMED:
             for _ in range(5):
@@ -1827,6 +1972,8 @@ def run_ros2_node(argv=None) -> int:
         node.destroy_timer(timer)
         node.destroy_node()
         rclpy.try_shutdown()
+    if exit_code_holder[0] is not None:
+        return exit_code_holder[0]
     return 1 if px4_mission and tracker.px4_state == "ABORT" else 0
 
 

@@ -528,6 +528,86 @@ class TestPlannerScaffold(unittest.TestCase):
         c = feed(t, 3.6, (0.0, 0.0, -0.4), ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD, False)
         self.assertEqual((c.state, c.commands), ("LAND", ((VEHICLE_CMD_NAV_LAND, 0.0, 0.0),)))
 
+    def test_direct_px4_vio_grace_and_pad_land_fly_home_sequence(self) -> None:
+        cfg = PlannerConfig()
+        grid = OccupancyGrid3D(
+            bounds_min_m=cfg.global_map_bounds_min_m,
+            bounds_max_m=cfg.global_map_bounds_max_m,
+            resolution_m=cfg.voxel_resolution_m,
+            inflation_radius_m=cfg.obstacle_inflation_m,
+        )
+        router = GlobalCourseRouter(cfg, grid)
+        tracker = PX4TrajectoryTrackerCore(
+            router,
+            launch_origin_enu=(-2.515, 1.114, 0.126),
+            touch_and_go_fly_home=False,
+            prearm_settle_s=2.0,
+        )
+
+        # 1. Refuse to take over if already armed before pre-arm settle completes
+        tracker.update_vslam_status(0.0, 1)
+        tracker.update_vehicle_status(0.0, ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD)
+        tracker.update_local_position(0.0, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, True, True)
+        sp_armed, r_armed = tracker.sample_setpoint(0.0)
+        self.assertIsNone(sp_armed)
+        self.assertEqual(r_armed, "refusing_already_armed_before_prearm_settle")
+
+        # 2. Disarmed 2.0 s settle -> PREARM_STREAM -> TAKEOFF_CLIMB -> active route
+        tracker.update_vehicle_status(0.1, 1, 2)
+        tracker.update_local_position(0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, True, True)
+        tracker.sample_setpoint(0.1)
+        tracker.update_vehicle_status(2.2, 1, 2)
+        tracker.update_local_position(2.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, True, True)
+        sp_stream, _ = tracker.sample_setpoint(2.2)
+        self.assertIsNotNone(sp_stream)
+        assert sp_stream is not None
+        self.assertEqual(sp_stream.branch, "PREARM_STREAM")
+
+        tracker.update_vehicle_status(3.5, ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD)
+        tracker.update_local_position(3.5, 0.0, 0.0, -0.75, 0.0, 0.0, 0.0, 0.0, True, True)
+        sp_fly, _ = tracker.sample_setpoint(3.5)
+        self.assertIsNotNone(sp_fly)
+
+        # 3. Transient < 1.0 s VIO dropout (vo_state=2 for 0.3 s) holds safe position instead of aborting
+        tracker.update_vslam_status(4.0, 2)
+        sp_grace, r_grace = tracker.sample_setpoint(4.2)
+        self.assertIsNotNone(sp_grace)
+        assert sp_grace is not None
+        self.assertEqual(sp_grace.branch, "VIO_GRACE_HOLD")
+        self.assertIn("vio_grace_hold", r_grace)
+
+        # Persistent > 1.0 s VIO dropout (1.2 s) returns None and triggers emergency land
+        tracker.update_local_position(5.25, 0.0, 0.0, -0.75, 0.0, 0.0, 0.0, 0.0, True, True)
+        sp_abort, r_abort = tracker.sample_setpoint(5.25)
+        self.assertIsNone(sp_abort)
+        self.assertIn("vslam_lost", r_abort)
+
+        # Recover VIO -> resumes tracking
+        tracker.update_vslam_status(5.5, 1)
+        tracker.update_local_position(5.5, 0.0, 0.0, -0.75, 0.0, 0.0, 0.0, 0.0, True, True)
+        sp_rec, _ = tracker.sample_setpoint(5.5)
+        self.assertIsNotNone(sp_rec)
+
+        # 4. Arrive at Concentric Pad -> commands PAD_LAND -> disarms -> streams pad re-arm -> flies home
+        router.stage = CourseStage.STAGE_5_LANDING_PAD
+        lp_ned = enu_to_ned_pos(cfg.checkpoints.landing_pad, origin_enu=tracker.launch_origin_enu)
+        tracker.update_vehicle_status(10.0, ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD)
+        tracker.update_local_position(10.0, lp_ned[0], lp_ned[1], lp_ned[2], 0.0, 0.0, 0.0, 0.0, True, True)
+        sp_pad_land, r_pad_land = tracker.sample_setpoint(10.0)
+        self.assertIsNotNone(sp_pad_land)
+        assert sp_pad_land is not None
+        self.assertEqual(sp_pad_land.branch, "PAD_LAND")
+        self.assertEqual(r_pad_land, "landing_on_concentric_pad")
+
+        # Disarm on Concentric Pad -> transitions to PREARM_STREAM for Stage 6 Fly-Home
+        tracker.update_vehicle_status(12.0, 1, 2)
+        tracker.update_local_position(12.0, lp_ned[0], lp_ned[1], 0.0, 0.0, 0.0, 0.0, 0.0, True, True)
+        sp_pad_rearm, _ = tracker.sample_setpoint(12.0)
+        self.assertIsNotNone(sp_pad_rearm)
+        assert sp_pad_rearm is not None
+        self.assertEqual(sp_pad_rearm.branch, "PREARM_STREAM")
+        self.assertEqual(sp_pad_rearm.stage, CourseStage.STAGE_6_FLY_HOME)
+
 
 if __name__ == "__main__":
     unittest.main()
