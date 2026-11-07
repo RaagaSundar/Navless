@@ -106,6 +106,62 @@ def test_carrot_catch_up_moves_forward_to_the_drone_only():
     assert close(c.point, (2.0, 1.0, 0.0)) and c.index == 2
 
 
+def _l_turn(r=0.5, ds=0.05):
+    """1.5 m east, a quarter circle of radius r turning north, 1.5 m north."""
+    pts = [(x * ds, 0.0, 1.0) for x in range(int(1.5 / ds) + 1)]
+    cx, cy = 1.5, r
+    n = int(math.pi / 2 * r / ds)
+    for k in range(1, n + 1):
+        th = -math.pi / 2 + (math.pi / 2) * k / n
+        pts.append((cx + r * math.cos(th), cy + r * math.sin(th), 1.0))
+    x0, y0 = pts[-1][0], pts[-1][1]
+    pts += [(x0, y0 + j * ds, 1.0) for j in range(1, int(1.5 / ds) + 1)]
+    return pts
+
+
+def _dist_to_path(q, path):
+    best = math.inf
+    for a, b in zip(path, path[1:]):
+        ab = [y - x for x, y in zip(a, b)]
+        t = sum((qq - x) * d for qq, x, d in zip(q, a, ab)) / max(sum(d * d for d in ab), 1e-12)
+        t = max(0.0, min(1.0, t))
+        best = min(best, math.dist(q, [x + d * t for x, d in zip(a, ab)]))
+    return best
+
+
+def test_carrot_lead_shrinks_in_tight_turns_only():
+    path = _l_turn(0.5)
+    c = Carrot(path, speed=0.5, max_lead=0.6, max_sagitta=0.02)
+    assert c.lead_limit() == 0.6                                  # straight
+    c.advance(1.5 + math.pi / 4 * 0.5)                            # mid-arc
+    assert abs(c.lead_limit() - 0.15) < 1e-9          # sqrt(2 R s - s^2) = 0.14 -> floor
+    c.advance(1.5)                                                # straight again
+    assert c.lead_limit() == 0.6
+    assert Carrot(path, 0.5, 0.6).lead_limit() == 0.6            # off by default
+
+
+def test_sagitta_cap_reduces_the_cut_inside_a_turn():
+    # Drone ~ PX4 position control: velocity = 0.95 x (carrot - drone), <= 1 m/s.
+    path = _l_turn(0.5)
+
+    def worst_cut(sagitta):
+        c = Carrot(path, speed=0.5, max_lead=0.6, max_sagitta=sagitta)
+        drone, worst = list(path[0]), 0.0
+        for _ in range(3000):
+            goal = c.step(drone, 0.05)
+            v = [0.95 * (g - d) for g, d in zip(goal, drone)]
+            n = math.hypot(*v)
+            if n > 1.0:
+                v = [x / n for x in v]
+            drone = [d + x * 0.05 for d, x in zip(drone, v)]
+            worst = max(worst, _dist_to_path(drone, path))
+            if c.at_end and math.dist(drone, c.point) < 0.05:
+                break
+        return worst
+    off, on = worst_cut(0.0), worst_cut(0.02)
+    assert off > 0.06 and on < 0.04 and on < off / 2, (off, on)
+
+
 def test_turn_radius_is_measured():
     path = _arc(0.5)
     r = turn_radii(path)

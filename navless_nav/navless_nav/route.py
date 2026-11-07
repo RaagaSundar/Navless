@@ -133,23 +133,52 @@ class Carrot:
     every pose setpoint a short step away, because PX4 flies a far-away pose
     at MPC_XY_VEL_MAX (12 m/s on these airframes). With max_lat_accel > 0 it
     also slows through bends (speed_profile).
+
+    With max_sagitta > 0 the lead also shrinks in tight turns. A drone chasing
+    a carrot L ahead round an arc of radius R settles on a circle of radius
+    sqrt(R^2 - L^2), i.e. R - sqrt(R^2 - L^2) ~ L^2 / (2 R) inside the path,
+    so the lead is capped at sqrt(2 R s - s^2) for s = max_sagitta (never
+    below MIN_LEAD_M), with R the tightest radius between drone and carrot.
     """
 
-    def __init__(self, path, speed, max_lead, max_lat_accel=0.0):
+    MIN_LEAD_M = 0.15
+
+    def __init__(self, path, speed, max_lead, max_lat_accel=0.0,
+                 max_sagitta=0.0):
         if len(path) < 1:
             raise ValueError('empty path')
         self.path = [tuple(p) for p in path]
         self.speed, self.max_lead = float(speed), float(max_lead)
         self.limits = speed_profile(self.path, self.speed, max_lat_accel)
+        self.max_sagitta = max(0.0, float(max_sagitta))
+        self.radii = turn_radii(self.path) if self.max_sagitta > 0.0 else None
+        self.cum = [0.0]
+        for a, b in zip(self.path, self.path[1:]):
+            self.cum.append(self.cum[-1] + math.dist(a, b))
         self.index = 0                  # last path vertex the carrot passed
         self.point = self.path[0]
+
+    def lead_limit(self):
+        """How far ahead of the drone the carrot may be, m."""
+        if self.radii is None or not math.isfinite(self.max_lead):
+            return self.max_lead
+        hi = min(self.index + 1, len(self.path) - 1)
+        lo = self.index
+        while lo > 0 and self.cum[self.index] - self.cum[lo - 1] <= self.max_lead:
+            lo -= 1
+        r = min(self.radii[lo:hi + 1])
+        if not math.isfinite(r):
+            return self.max_lead
+        s = min(self.max_sagitta, r)
+        return min(self.max_lead,
+                   max(self.MIN_LEAD_M, math.sqrt(2.0 * r * s - s * s)))
 
     def speed_here(self):
         nxt = min(self.index + 1, len(self.path) - 1)
         return min(self.limits[self.index], self.limits[nxt])
 
     def step(self, drone, dt):
-        if math.dist(drone, self.point) > self.max_lead:
+        if math.dist(drone, self.point) > self.lead_limit():
             return self.point
         return self.advance(self.speed_here() * max(0.0, dt))
 
