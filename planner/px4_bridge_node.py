@@ -23,6 +23,7 @@ Strictly adheres to `AGENTS.md` and `AI_CONTEXT.md` rules:
 from __future__ import annotations
 
 import argparse
+import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,10 +34,15 @@ import numpy as np
 from .config import PlannerConfig
 from .frames import (
     clamp_altitude_enu,
+    course_to_odom_pos,
+    course_vel_to_odom_vel,
     enu_to_ned_pos,
     enu_to_ned_vel,
     enu_yaw_to_ned_yaw,
+    enu_yaw_to_odom_quat,
     ned_to_enu_pos,
+    odom_to_course_pos,
+    wrap_pi,
 )
 from .fsm_router import CourseStage, GlobalCourseRouter
 from .grid_map import OccupancyGrid3D
@@ -77,7 +83,7 @@ class TelemetryHealthState:
             return False, "missing_vehicle_local_position"
         if (now_s - self.last_local_pos_time_s) > max_age_s:
             return False, "stale_vehicle_local_position"
-        if self.last_status_time_s is not None and (now_s - self.last_status_time_s) > max_age_s:
+        if self.last_status_time_s is not None and (now_s - self.last_status_time_s) > max(2.5, 4.0 * max_age_s):
             return False, "stale_vehicle_status"
         if require_xy_valid and not self.xy_valid:
             return False, "xy_valid_false"
@@ -93,7 +99,7 @@ class TelemetryHealthState:
 
 @dataclass(frozen=True)
 class PX4SetpointSample:
-    """Evaluated 30-50 Hz PX4 setpoint ready for `px4_msgs/msg/TrajectorySetpoint`."""
+    """Evaluated 30-50 Hz PX4 setpoint ready for `px4_msgs/msg/TrajectorySetpoint` or `/skybeta/setpoint/pose`."""
 
     position_ned: Tuple[float, float, float]
     velocity_ned: Tuple[float, float, float]
@@ -101,10 +107,25 @@ class PX4SetpointSample:
     timestamp_us: int
     stage: CourseStage
     branch: str
+    yaw_enu: float = 0.0
+    odom_orientation_xyzw: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
+
+
+@dataclass(frozen=True)
+class SkybetaMissionCommand:
+    """Evaluated `/skybeta` command (`pose`, `twist`, or `none`) for `flight_interface`."""
+
+    mode: str  # "pose", "twist", or "none"
+    pos_odom: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    quat_xyzw: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
+    vel_odom: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    skybeta_state: str = "WAIT_FOR_OFFBOARD"
+    stage: str = "STAGE_1_MAZE"
+    reason: str = "idle"
 
 
 class PX4TrajectoryTrackerCore:
-    """Testable core tracker evaluating the active EGO B-spline at 30-50 Hz for PX4."""
+    """Testable core tracker evaluating the active EGO B-spline at 30-50 Hz for PX4 & `/skybeta`."""
 
     def __init__(
         self,
@@ -113,11 +134,19 @@ class PX4TrajectoryTrackerCore:
         frame_convention: str = "enu_to_ned",
         launch_origin_enu: Optional[Tuple[float, float, float]] = None,
         lookahead_s: float = 0.25,
+        start_bearing_deg: float = 0.0,
+        start_height_m: float = 0.0,
+        max_yaw_rate_rad_s: float = 0.90,
+        touch_and_go_fly_home: bool = True,
     ) -> None:
         self.router = router
         self.config = router.config
         self.frame_convention = frame_convention
         self.lookahead_s = float(lookahead_s)
+        self.start_bearing_deg = float(start_bearing_deg)
+        self.start_height_m = float(start_height_m)
+        self.max_yaw_rate_rad_s = float(max_yaw_rate_rad_s)
+        self.touch_and_go_fly_home = bool(touch_and_go_fly_home)
         if launch_origin_enu is None:
             sp = self.config.checkpoints.start_pad
             self.launch_origin_enu: Tuple[float, float, float] = (float(sp[0]), float(sp[1]), 0.0)
@@ -130,6 +159,13 @@ class PX4TrajectoryTrackerCore:
         self.last_localize_time_s: Optional[float] = None
         self.localized_pos_enu: Optional[Tuple[float, float, float]] = None
         self.localized_yaw_enu_rad: float = 0.0
+        self.commanded_yaw_enu_rad: Optional[float] = None
+        self.last_yaw_update_time_s: Optional[float] = None
+        # `/skybeta` flight_interface state machine
+        self.skybeta_state: str = "WAIT_FOR_OFFBOARD"
+        self.landed_flag: bool = False
+        self.pad_touchdown_since_s: Optional[float] = None
+        self.last_safe_course_pos_enu: Optional[Tuple[float, float, float]] = None
 
     def update_localized_course_pose(
         self,
@@ -205,15 +241,42 @@ class PX4TrajectoryTrackerCore:
         self.telemetry.xy_valid = bool(xy_valid)
         self.telemetry.z_valid = bool(z_valid)
 
-    def update_vehicle_status(self, now_s: float, arming_state: int, nav_state: int) -> None:
+    def update_vehicle_status(
+        self,
+        now_s: float,
+        arming_state: int,
+        nav_state: int,
+        *,
+        landed: Optional[bool] = None,
+    ) -> None:
         self.telemetry.last_status_time_s = now_s
         self.telemetry.arming_state = int(arming_state)
         self.telemetry.nav_state = int(nav_state)
         if self.telemetry.nav_state == NAVIGATION_STATE_OFFBOARD:
             self.telemetry.was_in_offboard = True
+        if landed is not None:
+            self.landed_flag = bool(landed)
 
     def update_estimator_health(self, healthy: bool) -> None:
         self.telemetry.estimator_healthy = bool(healthy)
+
+    def _rate_limit_yaw_enu(self, now_s: float, target_yaw_enu_rad: float) -> float:
+        """Rate-limit camera yaw heading changes to `max_yaw_rate_rad_s` so cuVSLAM tracks smoothly."""
+        if (
+            self.commanded_yaw_enu_rad is None
+            or self.last_yaw_update_time_s is None
+            or (now_s - self.last_yaw_update_time_s) > 1.0
+        ):
+            self.commanded_yaw_enu_rad = float(wrap_pi(target_yaw_enu_rad))
+            self.last_yaw_update_time_s = float(now_s)
+            return self.commanded_yaw_enu_rad
+        dt = max(0.0, min(0.25, float(now_s - self.last_yaw_update_time_s)))
+        self.last_yaw_update_time_s = float(now_s)
+        max_step = self.max_yaw_rate_rad_s * dt
+        err = wrap_pi(float(target_yaw_enu_rad) - self.commanded_yaw_enu_rad)
+        step = float(np.clip(err, -max_step, max_step))
+        self.commanded_yaw_enu_rad = float(wrap_pi(self.commanded_yaw_enu_rad + step))
+        return self.commanded_yaw_enu_rad
 
     def sample_setpoint(
         self,
@@ -233,7 +296,7 @@ class PX4TrajectoryTrackerCore:
         if not ok:
             return None, reason
 
-        drone_pos_enu, _ = self.current_course_pose_enu(now_s)
+        drone_pos_enu, current_yaw_enu = self.current_course_pose_enu(now_s)
         decision = self.router.step(
             now_s,
             drone_pos_enu,
@@ -248,13 +311,16 @@ class PX4TrajectoryTrackerCore:
         t_rel = max(0.0, now_s - self.router.spline_start_time_s)
         t_eval = min(spline.duration, t_rel + self.lookahead_s)
         z_min_clamp = 0.05 if decision.stage == CourseStage.STAGE_6_FLY_HOME else profile.z_min_enu
+        xy_fence = safety.arena_half_extent_xy_m - safety.net_keepout_margin_m
         pos_enu = clamp_altitude_enu(
             spline.evaluate_position(t_eval),
             z_min_clamp,
             profile.z_max_enu,
+            xy_limit_m=xy_fence,
         )
         vel_enu = spline.evaluate_velocity(t_eval)
-        yaw_enu = spline.evaluate_yaw(t_eval)
+        raw_yaw_enu = spline.evaluate_yaw(t_eval, fallback_yaw=current_yaw_enu)
+        yaw_enu = self._rate_limit_yaw_enu(now_s, raw_yaw_enu)
 
         # If inside STAGE_3_TUNNEL and fresh `/tube/offset` is available, blend lateral centering nudge
         if (
@@ -265,11 +331,17 @@ class PX4TrajectoryTrackerCore:
             left_x = -math.sin(yaw_enu)
             left_y = math.cos(yaw_enu)
             nudge = float(np.clip(0.5 * self.tube_offset_left_m, -0.15, 0.15))
-            pos_enu = np.array(
-                [pos_enu[0] + nudge * left_x, pos_enu[1] + nudge * left_y, pos_enu[2]],
-                dtype=np.float64,
+            pos_enu = clamp_altitude_enu(
+                np.array(
+                    [pos_enu[0] + nudge * left_x, pos_enu[1] + nudge * left_y, pos_enu[2]],
+                    dtype=np.float64,
+                ),
+                z_min_clamp,
+                profile.z_max_enu,
+                xy_limit_m=xy_fence,
             )
 
+        self.last_safe_course_pos_enu = (float(pos_enu[0]), float(pos_enu[1]), float(pos_enu[2]))
         pos_ned = enu_to_ned_pos(
             pos_enu,
             convention=self.frame_convention,
@@ -277,6 +349,7 @@ class PX4TrajectoryTrackerCore:
         )
         vel_ned = enu_to_ned_vel(vel_enu, convention=self.frame_convention)
         yaw_ned = enu_yaw_to_ned_yaw(yaw_enu, convention=self.frame_convention)
+        odom_quat = enu_yaw_to_odom_quat(yaw_enu, self.start_bearing_deg)
 
         sample = PX4SetpointSample(
             position_ned=pos_ned,
@@ -285,8 +358,293 @@ class PX4TrajectoryTrackerCore:
             timestamp_us=int(now_s * 1_000_000),
             stage=decision.stage,
             branch=decision.selected_branch,
+            yaw_enu=yaw_enu,
+            odom_orientation_xyzw=odom_quat,
         )
         return sample, decision.reason
+
+    def _compute_flare_twist_odom(
+        self,
+        pos_enu: np.ndarray,
+        target_xy_enu: Tuple[float, float],
+        *,
+        fast_vz_mps: float = 0.38,
+        flare_vz_mps: float = 0.18,
+        flare_alt_m: float = 0.35,
+        xy_max_mps: float = 0.30,
+    ) -> Tuple[Tuple[float, float, float], str]:
+        """Compute two-stage vertical flare descent + XY pad-centering velocity in `odom` frame."""
+        ex = float(target_xy_enu[0]) - float(pos_enu[0])
+        ey = float(target_xy_enu[1]) - float(pos_enu[1])
+        norm = math.hypot(ex, ey)
+        scale = min(1.0, xy_max_mps / norm) if norm > 1e-6 else 0.0
+        vx_enu = ex * scale
+        vy_enu = ey * scale
+        is_flare = float(pos_enu[2]) <= flare_alt_m
+        vz_down = flare_vz_mps if is_flare else fast_vz_mps
+        vel_odom = course_vel_to_odom_vel((vx_enu, vy_enu, -vz_down), self.start_bearing_deg)
+        sub_reason = "ground_effect_flare" if is_flare else "nav_land_descent"
+        return vel_odom, sub_reason
+
+    def step_skybeta_mission(
+        self,
+        now_s: float,
+        *,
+        external_window_confidence: Optional[float] = None,
+    ) -> SkybetaMissionCommand:
+        """Advance the full `/skybeta` Offboard state machine with live EGO B-spline replanning.
+
+        States:
+        - `WAIT_FOR_OFFBOARD`: Pre-streams current position on `/skybeta/setpoint/pose` so
+          `flight_interface` sees an active stream and grants `offboard_active` upon arming.
+        - `TAKEOFF`: Climbs straight up above the launch mark (`0.85 m`) before starting the route.
+        - `ROUTE`: Tracks the live 1 Hz + collision-avoidance EGO B-spline with smooth camera yaw
+          alignment, `/team/localize/pose` corrections, and `/tube/offset` centering.
+        - `PAD_LAND`: Two-stage controlled flare descent (`-0.38 m/s` -> `-0.18 m/s` below `0.35 m`)
+          via `/skybeta/setpoint/twist` onto the Concentric Pad bullseye.
+          - If `touch_and_go_fly_home=True` and `config.enable_fly_home=True`: touches down on the
+            pad (`z <= 0.10 m`) for `0.80 s` (before PX4's `2.0 s` `COM_DISARM_LAND`), then climbs
+            immediately into `FLY_HOME` without losing Offboard authority.
+          - Otherwise: descends until PX4 disarms (`DONE`), or resumes into `FLY_HOME` if re-armed.
+        - `FLY_HOME`: Climbs to `hop_z` (`~2.03 m`) and jumps across the dividing wall to the Start Pad.
+        - `HOME_LAND`: Final two-stage controlled flare descent onto the Start Pad until `COM_DISARM_LAND`.
+        - `PAUSED` / `DONE`: Safe pilot takeover hold and post-mission termination.
+        """
+        if self.telemetry.last_local_pos_time_s is None:
+            return SkybetaMissionCommand(
+                mode="none",
+                skybeta_state=self.skybeta_state,
+                stage=self.router.stage.value,
+                reason="waiting_for_odometry",
+            )
+
+        launch_xy = (self.launch_origin_enu[0], self.launch_origin_enu[1])
+        pos_enu, current_yaw_enu = self.current_course_pose_enu(now_s)
+        pos_odom_cur = course_to_odom_pos(pos_enu, launch_xy, self.start_bearing_deg, self.start_height_m)
+        offboard_active = self.telemetry.nav_state == NAVIGATION_STATE_OFFBOARD
+        armed = self.telemetry.arming_state == ARMING_STATE_ARMED
+
+        if self.skybeta_state == "DONE":
+            return SkybetaMissionCommand(
+                mode="none",
+                skybeta_state="DONE",
+                stage=CourseStage.MISSION_COMPLETE.value,
+                reason="mission_done",
+            )
+
+        # Detect Offboard loss or touchdown disarm in active flight states
+        if self.skybeta_state not in ("WAIT_FOR_OFFBOARD", "PAUSED", "DONE") and not offboard_active:
+            if self.skybeta_state in ("PAD_LAND", "HOME_LAND") and (self.landed_flag or not armed):
+                if self.skybeta_state == "PAD_LAND" and self.config.enable_fly_home and not self.touch_and_go_fly_home:
+                    # Wait in PAUSED so if the operator re-arms on the Concentric Pad we fly home
+                    self.router.stage = CourseStage.STAGE_6_FLY_HOME
+                    self.router.primary_landed = True
+                    self.skybeta_state = "PAUSED"
+                    return SkybetaMissionCommand(
+                        mode="pose",
+                        pos_odom=pos_odom_cur,
+                        quat_xyzw=(0.0, 0.0, 0.0, 0.0),
+                        skybeta_state="PAUSED",
+                        stage=CourseStage.STAGE_6_FLY_HOME.value,
+                        reason="landed_on_pad_waiting_rearm_for_fly_home",
+                    )
+                self.skybeta_state = "DONE"
+                self.router.stage = CourseStage.MISSION_COMPLETE
+                return SkybetaMissionCommand(
+                    mode="none",
+                    skybeta_state="DONE",
+                    stage=CourseStage.MISSION_COMPLETE.value,
+                    reason="touched_down_and_disarmed",
+                )
+            self.skybeta_state = "PAUSED"
+
+        if self.skybeta_state == "PAUSED":
+            if not armed:
+                self.skybeta_state = "WAIT_FOR_OFFBOARD"
+            return SkybetaMissionCommand(
+                mode="pose",
+                pos_odom=pos_odom_cur,
+                quat_xyzw=(0.0, 0.0, 0.0, 0.0),
+                skybeta_state=self.skybeta_state,
+                stage=self.router.stage.value,
+                reason="paused_pilot_control",
+            )
+
+        if self.skybeta_state == "WAIT_FOR_OFFBOARD":
+            if self.router.recorded_start_pos_enu is None:
+                self.router.recorded_start_pos_enu = (
+                    float(pos_enu[0]),
+                    float(pos_enu[1]),
+                    float(self.config.checkpoints.start_pad[2]),
+                )
+            if not offboard_active:
+                return SkybetaMissionCommand(
+                    mode="pose",
+                    pos_odom=pos_odom_cur,
+                    quat_xyzw=(0.0, 0.0, 0.0, 0.0),
+                    skybeta_state="WAIT_FOR_OFFBOARD",
+                    stage=self.router.stage.value,
+                    reason="prestreaming_current_pose_for_offboard_handover",
+                )
+            # Offboard just became active! If resuming from Concentric Pad after disarm, jump to FLY_HOME
+            if self.router.primary_landed and self.config.enable_fly_home:
+                self.skybeta_state = "FLY_HOME"
+                self.router.stage = CourseStage.STAGE_6_FLY_HOME
+                self.router.step(now_s, pos_enu, force_replan=True)
+            else:
+                self.skybeta_state = "TAKEOFF"
+
+        if self.skybeta_state == "TAKEOFF":
+            takeoff_z = float(self.config.checkpoints.start_pad[2])
+            target_enu = (float(self.launch_origin_enu[0]), float(self.launch_origin_enu[1]), takeoff_z)
+            if float(np.linalg.norm(pos_enu - np.asarray(target_enu, dtype=np.float64))) <= 0.25:
+                self.skybeta_state = "ROUTE"
+            else:
+                target_odom = course_to_odom_pos(target_enu, launch_xy, self.start_bearing_deg, self.start_height_m)
+                yaw_quat = enu_yaw_to_odom_quat(self._rate_limit_yaw_enu(now_s, current_yaw_enu), self.start_bearing_deg)
+                return SkybetaMissionCommand(
+                    mode="pose",
+                    pos_odom=target_odom,
+                    quat_xyzw=yaw_quat,
+                    skybeta_state="TAKEOFF",
+                    stage=self.router.stage.value,
+                    reason="climbing_to_takeoff_altitude",
+                )
+
+        if self.skybeta_state == "ROUTE":
+            pad_goal_enu, _ = self.router.landing_target_enu()
+            dist_xy_pad = float(math.hypot(pos_enu[0] - pad_goal_enu[0], pos_enu[1] - pad_goal_enu[1]))
+            if (
+                self.router.stage in (CourseStage.STAGE_5_LANDING_PAD, CourseStage.STAGE_6_FLY_HOME, CourseStage.MISSION_COMPLETE)
+                and dist_xy_pad <= 0.35
+            ):
+                self.skybeta_state = "PAD_LAND"
+                self.pad_touchdown_since_s = None
+            else:
+                sample, reason = self.sample_setpoint(
+                    now_s,
+                    external_window_confidence=external_window_confidence,
+                )
+                # If router just transitioned to STAGE_6_FLY_HOME upon reaching the pad, intercept for PAD_LAND!
+                if self.router.stage in (CourseStage.STAGE_6_FLY_HOME, CourseStage.MISSION_COMPLETE) and dist_xy_pad <= 0.45:
+                    self.skybeta_state = "PAD_LAND"
+                    self.pad_touchdown_since_s = None
+                elif sample is not None:
+                    sp_enu = ned_to_enu_pos(
+                        sample.position_ned,
+                        convention=self.frame_convention,
+                        origin_enu=self.launch_origin_enu,
+                    )
+                    sp_odom = course_to_odom_pos(sp_enu, launch_xy, self.start_bearing_deg, self.start_height_m)
+                    return SkybetaMissionCommand(
+                        mode="pose",
+                        pos_odom=sp_odom,
+                        quat_xyzw=sample.odom_orientation_xyzw,
+                        skybeta_state="ROUTE",
+                        stage=sample.stage.value,
+                        reason=reason,
+                    )
+                else:
+                    # VIO lost or temporary hold: freeze at last safe setpoint
+                    hold_enu = self.last_safe_course_pos_enu or (float(pos_enu[0]), float(pos_enu[1]), float(pos_enu[2]))
+                    hold_odom = course_to_odom_pos(hold_enu, launch_xy, self.start_bearing_deg, self.start_height_m)
+                    yaw_quat = enu_yaw_to_odom_quat(self.commanded_yaw_enu_rad or current_yaw_enu, self.start_bearing_deg)
+                    return SkybetaMissionCommand(
+                        mode="pose",
+                        pos_odom=hold_odom,
+                        quat_xyzw=yaw_quat,
+                        skybeta_state="ROUTE",
+                        stage=self.router.stage.value,
+                        reason=f"vio_or_planner_hold ({reason})",
+                    )
+
+        if self.skybeta_state == "PAD_LAND":
+            pad_goal_enu, _ = self.router.landing_target_enu()
+            if self.touch_and_go_fly_home and self.config.enable_fly_home:
+                if float(pos_enu[2]) <= 0.12:
+                    if self.pad_touchdown_since_s is None:
+                        self.pad_touchdown_since_s = float(now_s)
+                    elif (now_s - self.pad_touchdown_since_s) >= 0.80:
+                        self.router.primary_landed = True
+                        self.router.stage = CourseStage.STAGE_6_FLY_HOME
+                        self.router.step(now_s, pos_enu, force_replan=True)
+                        self.skybeta_state = "FLY_HOME"
+                else:
+                    self.pad_touchdown_since_s = None
+            if self.skybeta_state == "PAD_LAND":
+                vel_odom, sub_rsn = self._compute_flare_twist_odom(
+                    pos_enu,
+                    (pad_goal_enu[0], pad_goal_enu[1]),
+                    fast_vz_mps=0.38,
+                    flare_vz_mps=0.18,
+                )
+                return SkybetaMissionCommand(
+                    mode="twist",
+                    vel_odom=vel_odom,
+                    skybeta_state="PAD_LAND",
+                    stage="STAGE_5_LANDING",
+                    reason=f"pad_landing_{sub_rsn}",
+                )
+
+        if self.skybeta_state == "FLY_HOME":
+            home_goal_enu = self.router.home_target_enu()
+            dist_xy_home = float(math.hypot(pos_enu[0] - home_goal_enu[0], pos_enu[1] - home_goal_enu[1]))
+            if self.router.stage == CourseStage.MISSION_COMPLETE or (dist_xy_home <= 0.35 and float(pos_enu[1]) > 0.20):
+                self.skybeta_state = "HOME_LAND"
+            else:
+                sample, reason = self.sample_setpoint(now_s)
+                if self.router.stage == CourseStage.MISSION_COMPLETE:
+                    self.skybeta_state = "HOME_LAND"
+                elif sample is not None:
+                    sp_enu = ned_to_enu_pos(
+                        sample.position_ned,
+                        convention=self.frame_convention,
+                        origin_enu=self.launch_origin_enu,
+                    )
+                    sp_odom = course_to_odom_pos(sp_enu, launch_xy, self.start_bearing_deg, self.start_height_m)
+                    return SkybetaMissionCommand(
+                        mode="pose",
+                        pos_odom=sp_odom,
+                        quat_xyzw=sample.odom_orientation_xyzw,
+                        skybeta_state="FLY_HOME",
+                        stage=CourseStage.STAGE_6_FLY_HOME.value,
+                        reason=reason,
+                    )
+                else:
+                    hold_enu = self.last_safe_course_pos_enu or (float(pos_enu[0]), float(pos_enu[1]), float(pos_enu[2]))
+                    hold_odom = course_to_odom_pos(hold_enu, launch_xy, self.start_bearing_deg, self.start_height_m)
+                    yaw_quat = enu_yaw_to_odom_quat(self.commanded_yaw_enu_rad or current_yaw_enu, self.start_bearing_deg)
+                    return SkybetaMissionCommand(
+                        mode="pose",
+                        pos_odom=hold_odom,
+                        quat_xyzw=yaw_quat,
+                        skybeta_state="FLY_HOME",
+                        stage=CourseStage.STAGE_6_FLY_HOME.value,
+                        reason=f"vio_or_planner_hold ({reason})",
+                    )
+
+        if self.skybeta_state == "HOME_LAND":
+            home_goal_enu = self.router.home_target_enu()
+            vel_odom, sub_rsn = self._compute_flare_twist_odom(
+                pos_enu,
+                (home_goal_enu[0], home_goal_enu[1]),
+                fast_vz_mps=0.45,
+                flare_vz_mps=0.18,
+            )
+            return SkybetaMissionCommand(
+                mode="twist",
+                vel_odom=vel_odom,
+                skybeta_state="HOME_LAND",
+                stage="STAGE_6_LANDING_HOME",
+                reason=f"home_landing_{sub_rsn}",
+            )
+
+        return SkybetaMissionCommand(
+            mode="none",
+            skybeta_state=self.skybeta_state,
+            stage=self.router.stage.value,
+            reason="idle",
+        )
 
 
 def decode_ros_depth_image(message) -> np.ndarray:
@@ -383,13 +741,32 @@ def run_ros2_node(argv=None) -> int:
     parser.add_argument(
         "--skybeta-mode",
         action="store_true",
-        help="Publish to /skybeta/setpoint/pose and subscribe to /visual_slam/tracking/odometry & /skybeta/state",
+        help="Publish to /skybeta/setpoint/{pose,twist} and subscribe to /visual_slam/tracking/odometry & /skybeta/state",
+    )
+    parser.add_argument(
+        "--start-bearing-deg",
+        type=float,
+        default=0.0,
+        help="Initial nose bearing clockwise from course North at power-up on the launch mark",
+    )
+    parser.add_argument(
+        "--start-height-m",
+        type=float,
+        default=0.07,
+        help="Height of cuVSLAM odom origin above the floor at power-up (m)",
+    )
+    parser.add_argument(
+        "--stop-on-pad",
+        action="store_true",
+        help="Land and disarm on the Concentric Pad instead of touch-and-go Stage 6 Fly-Home",
     )
     args = parser.parse_args(argv)
 
     cfg = PlannerConfig.from_json(args.config) if args.config.exists() else PlannerConfig()
     if args.fast_mode:
         cfg.fast_mode = True
+    if args.stop_on_pad:
+        cfg.enable_fly_home = False
 
     grid = OccupancyGrid3D(
         bounds_min_m=cfg.global_map_bounds_min_m,
@@ -405,10 +782,15 @@ def run_ros2_node(argv=None) -> int:
             grid.load_prior_from_json(args.prior)
 
     router = GlobalCourseRouter(cfg, grid)
-    tracker = PX4TrajectoryTrackerCore(router)
+    tracker = PX4TrajectoryTrackerCore(
+        router,
+        start_bearing_deg=args.start_bearing_deg,
+        start_height_m=(args.start_height_m if args.skybeta_mode else 0.0),
+        touch_and_go_fly_home=not args.stop_on_pad,
+    )
 
     import rclpy
-    from geometry_msgs.msg import PointStamped, PoseStamped
+    from geometry_msgs.msg import PointStamped, PoseStamped, TwistStamped
     from nav_msgs.msg import Odometry
     from rclpy.node import Node
     from rclpy.parameter import Parameter
@@ -505,26 +887,42 @@ def run_ros2_node(argv=None) -> int:
     def on_visual_slam_odom(msg: Odometry) -> None:
         p = msg.pose.pose.position
         v = msg.twist.twist.linear
-        # In skybeta odom (nose North = +x_odom North, +y_odom West -> NED: x_ned = +x_odom, y_ned = -y_odom, z_ned = -z_odom)
+        q = msg.pose.pose.orientation
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        yaw_odom = math.atan2(siny_cosp, cosy_cosp)
+        launch_xy = (tracker.launch_origin_enu[0], tracker.launch_origin_enu[1])
+        pos_enu = odom_to_course_pos(
+            (float(p.x), float(p.y), float(p.z)),
+            launch_xy,
+            tracker.start_bearing_deg,
+            tracker.start_height_m,
+        )
+        pos_ned = enu_to_ned_pos(pos_enu, origin_enu=tracker.launch_origin_enu)
+        yaw_enu_0 = 0.5 * math.pi - math.radians(tracker.start_bearing_deg)
+        yaw_enu = wrap_pi(yaw_enu_0 + yaw_odom)
+        heading_ned = enu_yaw_to_ned_yaw(yaw_enu)
         tracker.update_local_position(
             now_sec(),
-            float(p.x),
-            float(-p.y),
-            float(-p.z),
+            float(pos_ned[0]),
+            float(pos_ned[1]),
+            float(pos_ned[2]),
             float(v.x),
             float(-v.y),
             float(-v.z),
-            0.0,
+            float(heading_ned),
             True,
             True,
         )
+        tracker.update_estimator_health(True)
 
     def on_skybeta_state(msg: String) -> None:
         try:
             st = json.loads(msg.data)
             armed = ARMING_STATE_ARMED if st.get("armed", False) else 1
             nav = NAVIGATION_STATE_OFFBOARD if st.get("offboard_active", False) else 2
-            tracker.update_vehicle_status(now_sec(), armed, nav)
+            landed = bool(st.get("landed", False))
+            tracker.update_vehicle_status(now_sec(), armed, nav, landed=landed)
         except ValueError:
             pass
 
@@ -544,27 +942,43 @@ def run_ros2_node(argv=None) -> int:
     offboard_pub = node.create_publisher(OffboardControlMode, "/fmu/in/offboard_control_mode", 10)
     setpoint_pub = node.create_publisher(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", 10)
     skybeta_pose_pub = node.create_publisher(PoseStamped, "/skybeta/setpoint/pose", 10)
+    skybeta_twist_pub = node.create_publisher(TwistStamped, "/skybeta/setpoint/twist", 10)
 
     def timer_callback() -> None:
         t_now = now_sec()
+        if args.skybeta_mode:
+            if not args.approve_flight:
+                return
+            cmd = tracker.step_skybeta_mission(t_now)
+            if cmd.mode == "pose":
+                pose_msg = PoseStamped()
+                pose_msg.header.stamp = node.get_clock().now().to_msg()
+                pose_msg.header.frame_id = "odom"
+                pose_msg.pose.position.x = float(cmd.pos_odom[0])
+                pose_msg.pose.position.y = float(cmd.pos_odom[1])
+                pose_msg.pose.position.z = float(cmd.pos_odom[2])
+                pose_msg.pose.orientation.x = float(cmd.quat_xyzw[0])
+                pose_msg.pose.orientation.y = float(cmd.quat_xyzw[1])
+                pose_msg.pose.orientation.z = float(cmd.quat_xyzw[2])
+                pose_msg.pose.orientation.w = float(cmd.quat_xyzw[3])
+                skybeta_pose_pub.publish(pose_msg)
+            elif cmd.mode == "twist":
+                twist_msg = TwistStamped()
+                twist_msg.header.stamp = node.get_clock().now().to_msg()
+                twist_msg.header.frame_id = "odom"
+                twist_msg.twist.linear.x = float(cmd.vel_odom[0])
+                twist_msg.twist.linear.y = float(cmd.vel_odom[1])
+                twist_msg.twist.linear.z = float(cmd.vel_odom[2])
+                twist_msg.twist.angular.z = 0.0
+                skybeta_twist_pub.publish(twist_msg)
+            return
+
         sample, status_reason = tracker.sample_setpoint(t_now)
         if sample is None:
             node.get_logger().debug(f"Planner holding publishing: {status_reason}")
             return
         if not args.approve_flight:
             # Read-only / dry-run planning mode until team explicitly approves flight (AGENTS.md)
-            return
-
-        if args.skybeta_mode:
-            # Publish compliant /skybeta/setpoint/pose in odom frame (never touching /fmu/in/*)
-            pose_msg = PoseStamped()
-            pose_msg.header.stamp = node.get_clock().now().to_msg()
-            pose_msg.header.frame_id = "odom"
-            pose_msg.pose.position.x = float(sample.position_ned[0])
-            pose_msg.pose.position.y = float(-sample.position_ned[1])
-            pose_msg.pose.position.z = float(-sample.position_ned[2])
-            pose_msg.pose.orientation.w = 0.0
-            skybeta_pose_pub.publish(pose_msg)
             return
 
         ocm = OffboardControlMode()

@@ -311,6 +311,79 @@ class TestPlannerScaffold(unittest.TestCase):
         self.assertTrue(np.all(pts[:, 1] >= -2.70))
         self.assertGreater(float(np.max(pts[:, 1])), -2.00)
 
+    def test_skybeta_mission_yaw_alignment_and_touch_and_go_fly_home(self) -> None:
+        cfg = PlannerConfig()
+        grid = OccupancyGrid3D(
+            bounds_min_m=cfg.global_map_bounds_min_m,
+            bounds_max_m=cfg.global_map_bounds_max_m,
+            resolution_m=cfg.voxel_resolution_m,
+            inflation_radius_m=cfg.obstacle_inflation_m,
+        )
+        router = GlobalCourseRouter(cfg, grid)
+        tracker = PX4TrajectoryTrackerCore(router, start_bearing_deg=0.0, start_height_m=0.07, touch_and_go_fly_home=True)
+
+        # 1. WAIT_FOR_OFFBOARD pre-streams current odom position before arming/Offboard
+        tracker.update_local_position(0.0, 0.0, 0.0, -0.07, 0.0, 0.0, 0.0, 0.0, True, True)
+        tracker.update_estimator_health(True)
+        tracker.update_vehicle_status(0.0, arming_state=1, nav_state=2, landed=True)
+        cmd_wait = tracker.step_skybeta_mission(0.0)
+        self.assertEqual(cmd_wait.skybeta_state, "WAIT_FOR_OFFBOARD")
+        self.assertEqual(cmd_wait.mode, "pose")
+
+        # 2. Enter Offboard -> immediately transitions to TAKEOFF
+        tracker.update_vehicle_status(0.1, ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD, landed=False)
+        cmd_to = tracker.step_skybeta_mission(0.1)
+        self.assertEqual(cmd_to.skybeta_state, "TAKEOFF")
+        self.assertEqual(cmd_to.mode, "pose")
+
+        # 3. Reach takeoff altitude (z = 0.85 m -> z_ned = -0.85 m) -> transitions to ROUTE with valid unit quaternion
+        tracker.update_local_position(1.0, 0.0, 0.0, -0.85, 0.0, 0.0, 0.0, 0.0, True, True)
+        cmd_route = tracker.step_skybeta_mission(1.0)
+        self.assertEqual(cmd_route.skybeta_state, "ROUTE")
+        self.assertEqual(cmd_route.mode, "pose")
+        q_norm = float(np.linalg.norm(cmd_route.quat_xyzw))
+        self.assertAlmostEqual(q_norm, 1.0, places=5)
+
+        # 4. Arrive over Concentric Landing Pad -> enters PAD_LAND two-stage TwistStamped flare
+        router.stage = CourseStage.STAGE_5_LANDING_PAD
+        lp_ned = enu_to_ned_pos(cfg.checkpoints.landing_pad, origin_enu=tracker.launch_origin_enu)
+        tracker.update_local_position(10.0, lp_ned[0], lp_ned[1], -0.60, 0.0, 0.0, 0.0, 0.0, True, True)
+        cmd_pad_fast = tracker.step_skybeta_mission(10.0)
+        self.assertEqual(cmd_pad_fast.skybeta_state, "PAD_LAND")
+        self.assertEqual(cmd_pad_fast.mode, "twist")
+        self.assertAlmostEqual(cmd_pad_fast.vel_odom[2], -0.38, places=3)
+
+        # Below z = 0.35 m -> ground-effect flare slows vertical descent to -0.18 m/s
+        tracker.update_local_position(10.5, lp_ned[0], lp_ned[1], -0.25, 0.0, 0.0, 0.0, 0.0, True, True)
+        cmd_pad_flare = tracker.step_skybeta_mission(10.5)
+        self.assertEqual(cmd_pad_flare.mode, "twist")
+        self.assertAlmostEqual(cmd_pad_flare.vel_odom[2], -0.18, places=3)
+
+        # 5. Touchdown on Concentric Pad (z = 0.08 m) for 0.85 s -> Touch-and-Go transitions to FLY_HOME!
+        tracker.update_local_position(11.0, lp_ned[0], lp_ned[1], -0.08, 0.0, 0.0, 0.0, 0.0, True, True)
+        tracker.update_vehicle_status(11.0, ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD, landed=False)
+        tracker.step_skybeta_mission(11.0)
+        tracker.update_local_position(11.9, lp_ned[0], lp_ned[1], -0.08, 0.0, 0.0, 0.0, 0.0, True, True)
+        tracker.update_vehicle_status(11.9, ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD, landed=False)
+        cmd_fly_home = tracker.step_skybeta_mission(11.9)
+        self.assertEqual(cmd_fly_home.skybeta_state, "FLY_HOME")
+        self.assertEqual(cmd_fly_home.mode, "pose")
+        self.assertEqual(router.stage, CourseStage.STAGE_6_FLY_HOME)
+        self.assertAlmostEqual(float(np.linalg.norm(cmd_fly_home.quat_xyzw)), 1.0, places=5)
+
+        # 6. Arrive over Start Pad after wall hop -> enters HOME_LAND flare -> disarms to DONE
+        tracker.update_local_position(18.0, 0.0, 0.0, -0.30, 0.0, 0.0, 0.0, 0.0, True, True)
+        tracker.update_vehicle_status(18.0, ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD, landed=False)
+        cmd_home_land = tracker.step_skybeta_mission(18.0)
+        self.assertEqual(cmd_home_land.skybeta_state, "HOME_LAND")
+        self.assertEqual(cmd_home_land.mode, "twist")
+        self.assertAlmostEqual(cmd_home_land.vel_odom[2], -0.18, places=3)
+
+        tracker.update_vehicle_status(19.0, arming_state=1, nav_state=2, landed=True)
+        cmd_done = tracker.step_skybeta_mission(19.0)
+        self.assertEqual(cmd_done.skybeta_state, "DONE")
+        self.assertEqual(cmd_done.mode, "none")
+
 
 if __name__ == "__main__":
     unittest.main()

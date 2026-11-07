@@ -122,3 +122,57 @@ def enu_yaw_to_ned_yaw(
     if convention == "flu_to_frd":
         return wrap_pi(-float(yaw_rad))
     raise ValueError(f"Unsupported frame convention: {convention}")
+
+
+def course_to_odom_pos(
+    pos_enu: np.ndarray | Tuple[float, float, float],
+    launch_xy: Tuple[float, float],
+    start_bearing_deg: float = 0.0,
+    start_height_m: float = 0.0,
+) -> Tuple[float, float, float]:
+    """Convert course ENU [x_east, y_north, z_up] to cuVSLAM `odom` frame (+x along initial nose, +y left, +z up)."""
+    e = float(pos_enu[0]) - float(launch_xy[0])
+    n = float(pos_enu[1]) - float(launch_xy[1])
+    b = math.radians(float(start_bearing_deg))
+    s, c = math.sin(b), math.cos(b)
+    return (e * s + n * c, -e * c + n * s, float(pos_enu[2]) - float(start_height_m))
+
+
+def odom_to_course_pos(
+    pos_odom: np.ndarray | Tuple[float, float, float],
+    launch_xy: Tuple[float, float],
+    start_bearing_deg: float = 0.0,
+    start_height_m: float = 0.0,
+) -> Tuple[float, float, float]:
+    """Convert cuVSLAM `odom` [x_fwd, y_left, z_up] back to course ENU [x_east, y_north, z_up]."""
+    qx, qy, qz = float(pos_odom[0]), float(pos_odom[1]), float(pos_odom[2])
+    b = math.radians(float(start_bearing_deg))
+    s, c = math.sin(b), math.cos(b)
+    return (
+        float(launch_xy[0]) + qx * s - qy * c,
+        float(launch_xy[1]) + qx * c + qy * s,
+        qz + float(start_height_m),
+    )
+
+
+def course_vel_to_odom_vel(
+    vel_enu: np.ndarray | Tuple[float, float, float],
+    start_bearing_deg: float = 0.0,
+) -> Tuple[float, float, float]:
+    """Convert course ENU velocity [vx_east, vy_north, vz_up] to cuVSLAM `odom` velocity [vx_fwd, vy_left, vz_up]."""
+    ve, vn, vz = float(vel_enu[0]), float(vel_enu[1]), float(vel_enu[2])
+    b = math.radians(float(start_bearing_deg))
+    s, c = math.sin(b), math.cos(b)
+    return (ve * s + vn * c, -ve * c + vn * s, vz)
+
+
+def enu_yaw_to_odom_quat(
+    yaw_enu_rad: float,
+    start_bearing_deg: float = 0.0,
+) -> Tuple[float, float, float, float]:
+    """Convert course ENU yaw (0=East, +pi/2=North) to unit quaternion (qx, qy, qz, qw) in `odom` frame."""
+    yaw_enu_0 = 0.5 * math.pi - math.radians(float(start_bearing_deg))
+    yaw_odom = wrap_pi(float(yaw_enu_rad) - yaw_enu_0)
+    half = 0.5 * yaw_odom
+    return (0.0, 0.0, math.sin(half), math.cos(half))
+
