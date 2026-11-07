@@ -61,15 +61,15 @@ Logs: `~/dh_sim_logs/master/*.log`.
 - **navless_nav, `route_gate_b.json`:** lands 1.1 cm from the pad centre, 48 s after arming, no
   contacts. Closest call is during the climb-out on the launch mark: it drifts 15 cm south to 3 cm from
   Barrier 1 while PX4 limits tilt at takeoff (`MPC_TILTMAX_LND` 12 deg).
-- **planner: `import json` was missing** in `px4_bridge_node.py`, so it crashed on the first
-  `/skybeta/state` message. Fixed on this branch.
+- **planner, before `b78096a`:** it crashed on the first `/skybeta/state` message (`import json`
+  missing). After that was fixed, the setpoint ran on spline time instead of the drone's progress: at
+  arming it was 1.4 m up the route, and the drone flew through the M1 wall and flipped.
+- **planner, on `b78096a` (`max_lead_m` carrot cap):** it clears the corridor (10.4 s). Then it grazes
+  the M1 wall (-0.7 cm by the prop-disc clearance model, no Gazebo contact, 9.9 deg tilt) and stops in
+  the maze, until the pilot stand-in lands it 40 s after arming. Its new pad landing
+  (touch-and-go / `--stop-on-pad`) was not reached, so it is untested.
 - **planner: `/estimator/healthy` has no publisher on skybeta.** The planner won't fly without it.
   `sim_core.py` publishes it here.
-- **planner: the setpoint runs away from the drone.** In skybeta mode it publishes the spline at
-  spline time, not at the drone's progress. At arming it is already 1.4 m up the route, and the drone
-  flies straight at it through the M1 wall. `navless_nav`'s carrot (never more than `max_lead_m` ahead)
-  is the pattern that works with 10 Hz position-only setpoints.
-- **planner: no landing in skybeta mode**, so the pilot stand-in has to land it.
 - **cloud_localize never locks on.** On the bench (drone still on the launch mark) the stereo cloud
   matches the course mesh to 1.7 cm median at the true pose, yet ICP reports fitness 0.13 ("poor
   fit"), so it stays on odometry. It also starts 12 cm off: it puts the camera at the launch mark at
