@@ -1,0 +1,133 @@
+{
+  "baseline_run": "20261107T213553Z-split-astar-flight",
+  "outcome": "failed: strict terrain-fusion profile gate rejected; NOT a course pass",
+  "frozen_runtime_archive_sha256": "e6aa7d281e9bfeef52bdd8bd5d3d20800c82b6ed0cb73f9345ba467ea4067884",
+  "runtime_manifest_sha256": "6eeba7ca0b0554c60811f52dfdf7e358b1de7bb2b7b4396243e4da74c7ca487b",
+  "files": {
+    "run_split_course.sh": {
+      "source": "frozen213553/run_split_course.sh",
+      "sha256": "6518036eff9ce48c00c2af6e5728e0372e65252cfbfc588e5c5154c65350c067"
+    },
+    "prepare_split.sh": {
+      "source": "frozen213553/prepare_split.sh",
+      "sha256": "0fe8d090b854bfa30f0dc4a17e644eff5e31435e57501fedf481e8dfd9415e1f"
+    },
+    "check_startup_recording.py": {
+      "source": "frozen213553/check_startup_recording.py",
+      "sha256": "01c325df43411e52d9e51e59554dba3372c36f7d5cf6cb6a53a57d7ef64e000c"
+    },
+    "split_record.py": {
+      "source": "frozen213553/split_record.py",
+      "sha256": "e1d1b28bb8bbf4786f318cdfb73e80189d4e7e84285be3e7c454e7bbaa29114a"
+    },
+    "wait_settled.py": {
+      "source": "frozen213553/wait_settled.py",
+      "sha256": "76693e0b6145b64532f436c19145d7733fbb4be88ab72a8af7bd27a757f7899b"
+    },
+    "capture_flight_sensors.py": {
+      "source": "frozen213553/capture_flight_sensors.py",
+      "sha256": "d03ef24aba9293bc80618e550f392d8898c4702b5a9960793d5dab3887a0f8b2"
+    },
+    "seal_sensor_capture.py": {
+      "source": "frozen213553/seal_sensor_capture.py",
+      "sha256": "60345e3e957cff817a6f1460518ddeed9db3ad682bcd978515a1085b26e58d29"
+    },
+    "check_stereo_rate.py": {
+      "source": "frozen213553/check_stereo_rate.py",
+      "sha256": "59f5fadd2ff529631e434576743b6323f89a760b03b4cbaea343e635bcc6f490"
+    },
+    "check_imu_stereo.py": {
+      "source": "frozen213553/check_imu_stereo.py",
+      "sha256": "edacfe9151be312321ad4cf69e1b5099fb3fc55eb641932adbdc043e9bfcc2de"
+    },
+    "start.sh": {
+      "source": "workspace/jetson_sim/start.sh",
+      "sha256": "bd19fff68ef2db60969b592b41a9a6e0f342d481b674a280a83621de5705a481"
+    },
+    "stop.sh": {
+      "source": "workspace/jetson_sim/stop.sh",
+      "sha256": "44f9aa66c7a6c4192551596420a66c2794f1bb492b023a77d71e84e4760df15c"
+    },
+    "setup_jetson.sh": {
+      "source": "workspace/jetson_sim/setup_jetson.sh",
+      "sha256": "1a756e8086a75e1b07634c676589b9eca6e75d6d4962f8a91910ee56207c0196"
+    },
+    "start_px4.sh": {
+      "source": "workspace/jetson_sim/start_px4.sh",
+      "sha256": "7f68d66167d121655575a4c8e8164208cfcdfcb16d04cefda23c8da10d986101"
+    },
+    "start_px4_from_mac.sh": {
+      "source": "workspace/jetson_sim/start_px4_from_mac.sh",
+      "sha256": "f7935a3b975deb9591359b48d96a320a62be8c228bd725a4800aeafb2a701751"
+    },
+    "run_laptop.sh": {
+      "source": "workspace/jetson_sim/run_laptop.sh",
+      "sha256": "38ed15c92e493e18d1c6435e421d25780ae165bd84686f0f155a0210b7cdbe20"
+    },
+    "run_jetson.sh": {
+      "source": "workspace/jetson_sim/run_jetson.sh",
+      "sha256": "82e7cd3b31fdac668866be9cfa69c527abb18206f5833e29c2bc93c4f4d1a1df"
+    },
+    "make_assets.py": {
+      "source": "workspace/jetson_sim/make_assets.py",
+      "sha256": "1ef15b19188e2a5d418cddbb893ffddf7730ac43966721ba6427512c3013eef8"
+    },
+    "range_sensor.py": {
+      "source": "workspace/jetson_sim/range_sensor.py",
+      "sha256": "655b7be0cf9f25b48615f1ff13ba9eca62a49600702f1893c5801a8e0bffa95b"
+    },
+    "sensor_link.py": {
+      "source": "workspace/jetson_sim/sensor_link.py",
+      "sha256": "6da37bbe255fafdf1655b3aced6c930c2398e15c52103ac7d902cf6d0b7c5866"
+    },
+    "imu_link.py": {
+      "source": "workspace/jetson_sim/imu_link.py",
+      "sha256": "7264912aaa7fc9b9801bc2a37230b3cb752795a5126def1843bea287d6834fe6"
+    },
+    "split_network.sh": {
+      "source": "workspace/jetson_sim/split_network.sh",
+      "sha256": "b3af92fde18f89b73fd644283fe7d97617f78dbd667b7e5a316c3b6dbaf2ddb9"
+    },
+    "sim_slam.launch.py": {
+      "source": "workspace/jetson_sim/sim_slam.launch.py",
+      "sha256": "c9dd894e28e8dbc3740cff6748b9da78f5c7b7a7e1a81e6e2d0a08a52e32556b"
+    },
+    "sim_navigation.launch.py": {
+      "source": "workspace/jetson_sim/sim_navigation.launch.py",
+      "sha256": "61f756eb37be026a98b66a32e4c423fc14cb26c76417d2caef4d93d8e2fdfdc9"
+    },
+    "network_probe.py": {
+      "source": "workspace/jetson_sim/network_probe.py",
+      "sha256": "dd89d191ac1aee97112e54630f500e617ce424867cc165499279502bb9cd6aa1"
+    },
+    "observe.py": {
+      "source": "workspace/jetson_sim/observe.py",
+      "sha256": "4365ee4c177e03710e75e0bd4c677744e8a921964d57b9e9fb42c0fd2b9b27d0"
+    },
+    "image_arrivals.py": {
+      "source": "workspace/jetson_sim/image_arrivals.py",
+      "sha256": "e0af1bc37b749d42f18788eeb447dd7c13d1158705674de9fd6998a364e358ef"
+    },
+    "reset_split_after_flight.sh": {
+      "source": "workspace/jetson_sim/reset_split_after_flight.sh",
+      "sha256": "917d728a70aef4f17ad464f1dd1c106852f1002f96873161d26fd46121f3e5af"
+    },
+    "test_sensor_link.py": {
+      "source": "workspace/jetson_sim/test_sensor_link.py",
+      "sha256": "e800fed2a7aa78dd43b3724dac8c8a084943a8d1e335d6698a3ecb8367169ceb"
+    },
+    "test_source_admission.py": {
+      "source": "workspace/jetson_sim/test_source_admission.py",
+      "sha256": "ba2198e94d1b5ae8d3680bb25a9d0d4bc57443a5975367210e2f8a716faf474f"
+    },
+    "test_startup_recording.py": {
+      "source": "workspace/jetson_sim/test_startup_recording.py",
+      "sha256": "df5e6d5952dfedfeff055c6108fcd73d94ef3df3564f18c82144190f4c4bd7df"
+    },
+    "test_prepare_split.py": {
+      "source": "workspace/jetson_sim/test_prepare_split.py",
+      "sha256": "9c10bedff2532ced222d3ed475bea0a9b12b5f1671fdd6597ebc59ef94030b05"
+    }
+  },
+  "packaging_changes": "relative repository mounts/configurable SSH/new install helpers; runtime manifest-listed flight modules unchanged"
+}
