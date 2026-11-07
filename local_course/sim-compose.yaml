@@ -1,0 +1,27 @@
+name: local-course
+services:
+  sim:
+    image: local-course:vision
+    container_name: local-course-sim
+    platform: linux/arm64
+    init: true
+    shm_size: 1gb
+    environment:
+      ROS_DOMAIN_ID: "220"
+      ROS_LOCALHOST_ONLY: "1"
+      GZ_PARTITION: local_course
+      GZ_IP: "127.0.0.1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      COURSE_START_BEARING: "${COURSE_START_BEARING:-0}"
+      COURSE_RTF: "${COURSE_RTF:-0.5}"
+    ports:
+      - "127.0.0.1:6082:6080"
+    volumes:
+      - ..:/workspace/Navless:ro
+      - ./state/home:/root
+      - .:/local_course:ro
+      - ./state:/course-state
+    networks: [isolated]
+networks:
+  isolated:
+    internal: true

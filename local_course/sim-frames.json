@@ -1,0 +1,20 @@
+{
+  "world": "dronehacks",
+  "world_axes": {"x": "geographic east", "y": "geographic north", "z": "up"},
+  "world_source": "Navless/gazebo_sim/worlds/dronehacks.sdf:3,54-60",
+  "geodetic_origin": {"latitude_deg": 37.4241, "longitude_deg": -122.1700, "elevation_m": 30, "ellipsoid": "WGS84", "world_frame_orientation": "ENU"},
+  "spawn_enu_m": [-2.5146, 0.9144, 0.075],
+  "launch_body_flu_yaw_enu_deg": 90,
+  "launch_body_bearing_geographic_deg": 0,
+  "calibration_note": "Known static simulator launch orientation; not estimated from live truth. Body forward points north and left points west. A body-initialized identity stereo odom needs +90deg rotation into world ENU before ENU-to-NED conversion.",
+  "stereo_body_flu_mount_m": {"left": [0.1053, 0.0375, 0.0304], "right": [0.1053, -0.0375, 0.0304]},
+  "optical_axes_in_flu": {"optical_x": [0,-1,0], "optical_y": [0,0,-1], "optical_z": [1,0,0]},
+  "stereo_baseline_m": 0.075,
+  "stereo_image_pixels": [640,400],
+  "stereo_horizontal_fov_deg": 80,
+  "stereo_target_sim_hz": 10,
+  "range_mount_body_flu_m": [0,0.027432,-0.03445],
+  "range_axis_body_flu": [0,0,-1],
+  "world_magnetic_field_tesla_enu": [0.000006,0.000023,-0.000042],
+  "oracle_boundary": "Only noisy range sensor and independent scorer use runtime Gazebo pose. Static launch calibration is metadata. Navigation and EV consume stereo estimates."
+}
