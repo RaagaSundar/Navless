@@ -29,10 +29,19 @@ ap.add_argument("--route", choices=("window", "gate_b"), default="window")
 ap.add_argument("--spacing", type=float, default=0.05)
 ap.add_argument("--takeoff-z", type=float, default=0.85)
 ap.add_argument("--end-z", type=float, default=0.40, help="last point above the pad (stays clear of a 0.3 m floor after a 7 cm start-height offset)")
+# navless_nav's carrot cuts the turn before the window and crosses off-centre towards C2a_a: -5.5 cm at the
+# course launch's 0.7 m/s, -2.8 cm at 0.5 m/s. Aiming 4 cm the other way keeps >= 10.9 cm to every wall (the
+# maze; the window >= 11.5 cm) at both speeds for a +-1 deg placement error (Gazebo, drone profile, 6 laps).
+# Unshifted, 1 deg east left 7.4 cm at the window. The aim matches that cut, so re-check it if the course
+# launch's speeds or max_turn_sagitta_m change. A smaller cut turns the 4 cm into a bias towards C2a_b,
+# which has room (21.0 cm planned).
+ap.add_argument("--window-shift-m", type=float, default=0.04,
+                help="window route: move the crossing along the wall, + towards C2a_b (dh/route.py window_route); "
+                     "0 = the geometric centreline")
 a = ap.parse_args()
 a.out = a.out or os.path.join(HERE, "..", "course", f"route_centreline_{a.route}.json")
 
-wps, _ = window_route() if a.route == "window" else gate_b_route()
+wps, _ = window_route(window_shift_m=a.window_shift_m) if a.route == "window" else gate_b_route()
 launch = wps[0].p
 # navless_nav climbs vertically to its takeoff height first, so start the route there; stop above the pad.
 wps = [Waypoint("launch_air", (launch[0], launch[1], a.takeoff_z), 0.0)] + wps[2:-2] + [Waypoint("pad_above", (*wps[-2].p[:2], a.end_z), 0.0)]
@@ -58,11 +67,16 @@ out = {
     "min_clearance_m_nose_north": round(float(c0[k0]), 3),
     "min_clearance_at_nose_north": n0[k0],
 }
+if a.route == "window" and a.window_shift_m:
+    out["window_shift_m"] = a.window_shift_m
 if a.route == "window":
     out.update({
         "min_clearance_m_nose_20deg_after_tube": round(float(c20[k20]), 3),
         "min_clearance_at_nose_20deg_after_tube": n20[k20],
-        "notes": "window crossing at z 0.85 m (opening 0.305-1.219 m); maze and tube at 0.94 m; ends above the pad at 0.40 m",
+        "notes": "window crossing at z 0.85 m (opening 0.305-1.219 m)"
+                 + (f", aimed {a.window_shift_m * 100:.0f} cm along the wall towards C2a_b so navless_nav's "
+                    "flown crossing is centred" if a.window_shift_m else "")
+                 + "; maze and tube at 0.94 m; ends above the pad at 0.40 m",
     })
 else:
     tight = {}

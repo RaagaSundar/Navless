@@ -83,6 +83,23 @@ All runs were clean (no contacts, every checkpoint). Under the stock controller,
 arming (1 s spool-up, 3 s takeoff ramp, 12° takeoff tilt). The real flight node was also flown on this sim with
 `tools/export_route.py`'s route, and landed both times.
 
+**Window route: placement and the crossing shift.** The node's carrot cuts the turn before the window, so it
+crosses off-centre towards C2a_a: 2.8 cm off at 0.5 m/s, 5.5 cm at the course launch's 0.7 m/s. Turning the
+nose east of north adds to that offset; west takes it away.
+
+The route therefore aims its crossing 4 cm the other way (`export_route.py --window-shift-m`, default 0.04; 0 is
+the geometric centreline). Window-wall clearance, `drone` profile, `--pilot modes`, one lap each unless noted:
+
+| Placement | 0.7 m/s, unshifted | 0.7 m/s, shifted | 0.5 m/s, unshifted | 0.5 m/s, shifted |
+|---|---|---|---|---|
+| 1° east | 7.4 cm | 11.5 cm (2 laps) | 10.0 cm | 14.3 cm |
+| north | 12.9–13.6 cm (4 laps) | 16.2 cm | 15.4 cm | — |
+| 1° west | maze-limited, 12.3 cm | 20.4 cm | 17.7 cm | 17.2 cm (C2a_b) |
+
+With the shift, ±1° keeps at least 10.9 cm to every wall at both speeds. The limit is then the maze (M3, at
+1° east and 0.7 m/s), not the window.
+Boulders stay at least 18.7 cm away, and the planned minimum is still 16.6 cm (M1).
+
 **Gate B route.** `tools/export_route.py --route gate_b` writes `course/route_centreline_gate_b.json` (18.0 m),
 the chicane alternative to the window. Past the tube it turns on arcs centred on three wall ends: round C1's
 south end, up the chicane, west through Gate B, then round A1's south end to the pad.
