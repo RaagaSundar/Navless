@@ -46,9 +46,16 @@ def course_m(x_in, y_in):
     return round((x_in - 120) * IN, 4), round((y_in - 120) * IN, 4)
 
 
-COURSE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "gazebo_sim", "course")
-COURSES = {"asbuilt": os.path.join(COURSE_DIR, "course_asbuilt.json"),
-           "plan": os.path.join(COURSE_DIR, "course_v3.json")}
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _course_file(name):
+    """In the repo (../gazebo_sim/course/), else next to this script (a copy on the drone)."""
+    repo = os.path.join(_HERE, "..", "gazebo_sim", "course", name)
+    return repo if os.path.exists(repo) or not os.path.exists(os.path.join(_HERE, name)) else os.path.join(_HERE, name)
+
+
+COURSES = {"asbuilt": _course_file("course_asbuilt.json"), "plan": _course_file("course_v3.json")}
 LINE_HINTS = ["first corner, north end of the first corridor", "east end of that top stretch (over M1)",
               "south end, between M1 and M2", "east end of that bottom stretch (under M2)",
               "north end, between M2 and M3"]
