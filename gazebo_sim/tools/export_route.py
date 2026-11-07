@@ -54,6 +54,9 @@ ap.add_argument("--pad-from-south-in", type=float, default=0.0,
 ap.add_argument("--maze-top-north-m", type=float, default=0.0,
                 help="window route: move the crossings over M1's and M3's north ends this far towards the north "
                      "net (the drone reaches further behind its centre than ahead of it), m")
+ap.add_argument("--window-via-in", type=float, nargs=2, default=None, metavar=("X", "Y"),
+                help="window route: an extra point between the tube exit and the window approach, map inches "
+                     "(as-built: keeps the downward rangefinder's beam off boulder 3)")
 a = ap.parse_args()
 course = os.path.basename(a.course)
 plan = os.path.samefile(a.course, COURSE_JSON)
@@ -63,7 +66,8 @@ tag = "" if plan else "_" + course[:-len(".json")].replace("course_", "")
 a.out = a.out or os.path.join(HERE, "..", "course", f"route_centreline_{a.route}{tag}.json")
 
 wps, _ = (window_route(a.course, window_shift_m=a.window_shift_m, tube_exit_drop_in=a.tube_exit_drop_in,
-                       pad_from_south_in=a.pad_from_south_in, maze_top_north_m=a.maze_top_north_m)
+                       pad_from_south_in=a.pad_from_south_in, maze_top_north_m=a.maze_top_north_m,
+                       window_via_in=a.window_via_in)
           if a.route == "window" else gate_b_route(a.course))
 launch = wps[0].p
 # navless_nav climbs vertically to its takeoff height first, so start the route there; stop above the pad.
@@ -95,6 +99,8 @@ if a.route == "window" and a.window_shift_m:
 if a.route == "window" and (a.tube_exit_drop_in != 26.0 or a.pad_from_south_in or a.maze_top_north_m):
     out.update({"tube_exit_drop_in": a.tube_exit_drop_in, "pad_from_south_in": a.pad_from_south_in,
                 "maze_top_north_m": a.maze_top_north_m})
+if a.route == "window" and a.window_via_in:
+    out["window_via_in"] = a.window_via_in
 if not plan:
     out["course_file"] = f"gazebo_sim/course/{course}"
 if a.route == "window":

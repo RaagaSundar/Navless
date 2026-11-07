@@ -75,7 +75,7 @@ class Trajectory:
 
 # ---------------------------------------------------------------------------------------- the route
 def window_route(course_path=COURSE_JSON, z_maze=0.94, z_window=0.85, window_shift_m=0.0,
-                 tube_exit_drop_in=26.0, pad_from_south_in=0.0, maze_top_north_m=0.0):
+                 tube_exit_drop_in=26.0, pad_from_south_in=0.0, maze_top_north_m=0.0, window_via_in=None):
     """Launch -> corridor -> maze -> Gate A -> tube -> window -> pad. Every point comes from the map.
 
     window_shift_m moves the window crossing along the wall (+ = towards the wall's north-east end, C2a_b).
@@ -90,6 +90,9 @@ def window_route(course_path=COURSE_JSON, z_maze=0.94, z_window=0.85, window_shi
     floor line puts them midway between wall end and net, but nose north the drone reaches 0.2275 m
     behind its centre and only 0.1575 m ahead (DRONE_PARTS), so midway leaves the wall end the
     smaller gap. On the as-built course those gaps are only ~0.6 m wide.
+    window_via_in (x, y map inches) adds a point between the tube exit and the window approach. On the
+    as-built route it keeps the downward rangefinder's beam off boulder 3: PX4 takes its height from
+    that rangefinder, and over the boulder it reads 0.4 m short.
     """
     d = json.load(open(course_path))
     W = lambda x, y, z: (*map_to_world(x, y), z)
@@ -120,6 +123,8 @@ def window_route(course_path=COURSE_JSON, z_maze=0.94, z_window=0.85, window_shi
         Waypoint("gate_a_out", W(line[6][0] + 18, line[6][1] + top, z_maze), 1.0),  # past Gate A (132, 221.75)
         Waypoint("tube_turn", W(tube_x, 200, z_maze), 0.60),
         Waypoint("tube_exit", W(tube_x - 3, tube["y_min"] - tube_exit_drop_in, z_maze), 0.80, yaw=0.0),
+    ] + ([Waypoint("window_via", W(window_via_in[0], window_via_in[1], (z_maze + z_win) / 2), 0.50)]
+         if window_via_in else []) + [
         Waypoint("window_approach", W(aim[0] - n[0] * 30, aim[1] - n[1] * 30, z_win), 0.60,
                  yaw=win_wall["bearing_deg"]),
         Waypoint("window_exit", W(aim[0] + n[0] * 24, aim[1] + n[1] * 24, z_win), 0.60),
