@@ -28,7 +28,7 @@ os.environ.setdefault("MAVLINK20", "1")    # ODOMETRY / DISTANCE_SENSOR extensio
 from pymavlink import mavutil              # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dh.geom import Obstacles  # noqa: E402
+from dh.geom import RayCaster  # noqa: E402
 
 MODEL = "dh_quad_0"
 RNG_OFFSET_FLU = np.array([0.0, 0.027432, -0.03445])     # measured mount: FRD y -0.027, z +0.034
@@ -65,39 +65,6 @@ FLU_TO_FRD = np.diag([1.0, -1.0, -1.0])
 def rz(a):
     c, s = math.cos(a), math.sin(a)
     return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
-
-
-class RayCaster:
-    """Ray vs. the course's collision primitives (boxes, ellipsoids) and the floor plane z = 0."""
-
-    def __init__(self):
-        o = Obstacles()
-        self.c, self.R, self.h, self.box = o.c, o.R, o.size, o.is_box
-
-    def cast(self, origin, direction):
-        best = (-origin[2] / direction[2]) if direction[2] < -1e-6 else np.inf
-        ol = np.einsum("mji,mj->mi", self.R, origin[None, :] - self.c)       # R^T (o - c)
-        dl = np.einsum("mji,j->mi", self.R, direction)
-        dl = np.where(np.abs(dl) < 1e-9, 1e-9, dl)
-        # boxes: slab test
-        t1, t2 = (-self.h - ol) / dl, (self.h - ol) / dl
-        tmin, tmax = np.minimum(t1, t2).max(1), np.maximum(t1, t2).min(1)
-        hit = self.box & (tmax >= np.maximum(tmin, 0)) & (tmin > 0)
-        if hit.any():
-            best = min(best, float(tmin[hit].min()))
-        # ellipsoids: unit sphere after scaling
-        os_, ds = ol / self.h, dl / self.h
-        a = (ds * ds).sum(1)
-        b = 2 * (os_ * ds).sum(1)
-        cc = (os_ * os_).sum(1) - 1
-        disc = b * b - 4 * a * cc
-        ok = ~self.box & (disc >= 0)
-        if ok.any():
-            t = (-b[ok] - np.sqrt(disc[ok])) / (2 * a[ok])
-            t = t[t > 0]
-            if t.size:
-                best = min(best, float(t.min()))
-        return best
 
 
 def main():
