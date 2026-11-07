@@ -74,8 +74,13 @@ class Trajectory:
 
 
 # ---------------------------------------------------------------------------------------- the route
-def window_route(course_path=COURSE_JSON, z_maze=0.94, z_window=0.85):
-    """Launch -> corridor -> maze -> Gate A -> tube -> window -> pad. Every point comes from the map."""
+def window_route(course_path=COURSE_JSON, z_maze=0.94, z_window=0.85, window_shift_m=0.0):
+    """Launch -> corridor -> maze -> Gate A -> tube -> window -> pad. Every point comes from the map.
+
+    window_shift_m moves the window crossing along the wall (+ = towards the wall's north-east end, C2a_b).
+    A carrot follower cuts the turn before the window, so it crosses off-centre towards C2a_a, and
+    aiming this far the other way centres the flown crossing.
+    """
     d = json.load(open(course_path))
     W = lambda x, y, z: (*map_to_world(x, y), z)
     lx, ly = d["launch_mark_in"]
@@ -88,6 +93,7 @@ def window_route(course_path=COURSE_JSON, z_maze=0.94, z_window=0.85):
     b = math.radians(win_wall["bearing_deg"])
     n = (math.sin(math.radians(win["cross_heading_deg"])), math.cos(math.radians(win["cross_heading_deg"])))
     wc = win["center_in"]
+    aim = (wc[0] + math.sin(b) * window_shift_m / IN, wc[1] + math.cos(b) * window_shift_m / IN)
     pad = d["landing_pad_in"]["center"]
     U = 0.57                                        # maze U-turn radius: half the 45 in corridor spacing
 
@@ -103,9 +109,9 @@ def window_route(course_path=COURSE_JSON, z_maze=0.94, z_window=0.85):
         Waypoint("gate_a_out", W(line[6][0] + 18, line[6][1], z_maze), 1.0),  # past Gate A (132, 221.75)
         Waypoint("tube_turn", W(tube_x, 200, z_maze), 0.60),
         Waypoint("tube_exit", W(tube_x - 3, tube["y_min"] - 26, z_maze), 0.80, yaw=0.0),
-        Waypoint("window_approach", W(wc[0] - n[0] * 30, wc[1] - n[1] * 30, z_win), 0.60,
+        Waypoint("window_approach", W(aim[0] - n[0] * 30, aim[1] - n[1] * 30, z_win), 0.60,
                  yaw=win_wall["bearing_deg"]),
-        Waypoint("window_exit", W(wc[0] + n[0] * 24, wc[1] + n[1] * 24, z_win), 0.60),
+        Waypoint("window_exit", W(aim[0] + n[0] * 24, aim[1] + n[1] * 24, z_win), 0.60),
         Waypoint("pad_above", W(pad[0], pad[1], 0.35), 0.25),
         Waypoint("pad", W(pad[0], pad[1], GROUND_Z + 0.05), 0.0),
     ]

@@ -42,10 +42,13 @@ ARGUMENTS = [
     # Speed, tuned for the centreline window route above (Gazebo + PX4 SITL, drone profile, real pilot
     # sequence). Arm to touchdown took 32.6 s on 3 of 3 laps, against 42.9 s at navless.launch.py's
     # 0.5 / 0.6 / 0.25. Every lap kept >= 11.9 cm to every wall (window wall >= 12.9 cm) and landed
-    # 12-13 cm from the pad centre. Going faster costs window-wall margin first: 0.9 m/s left 11.9 cm,
-    # and a 1 deg placement error takes about 3 cm more there, so place the drone within about 0.5 deg
-    # at these speeds. For another route, set the three back to navless.launch.py's 0.5 / 0.6 / 0.25;
-    # for the Gate B route also set max_turn_sagitta_m below to 0.08.
+    # 12-13 cm from the pad centre. Going faster costs window-wall margin first: 0.9 m/s left 11.9 cm.
+    # Placement: the route aims its window crossing 4 cm off-centre to cancel the carrot's cut (tools/
+    # export_route.py). With that, a 1 deg error either way keeps >= 10.9 cm at these speeds and at the
+    # slow launch's (the maze is the limit; the window keeps >= 11.5 cm). Without it, 1 deg east left
+    # 7.4 cm at the window. For another route,
+    # set the three back to navless.launch.py's 0.5 / 0.6 / 0.25; for the Gate B route also set
+    # max_turn_sagitta_m below to 0.08.
     ('cruise_speed_mps', '0.7', 'route speed on straights, m/s'),
     ('max_lead_m', '0.8',
      'how far the carrot may run ahead of the drone, m: PX4 flies at about 0.95 x this, so keep it '
