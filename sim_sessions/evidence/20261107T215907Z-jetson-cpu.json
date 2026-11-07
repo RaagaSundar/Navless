@@ -1,0 +1,56 @@
+{
+  "image_id": "sha256:4b637ceeb521ff5e247577b216e2edb26195be2cf2d7c7b9915ea5f9116cb2aa",
+  "timeline": [
+    [
+      "admitted",
+      14
+    ],
+    [
+      "finished",
+      14,
+      {
+        "data": {
+          "tag": "8528ba5fcd8d",
+          "i": 14
+        },
+        "domain": "84",
+        "uid": 65534,
+        "up": [
+          "lo"
+        ],
+        "has_env": true,
+        "has_ros": true,
+        "cgroup_memory": [
+          "67108864"
+        ],
+        "has_inner_sshd": false
+      }
+    ],
+    [
+      "admitted",
+      15
+    ],
+    [
+      "finished",
+      15,
+      {
+        "data": {
+          "tag": "8528ba5fcd8d",
+          "i": 15
+        },
+        "domain": "85",
+        "uid": 65534,
+        "up": [
+          "lo"
+        ],
+        "has_env": true,
+        "has_ros": true,
+        "cgroup_memory": [
+          "67108864"
+        ],
+        "has_inner_sshd": false
+      }
+    ]
+  ],
+  "containers_remaining": 0
+}

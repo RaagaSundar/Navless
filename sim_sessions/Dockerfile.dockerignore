@@ -1,0 +1,9 @@
+**
+!sim_sessions/
+!sim_sessions/*.py
+!sim_sessions/*.sh
+!split_sim/
+!split_sim/sensor_link.py
+!split_sim/sim_slam.launch.py
+!split_sim/viewer/
+!split_sim/viewer/*.py
