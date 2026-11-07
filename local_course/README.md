@@ -1,9 +1,8 @@
 # Mac local course: experimental SITL and evidence tools
 
 This extends [PR #32's Apple Silicon base install](https://github.com/RaagaSundar/Navless/pull/32).
-It does not duplicate the base Dockerfile or installation runbook. This PR is
-based on main; until #32 merges, obtain its `local_sim` directory in a separate
-checkout as below. No sibling `Navless`, `jetson_sim`, existing PX4 binary or
+It does not duplicate the base Dockerfile or installation runbook. Both the base
+and course environment are merged into main. No sibling `Navless`, `jetson_sim`, existing PX4 binary or
 private workstation directory is required. Generated course assets derive from
 this repository's tracked `master_sim` and `gazebo_sim` sources.
 
@@ -27,16 +26,13 @@ requirements have not been measured from this clean packaging.
 ```bash
 git clone https://github.com/RaagaSundar/Navless.git Navless-course
 cd Navless-course
-git fetch origin codex/macos-local-course
-git switch --track origin/codex/macos-local-course
-# Separate base checkout; no modification to the course checkout or live install.
-git fetch origin refs/pull/32/head:refs/remotes/origin/pr-32
-git worktree add --detach ../Navless-base origin/pr-32
+git switch main
+git pull --ff-only
 cd local_course
-BASE_SIM_DIR="$PWD/../../Navless-base/local_sim" bash setup.sh
+BASE_SIM_DIR="$PWD/../local_sim" bash setup.sh
 ```
 
-Once #32 is merged, use `BASE_SIM_DIR="$PWD/../local_sim"` instead. Setup builds
+Setup builds
 its base image and CPU RTAB image, then uses #32's build-only helpers for PX4
 v1.16.1, release/1.16 px4_msgs and XRCE Agent v2.4.3. The messages release branch
 and apt packages can move: `state/build-identity.txt`, image inspection and setup

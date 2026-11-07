@@ -21,7 +21,7 @@ As checked 2026-11-07:
 |---|---|
 | [#32](https://github.com/RaagaSundar/Navless/pull/32) | Mac ARM64 base image and PX4 build recipe, merged main |
 | [#35](https://github.com/RaagaSundar/Navless/pull/35) | Mac-only domain 220 course + RTAB-Map environment, merged main; expressly excludes flight controller |
-| [#36](https://github.com/RaagaSundar/Navless/pull/36) | Network setup doctor/fix, merged **into `codex/macos-local-course` after its main merge**; `split_setup/` was not present on main `c967e27` |
+| [#36](https://github.com/RaagaSundar/Navless/pull/36) | Network setup doctor/fix in `split_setup/`, now consolidated into main (originally merged into the Mac course branch after #35) |
 | [#40](https://github.com/RaagaSundar/Navless/pull/40), [#41](https://github.com/RaagaSundar/Navless/pull/41) | Portable synthetic appearance/open-net generators, merged main; no automatic flight readiness |
 | This package | Complete split runner, frozen controller/route, source gate, recorders, install scripts and preview/video workers; no private sibling workspace required |
 

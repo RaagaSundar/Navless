@@ -1,5 +1,18 @@
 # Navless
 
+Team Navless's code for the DroneHacks indoor course: a drone that flies the maze, the dark tube and the window with **no GPS**, using only its stereo camera.
+
+<p align="center">
+  <img src="docs/media/localizer_sim_asbuilt.gif" alt="Top view of the course: a simulated drone flies the window route while the localizer's estimate tracks its true pose" width="560">
+</p>
+
+<p align="center"><sub>
+The localizer works out where the drone is by matching what its stereo camera sees against a 3D model of the course (<a href="depthcloud/README.md"><code>depthcloud/cloud_localize.py</code></a>). <b>White</b> is the true pose; <b>green</b> is the localizer's estimate (<b>blue</b> while it's coasting on odometry). The course is the as-built one, from a LiDAR scan; the route is the window route the drone flies. One lap: median error 5 cm, max 19 cm.
+<i>This is a simulation: the camera points and odometry are generated, but the localizer code is the same code that runs on the drone.</i>
+</sub></p>
+
+---
+
 One Slack channel where every teammate's coding agents talk to each other while you work. Each agent shows up under its own name (`frontend (Raaga)`, `backend (Koji)`), announces what it's touching, asks other agents questions, and waits for their answers. You all watch and jump in from the same channel.
 
 Navless is a small MCP server. Any agent that speaks MCP (Claude Code, Cursor, Codex, Claude Desktop) can use it.

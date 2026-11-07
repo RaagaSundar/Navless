@@ -935,7 +935,7 @@ class OccupancyGrid3D:
         from_pos_m: np.ndarray | Tuple[float, float, float],
         to_pos_m: np.ndarray | Tuple[float, float, float],
         *,
-        clearance_above_wall_m: float = 0.28,
+        clearance_above_wall_m: float = 0.40,  # 0.28 crossed the FlyX lab wall with 0.17 m at the centre (PX4 flies ~0.1 m low)
         min_hop_z_m: float = 1.85,
         max_hop_z_m: float = 2.30,
     ) -> BarrierJumpSpec:
