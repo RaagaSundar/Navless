@@ -1,0 +1,71 @@
+{
+  "passed": true,
+  "wall_seconds": 20.00131571699967,
+  "topics": {
+    "/clock": {
+      "count": 4109,
+      "first_stamp": 52.484,
+      "last_stamp": 69.056
+    },
+    "/oak/right/camera_info": {
+      "count": 72,
+      "first_stamp": 54.6,
+      "last_stamp": 68.8,
+      "width": 1024,
+      "height": 640,
+      "frame_id": "oak_right_camera_optical_frame",
+      "K": [
+        610.1780395507812,
+        0.0,
+        512.0,
+        0.0,
+        610.1780319213867,
+        320.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    "/oak/left/camera_info": {
+      "count": 72,
+      "first_stamp": 54.8,
+      "last_stamp": 69.0,
+      "width": 1024,
+      "height": 640,
+      "frame_id": "oak_left_camera_optical_frame",
+      "K": [
+        610.1780395507812,
+        0.0,
+        512.0,
+        0.0,
+        610.1780319213867,
+        320.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    "/oak/left/image_raw": {
+      "count": 25,
+      "first_stamp": 54.8,
+      "last_stamp": 68.4,
+      "width": 1024,
+      "height": 640,
+      "frame_id": "oak_left_camera_optical_frame",
+      "encoding": "rgb8",
+      "bytes": 1966080,
+      "pixel_std": 46.63791322513113
+    },
+    "/oak/right/image_raw": {
+      "count": 29,
+      "first_stamp": 55.2,
+      "last_stamp": 68.4,
+      "width": 1024,
+      "height": 640,
+      "frame_id": "oak_right_camera_optical_frame",
+      "encoding": "rgb8",
+      "bytes": 1966080,
+      "pixel_std": 48.66611342933414
+    }
+  }
+}

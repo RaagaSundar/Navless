@@ -1,0 +1,20 @@
+name: dronehacks-local
+services:
+  gazebo:
+    build: .
+    image: dronehacks-local:jazzy-harmonic
+    platform: linux/arm64
+    init: true
+    shm_size: 1gb
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    ports:
+      - "127.0.0.1:6080:6080"
+      - "127.0.0.1:8081:8081"
+      - "127.0.0.1:8082:8082"
+    volumes:
+      - ${NAVLESS_SOURCE_DIR:-..}:/workspace/Navless:ro
+      - ./state/home:/root
+      - ./state/runs:/workspace/Navless/gazebo_sim/runs
+      - ./evidence:/evidence
+    stop_grace_period: 10s
