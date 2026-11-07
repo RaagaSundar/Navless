@@ -11,6 +11,8 @@ Two sources, either or both:
   python3 gazebo_sim/mirror/mirror.py --drone 192.168.68.88                    # real drone only
   python3 gazebo_sim/mirror/mirror.py --run 127.0.0.1:8776 --drone 192.168.68.88   # sim run + real sensors
   python3 gazebo_sim/mirror/mirror.py --run 127.0.0.1:8776                     # sim run only
+  python3 gazebo_sim/mirror/mirror.py --drone 192.168.55.1 --record tube_carry.jsonl   # tube hand-carry test,
+  python3 gazebo_sim/mirror/tube_test.py tube_carry.jsonl                              # then its report
   then open http://localhost:8090   (--gui also opens the Gazebo window)
 
 Nothing here can command anything: both sources are read-only streams.
@@ -39,6 +41,7 @@ REPO = os.path.dirname(SIM)
 sys.path.insert(0, os.path.join(REPO, "navless_nav"))
 sys.path.insert(0, SIM)
 from navless_nav.route import odom_to_course, resolve_route_path  # noqa: E402
+from tube_test import TubeTest  # noqa: E402
 
 try:                                    # simulated side ToF, from the course collision model
     from dh.tof import side_ranges_q    # noqa: E402  (pos_world, body FLU -> world quaternion xyzw)
@@ -166,8 +169,8 @@ class RelayClient:
     """Connects to a relay (navless_nav mirror_relay, or fly_navless.py --relay) and keeps the latest
     pose frame and camera thumbnail. Reconnects forever."""
 
-    def __init__(self, name, host, port):
-        self.name, self.host, self.port = name, host, port
+    def __init__(self, name, host, port, on_frame=None):
+        self.name, self.host, self.port, self.on_frame = name, host, port, on_frame
         self.lock = threading.Lock()
         self.img_cond = threading.Condition()
         self.frame, self.frame_at, self.connected, self.count = None, None, False, 0
@@ -197,6 +200,8 @@ class RelayClient:
                         with self.lock:
                             self.frame, self.frame_at = f, time.time()
                             self.count += 1
+                        if self.on_frame is not None:          # every pose frame, in order
+                            self.on_frame(f, line)
             except OSError as e:
                 with self.lock:
                     was = self.connected
@@ -310,6 +315,10 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;margin:0;font-varian
 <section class="card"><h2>Mission &amp; sensors</h2><div class="node" id="node">-</div>
 <div class="tof" id="tof"></div><dl id="info"></dl></section>
 <section class="card" style="grid-column:1/-1"><h2>Pre-flight checks (real drone)</h2><div id="pre" class="pre"></div></section>
+<section class="card" style="grid-column:1/-1"><h2>Tube test (real drone): carry it through the tube, props off</h2>
+<canvas id="strip" width="720" height="16"></canvas><dl id="tubetest" style="margin-top:8px"></dl>
+<div class="key"><span><b style="background:#3ecf8e"></b>tracking</span><span><b style="background:#f2555a"></b>lost, odometry stopped</span><span><b style="background:#f0a83c"></b>lost, odometry frozen</span><span><b style="background:#a78bfa"></b>lost, odometry moving</span><span>last 60 s</span>
+<button id="treset" style="margin-left:auto">Reset tube test</button></div></section>
 </main>
 <script>
 const cv=document.getElementById('map'),g=cv.getContext('2d');let C=null,trail=[],pose_src=null;
@@ -336,6 +345,16 @@ const cm=v=>v==null?'—':(v*100).toFixed(1)+' cm';
 function bar(v,color){const pct=v==null?0:Math.min(100,v/2.0*100);return `<div class="bar"><i style="width:${pct}%;background:${color}"></i></div>`;}
 document.getElementById('zero').onclick=()=>{trail=[];fetch('/zero',{method:'POST'});};
 document.getElementById('unzero').onclick=()=>{trail=[];fetch('/unzero',{method:'POST'});};
+document.getElementById('treset').onclick=()=>fetch('/tube_reset',{method:'POST'});
+function tubeTest(T){const e=document.getElementById('tubetest'),sc=document.getElementById('strip'),sg=sc.getContext('2d');sg.clearRect(0,0,sc.width,sc.height);
+if(!T){e.innerHTML='<dt>status</dt><dd>no drone connected (--drone)</dd>';return;}
+const col={T:'#3ecf8e',S:'#f2555a',F:'#f0a83c',M:'#a78bfa'},n=T.strip.length;
+for(let i=0;i<n;i++){const c=col[T.strip[i]];if(c){sg.fillStyle=c;sg.fillRect(i*sc.width/n,0,Math.ceil(sc.width/n),sc.height);}}
+const od=o=>Object.entries(o).map(([k,v])=>`${k} ${v.toFixed(1)} s`).join(', ')||'—',L=T.last,G=T.gate,N=T.now;
+e.innerHTML=`<dt>now</dt><dd>${N?(N.vo_state==2?'LOST':N.vo_state==1?'tracking':'no status')+' · odometry '+N.odom:'—'}</dd>
+<dt>losses</dt><dd>${T.losses}${T.losses?` · longest ${T.longest_s.toFixed(1)} s · total ${T.total_s.toFixed(1)} s`:''}</dd>
+<dt>last loss</dt><dd>${L?`${L.dur_s.toFixed(1)} s · odometry ${od(L.odom)} · ${L.jump_m==null?'no jump':'jump '+(L.jump_m*100).toFixed(0)+' cm'}`:'—'}</dd>
+<dt>Koji's gate</dt><dd>${G?`accepted ${G.accepted} · rejected ${G.rejected}`+(G.rejected_since_start==null?'':` (${G.rejected_since_start} since reset)`):'not running (no /mapping/gate_status)'}</dd>`;}
 async function poll(){try{const s=await (await fetch('/status')).json();
 const R=s.run,D=s.drone;
 pill('run',R.enabled?(R.connected?`sim run · ${R.hz.toFixed(0)} Hz`:'sim run: waiting'):'sim run: off',R.enabled?(R.connected?'var(--ok)':'var(--warn)'):'var(--muted)');
@@ -358,7 +377,7 @@ document.getElementById('info').innerHTML=`<dt>pose from</dt><dd>${s.pose_src||'
 <dt>sim ToF</dt><dd>${s.tof_sim_note}</dd><dt>real ToF</dt><dd>${s.tof_real_note}</dd>
 <dt>placed by</dt><dd>${s.placement}</dd><dt>camera mount</dt><dd>${s.cam_source}</dd><dt>sim camera</dt><dd>${s.camera_hz.toFixed(0)} Hz</dd>`;
 document.getElementById('pre').innerHTML=(s.preflight||[]).map(([n,ok,d])=>`<div><b style="color:${ok===true?'var(--ok)':ok===false?'var(--bad)':'var(--warn)'}">${ok===true?'✓':ok===false?'✗':'?'}</b><div>${n}<br><span>${d}</span></div></div>`).join('');
-draw(s);}catch(e){pill('run','dashboard offline','var(--bad)');}setTimeout(poll,150);}poll();
+tubeTest(s.tube_test);draw(s);}catch(e){pill('run','dashboard offline','var(--bad)');}setTimeout(poll,150);}poll();
 </script></body></html>"""
 
 
@@ -426,6 +445,8 @@ def main():
     ap.add_argument("--gui", action="store_true", help="also open the Gazebo window")
     ap.add_argument("--color", action="store_true", help="colour simulated camera (the real stereo pair is mono)")
     ap.add_argument("--no-sim", action="store_true", help="use an already running mirror world")
+    ap.add_argument("--record", metavar="FILE",
+                    help="append every frame from the drone (no camera images) to FILE, for tube_test.py")
     a = ap.parse_args()
     if not (a.drone or a.run):
         ap.error("give --drone and/or --run")
@@ -460,7 +481,18 @@ def main():
     node = Node()
     camera = CameraFeed(node, color=a.color)
     run = RelayClient("sim run", *host_port(a.run, 8776)) if a.run else None
-    drone = RelayClient("drone", *host_port(a.drone, 8775)) if a.drone else None
+    tube = TubeTest()                 # the tube hand-carry test, fed every drone frame
+    tube_lock = threading.Lock()
+    record = open(a.record, "a") if a.record else None
+
+    def drone_frame(f, line):
+        with tube_lock:
+            tube.feed(f)
+        if record is not None:
+            record.write(line if line.endswith("\n") else line + "\n")
+            record.flush()
+
+    drone = RelayClient("drone", *host_port(a.drone, 8775), on_frame=drone_frame) if a.drone else None
     place = Placement(tuple(a.launch), a.start_bearing, a.start_height)
 
     def set_poses(poses):
@@ -492,7 +524,7 @@ def main():
               "tof_sim": None, "tof_real": None,
               "tof_sim_note": "course model raycast" if side_ranges_q else "dh/tof.py not available yet",
               "tof_real_note": "waiting", "placement": "power-up pose (launch mark, nose north)",
-              "preflight": [], "tube_sim": None, "tube_real": None}
+              "preflight": [], "tube_sim": None, "tube_real": None, "tube_test": None}
     status_lock = threading.Lock()
     cmap = json.dumps(course_map(a.route))
 
@@ -523,6 +555,11 @@ def main():
                 return
 
         def do_POST(self):
+            if self.path == "/tube_reset":
+                with tube_lock:
+                    tube.reset()
+                self._send(b"ok", "text/plain")
+                return
             src = run if run is not None and run.fresh() else drone
             f = src.fresh() if src is not None else None
             if self.path == "/zero" and f is not None:
@@ -626,6 +663,11 @@ def main():
             status["tube_real"] = tube_view(status.get("tof_real"))
         with status_lock:
             status["preflight"] = preflight_checks(fd, status["real_cam"])
+        if drone is not None:
+            with tube_lock:
+                tt = tube.summary()
+            with status_lock:
+                status["tube_test"] = tt
         time.sleep(1 / 30)
 
 

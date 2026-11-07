@@ -6,7 +6,30 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from navless_nav.mirror_relay import FrameServer, make_frame, make_image_frame  # noqa: E402
+from navless_nav.mirror_relay import (FrameServer, OdomWatch, make_frame,  # noqa: E402
+                                      make_image_frame)
+
+
+def test_odom_watch_tells_frozen_from_moving_and_catches_a_jump():
+    w = OdomWatch()
+    w.update(0.0, (0.0, 0.0, 0.9))
+    w.update(0.033, (0.03, 0.0, 0.9))              # carried: the pose moves every message
+    assert w.block(0.04)['still'] == 0.007 and w.block(0.04)['jump'] is None
+    for i in range(10):                             # frozen: the same pose, bit for bit
+        w.update(0.066 + i * 0.033, (0.03, 0.0, 0.9))
+    b = w.block(0.4)
+    assert b['n'] == 12 and b['still'] == round(0.4 - 0.033, 3)
+    w.update(0.5, (0.18, 0.0, 0.9))                # cuVSLAM re-init: one 15 cm step
+    assert w.block(0.5)['jump'] == [0.5, 0.15] and w.block(0.5)['still'] == 0.0
+
+
+def test_frame_carries_the_vio_block():
+    w = OdomWatch()
+    w.update(1.0, (0, 0, 0))
+    gate = {'accepted': 10, 'rejected': 2, 'age': 0.1}
+    f = json.loads(make_frame(1.0, 0.0, ((0, 0, 0), (0, 0, 0, 1)), vio=w.block(1.2, gate)))
+    assert f['vio'] == {'n': 1, 'still': 0.2, 'jump': None, 'gate': gate}
+    assert json.loads(make_frame(1.0, 0.0, ((0, 0, 0), (0, 0, 0, 1))))['vio'] is None
 
 
 def test_frame_carries_tof_and_node_with_no_return_as_null():

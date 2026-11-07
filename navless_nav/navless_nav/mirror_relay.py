@@ -22,6 +22,10 @@ address when tethered. It gets one JSON object per line:
      "tof": {"left": m|null, "right": m|null,   side ToF (/tube/*/range); null = no return
              "age_left": s|null, "age_right": s|null,   per side, so one dead sensor shows
              "age": s} | null,                          as stale; age = the older side
+     "vio": {"n": count, "still": s,            /visual_slam/tracking/odometry messages so far;
+             "jump": [t, m] | null,             time the pose has stood exactly still (a frozen
+             "gate": {...} | null},             pose repeats bit for bit); the last step over 8 cm;
+                                                Koji's /mapping/gate_status (accepted, rejected, age)
      "node": "ROUTE" | null}                    mission state, when the sender knows it
 
 and, at img_hz (default 5; 0 = off), a separate line with the real left camera:
@@ -66,6 +70,34 @@ def _tof(tof):
             'age': _age(max(known)) if known else None}
 
 
+JUMP_M = 0.08   # one odometry step longer than this is a jump (carried at walking pace: ~3 cm a step at 30 Hz)
+
+
+class OdomWatch:
+    """What the odometry topic itself does, for the tube hand-carry test: messages so far, how long the
+    pose has stood exactly still (a frozen pose repeats bit for bit; a carried drone's VIO never does),
+    and the last jump, one step longer than JUMP_M (cuVSLAM re-initialising on the way out)."""
+
+    def __init__(self, jump_m=JUMP_M):
+        self.jump_m, self.n, self.last, self.changed_at, self.jump = jump_m, 0, None, None, None
+
+    def update(self, t, p):
+        p = tuple(float(v) for v in p)
+        if self.last is None or p != self.last:
+            self.changed_at = t
+        if self.last is not None and math.dist(p, self.last) > self.jump_m:
+            self.jump = (t, math.dist(p, self.last))
+        self.last = p
+        self.n += 1
+
+    def block(self, now, gate=None):
+        """The frame's "vio" block (see the module docstring)."""
+        return {'n': self.n,
+                'still': None if self.changed_at is None else round(now - self.changed_at, 3),
+                'jump': None if self.jump is None else [round(self.jump[0], 3), round(self.jump[1], 3)],
+                'gate': gate}
+
+
 def make_image_frame(t, jpeg, width, height):
     """A camera thumbnail line (see the module docstring)."""
     return json.dumps({'img': base64.b64encode(jpeg).decode('ascii'), 'w': int(width),
@@ -73,7 +105,7 @@ def make_image_frame(t, jpeg, width, height):
 
 
 def make_frame(t, age, pose, vo_state=None, state=None, setpoint=None, cam=None,
-               tof=None, node=None):
+               tof=None, node=None, vio=None):
     """One newline-terminated JSON frame (see the module docstring).
     tof: (left_m, right_m, left_age_s, right_age_s), inf/None for no return (see _tof)."""
     p, q = pose
@@ -96,6 +128,7 @@ def make_frame(t, age, pose, vo_state=None, state=None, setpoint=None, cam=None,
         'local_enu': None if s.get('local_enu') is None else _r(s['local_enu']),
         'setpoint': None if setpoint is None else _r(setpoint),
         'cam': None if cam is None else {'p': _r(cam[0]), 'q': _r(cam[1], 5)},
+        'vio': vio,
     }, separators=(',', ':')) + '\n'
 
 
@@ -185,6 +218,8 @@ def main(args=None):
             self.state = {}
             self.tof = {'left': None, 'right': None}
             self.tof_at = {'left': None, 'right': None}
+            self.odom = OdomWatch()
+            self.gate = self.gate_at = None
             self.img_at = -1e9
             self.create_subscription(Range, '/tube/left/range',
                                      lambda m: self.tof_cb('left', m), qos_profile_sensor_data)
@@ -196,6 +231,8 @@ def main(args=None):
             self.create_subscription(Odometry, ODOM_TOPIC, self.odom_cb, 10)
             self.create_subscription(String, STATE_TOPIC, self.state_cb, 10)
             self.create_subscription(PoseStamped, POSE_TOPIC, self.setpoint_cb, 10)
+            # Koji's odometry gate (hardware_slam/odom_gate.py), when it runs: JSON counts
+            self.create_subscription(String, '/mapping/gate_status', self.gate_cb, 10)
             if VisualSlamStatus is not None:
                 self.create_subscription(VisualSlamStatus, '/visual_slam/status',
                                          self.status_cb, 10)
@@ -217,6 +254,7 @@ def main(args=None):
             p, q = msg.pose.pose.position, msg.pose.pose.orientation
             self.pose = ((p.x, p.y, p.z), (q.x, q.y, q.z, q.w))
             self.pose_at = self.now()
+            self.odom.update(self.pose_at, (p.x, p.y, p.z))
 
         def status_cb(self, msg):
             self.vo_state = int(msg.vo_state)
@@ -230,6 +268,15 @@ def main(args=None):
         def setpoint_cb(self, msg):
             p = msg.pose.position
             self.setpoint = (p.x, p.y, p.z)
+
+        def gate_cb(self, msg):
+            try:
+                d = json.loads(msg.data)
+            except ValueError:
+                return
+            if isinstance(d, dict):
+                self.gate = {'accepted': d.get('accepted'), 'rejected': d.get('rejected')}
+                self.gate_at = self.now()
 
         def tof_cb(self, side, msg):
             self.tof[side] = float(msg.range)
@@ -273,9 +320,11 @@ def main(args=None):
                 tof = (self.tof['left'], self.tof['right'],
                        *(None if self.tof_at[s] is None else now - self.tof_at[s]
                          for s in ('left', 'right')))
+            gate = None if self.gate is None else dict(self.gate, age=round(now - self.gate_at, 3))
             self.server.send(make_frame(now, now - self.pose_at, self.pose,
                                         self.vo_state, self.state,
-                                        self.setpoint, self.cam, tof))
+                                        self.setpoint, self.cam, tof,
+                                        vio=self.odom.block(now, gate)))
 
     rclpy.init(args=args)
     node = MirrorRelay()
