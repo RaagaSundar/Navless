@@ -16,6 +16,7 @@
   <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>isaac_ros_visual_slam_interfaces</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 

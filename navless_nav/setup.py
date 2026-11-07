@@ -23,6 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'course_mission = navless_nav.course_mission:main',
+            'mirror_relay = navless_nav.mirror_relay:main',
         ],
     },
 )
