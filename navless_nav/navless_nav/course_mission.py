@@ -299,7 +299,12 @@ class CourseMission(Node):
             'gate_b' if 'gate_b' in str(self.get_parameter('route_file').value).lower()
             else 'window'
         )
-        self.planner_cfg, self.planner_grid, self.planner_router = create_live_course_planner()
+        # Keep the flight branch's as-built route intact. The dynamic planner's prior is the
+        # organisers' plan, whose maze walls differ from the real course by up to 0.76 m.
+        self.static_asbuilt_route = 'asbuilt' in str(self.get_parameter('route_file').value).lower()
+        self.planner_cfg = self.planner_grid = self.planner_router = None
+        if not self.static_asbuilt_route:
+            self.planner_cfg, self.planner_grid, self.planner_router = create_live_course_planner()
         self.live_grid_updated = False
         self.last_replan_at = 0.0
         self.frame = None          # (launch mark xy, start bearing) once known
@@ -353,14 +358,17 @@ class CourseMission(Node):
             'then switch to Position...')
 
     def load_route(self, name, bearing_deg, height_m):
-        """Plan 3D A* + EGO B-spline route dynamically in odom-frame (never relying on static route.json)."""
+        """Load the qualified as-built route, or plan dynamically against the plan-course prior."""
         try:
             low = str(name).lower()
-            if not any(k in low for k in ('window', 'gate_b', 'dynamic', 'route.json')):
-                resolve_route_path(name)
-            branch = 'gate_b' if 'gate_b' in low else 'window'
-            waypoints, launch, kind = plan_dynamic_course_route(
-                branch=branch, router=self.planner_router)
+            if self.static_asbuilt_route:
+                waypoints, launch, kind = load_route(resolve_route_path(name))
+            else:
+                if not any(k in low for k in ('window', 'gate_b', 'dynamic', 'route.json')):
+                    resolve_route_path(name)
+                branch = 'gate_b' if 'gate_b' in low else 'window'
+                waypoints, launch, kind = plan_dynamic_course_route(
+                    branch=branch, router=self.planner_router)
         except (OSError, ValueError, KeyError, RuntimeError) as exc:
             self.get_logger().error(
                 f'route not loaded ({exc}); will take off and hover only.')
@@ -369,14 +377,14 @@ class CourseMission(Node):
                 for p in waypoints]
         self.frame = (launch, bearing_deg)
         self.get_logger().info(
-            f'planned dynamic {kind}: {len(odom)} waypoints, launch mark '
+            f'route {kind}: {len(odom)} waypoints, launch mark '
             f'{launch}, start bearing {bearing_deg:.1f} deg, ends at odom '
             f'({odom[-1][0]:.2f}, {odom[-1][1]:.2f}, {odom[-1][2]:.2f})')
         return odom
 
     def pointcloud_cb(self, msg):
         """Insert live stereo pointcloud obstacles into the 3D occupancy grid for online replanning."""
-        if self.position is None or self.frame is None:
+        if self.static_asbuilt_route or self.position is None or self.frame is None:
             return
         from planner.px4_bridge_node import decode_ros_pointcloud2_optical
         cur_course = odom_to_course(
@@ -392,7 +400,7 @@ class CourseMission(Node):
 
     def maybe_replan_for_discrepancies(self, now):
         """Replan remaining route via 3D A* + B-spline if live stereo depth reveals a map discrepancy."""
-        if (not self.live_grid_updated or self.going_home
+        if (self.static_asbuilt_route or not self.live_grid_updated or self.going_home
                 or self.frame is None or self.carrot is None
                 or (now - self.last_replan_at) < 0.5):
             return

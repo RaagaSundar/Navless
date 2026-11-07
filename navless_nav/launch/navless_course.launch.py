@@ -10,10 +10,9 @@ COMPETITOR_PKG=navless_nav and COMPETITOR_LAUNCH=navless_course.launch.py.
                                       readings fit the tube's width
   mirror_relay (relay:=true)          read-only telemetry for the laptop dashboard, port 8775
 
-The ToF chain is recorded and shown on the dashboard. course_mission steers on it only with
-tof_tube_centering:=true (off by default): in the tube it pulls the target toward the measured
-centre, at most 0.15 m from the route. Turn it on once both sensors are mounted, the bus-7
-sensor on the drone's left, and a hand over each one moves only its own side.
+The skybeta-19 defaults use the as-built route and side ToF tube centering, as on its flight branch.
+The sensors were checked independently on 19, with bus 7 on the left. Corrections are bounded to
+0.15 m and expire with stale ranges. Other hardware must qualify its sensors before using these defaults.
 
 Never start planner/px4_bridge_node.py or mission/mission.py alongside this: both are
 commanders too, and the drone gets exactly one.
@@ -38,8 +37,10 @@ TUBE_WIDTH_M = '1.45'
 
 ARGUMENTS = [
     ('use_sim_time', 'false', 'use ROS simulation clock for launch-managed components'),
-    ('route_file', 'gazebo_sim/course/route_centreline_window.json',
-     'route to fly (repo-relative): the centreline route keeps >= 16.6 cm to every wall'),
+    ('route_file', 'gazebo_sim/course/route_centreline_window_asbuilt.json',
+     'route to fly (repo-relative): the window route on the confirmed as-built course'),
+    # The as-built M1/M3 gaps require this margin: 0.4 m pulls their route points into wall ends.
+    ('net_margin_m', '0.25', 'keep setpoints this far inside the net, m'),
     ('start_bearing_deg', '0.0', 'nose bearing on the launch mark at power-up (0 = north)'),
     # Speed, tuned for the centreline window route above (Gazebo + PX4 SITL, drone profile, real pilot
     # sequence). Arm to touchdown took 32.6 s on 3 of 3 laps, against 42.9 s at navless.launch.py's
@@ -62,13 +63,21 @@ ARGUMENTS = [
     ('odometry_topic', '/visual_slam/tracking/odometry',
      'odometry for flight_interface and course_mission: the topic that feeds the PX4 vision '
      "fusion (/mapping/validated_odometry if PX4 is fed through Koji's gate)"),
+    # Dark tube: on a VIO loss INSIDE the tube (or within blind_zone_margin_m of a mouth), keep pacing
+    # PX4's own estimate along the route for up to blind_carry_max_s, instead of freezing blind in the
+    # dark. A loss anywhere else still freezes the route. Turned on by the team (Shining, 2026-11-07).
+    # Evidence: the default (freeze) hit the tube 3/3 in the master sim; blind_carry landed 4/4 there and
+    # made 6/6 clean passes at the slow launch's 0.5 m/s. At 0.7 m/s, late recovery with magnetometer
+    # fusion left only 3.9 cm clearance; with EKF2_MAG_TYPE=5, 4/4 passed with >=40 cm. Frozen
+    # odometry must first be stopped by the PX4 odometry gate; blind carry never carries a frozen feed.
+    ('blind_carry', 'true', 'dark tube: keep moving on PX4 estimate through a VIO loss (tube only)'),
     ('tof', 'true', 'run the side ToF driver'),
     ('tube', 'true', 'run tube_node (needs tof)'),
     ('tof_min_range_m', '0.15', 'tube_node: reject closer readings (raise until a hand-spun prop never shows)'),
     ('relay', 'false', 'run the read-only dashboard relay (TCP 8775)'),
     ('relay_img_hz', '0.0', 'relay camera thumbnails per second; keep 0 in flight'),
     ('stereo_tube_centering', 'false', 'experimental stereo centering; simulation validation only'),
-    ('tof_tube_centering', 'false',
+    ('tof_tube_centering', 'true',
      'steer toward the side ToF tube centre (needs tof and tube; check the sensors first)'),
     ('stereo_tube_cloud_topic', '/team/stereo/points', 'qualified calibrated stereo cloud'),
 ]
@@ -84,7 +93,7 @@ def generate_launch_description():
         launch_arguments={n: LaunchConfiguration(n)
                           for n in ('route_file', 'start_bearing_deg', 'cruise_speed_mps',
                                     'max_lead_m', 'max_lat_accel_mps2', 'max_turn_sagitta_m',
-                                    'odometry_topic', 'stereo_tube_centering',
+                                    'odometry_topic', 'blind_carry', 'net_margin_m', 'stereo_tube_centering',
                                     'stereo_tube_cloud_topic', 'tof_tube_centering',
                                     'use_sim_time')}.items(),
     )
