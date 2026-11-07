@@ -6,8 +6,9 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from navless_nav.route import (Carrot, REPO_ROOT, course_to_odom,  # noqa: E402
-                               load_route, odom_to_course, resolve_route_path)
+from navless_nav.route import (Carrot, NET_HALF_M, REPO_ROOT,  # noqa: E402
+                               clamp_to_net, course_to_odom, load_route,
+                               odom_to_course, resolve_route_path)
 
 LAUNCH = (-2.515, 0.914)
 
@@ -86,6 +87,34 @@ def test_shipped_routes_load_and_start_on_the_launch_mark():
         steps = [math.dist(a, b) for a, b in zip(odom, odom[1:])]
         assert max(steps) < 1.5, (name, max(steps))   # mission.py's check too
         assert all(p[2] > 0.3 for p in odom), name   # above flight_interface's floor
+
+
+def test_net_fence_leaves_inside_points_alone():
+    q = course_to_odom((0.9, 2.585, 0.85), LAUNCH, 30.0)   # Gate A exit
+    out, moved = clamp_to_net(q, LAUNCH, 30.0, 0.4)
+    assert not moved and out == q
+
+
+def test_net_fence_pulls_outside_points_in_and_keeps_z():
+    lim = NET_HALF_M - 0.4
+    for bearing in (0.0, 90.0, 225.0):
+        for course in ((5.0, 0.0, 1.0), (-4.0, 4.0, 1.7), (0.0, -9.0, 0.5)):
+            q = course_to_odom(course, LAUNCH, bearing)
+            out, moved = clamp_to_net(q, LAUNCH, bearing, 0.4)
+            c = odom_to_course(out, LAUNCH, bearing)
+            assert moved
+            assert abs(c[0]) <= lim + 1e-9 and abs(c[1]) <= lim + 1e-9
+            assert abs(out[2] - course[2]) < 1e-12
+
+
+def test_shipped_routes_clear_the_net_fence():
+    for name in ('route_gate_b.json', 'route_window.json', 'route.json'):
+        if not os.path.isfile(os.path.join(REPO_ROOT, name)):
+            continue
+        waypoints, launch, _ = load_route(resolve_route_path(name))
+        for p in waypoints:
+            q = course_to_odom(p, launch, 0.0)
+            assert not clamp_to_net(q, launch, 0.0, 0.4)[1], (name, p)
 
 
 def test_missing_route_is_an_error():

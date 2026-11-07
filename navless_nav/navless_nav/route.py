@@ -19,6 +19,8 @@ import os
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
 
+NET_HALF_M = 3.048      # the 20 x 20 ft net; course origin at its floor centre
+
 
 def course_to_odom(p, launch_xy, start_bearing_deg, start_height_m=0.0):
     e, n = p[0] - launch_xy[0], p[1] - launch_xy[1]
@@ -33,6 +35,21 @@ def odom_to_course(q, launch_xy, start_bearing_deg, start_height_m=0.0):
     return (launch_xy[0] + q[0] * s - q[1] * c,
             launch_xy[1] + q[0] * c + q[1] * s,
             q[2] + start_height_m)
+
+
+def clamp_to_net(q, launch_xy, start_bearing_deg, margin_m,
+                 half_m=NET_HALF_M):
+    """(odom point pulled inside the net by `margin_m`, whether it moved).
+
+    flight_interface has no horizontal geofence (removed in skybeta 0.3.0),
+    so this is the only thing between a bad setpoint and the netting.
+    """
+    c = odom_to_course(q, launch_xy, start_bearing_deg)
+    lim = half_m - margin_m
+    x, y = min(max(c[0], -lim), lim), min(max(c[1], -lim), lim)
+    if (x, y) == (c[0], c[1]):
+        return tuple(q), False
+    return course_to_odom((x, y, c[2]), launch_xy, start_bearing_deg), True
 
 
 def resolve_route_path(name):

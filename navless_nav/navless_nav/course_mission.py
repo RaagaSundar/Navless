@@ -19,10 +19,15 @@ States (10 Hz timer):
                        ground 10 s after arming, so this starts on the first
                        tick of Offboard.
     ROUTE              walk route_file's waypoints with a speed-limited
-                       carrot (navless_nav/route.py).
+                       carrot (navless_nav/route.py). The carrot freezes
+                       while cuVSLAM reports lost tracking or odometry is
+                       stale, and resumes when it is back.
     HOLD               hover at the last target.
     PAUSED             the pilot took over. Nothing advances; once the
                        vehicle is disarmed we go back to waiting.
+
+Every setpoint outside the idle states is pulled inside the net by
+net_margin_m: flight_interface clamps altitude only, never x/y.
 """
 import json
 import math
@@ -35,8 +40,15 @@ from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import ParameterDescriptor
 from std_msgs.msg import String
 
-from navless_nav.route import (Carrot, course_to_odom, load_route,
-                               resolve_route_path)
+from navless_nav.route import (Carrot, clamp_to_net, course_to_odom,
+                               load_route, resolve_route_path)
+
+try:
+    from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
+except ImportError:   # off the drone: fall back to odometry staleness only
+    VisualSlamStatus = None
+
+VO_LOST = 2           # VisualSlamStatus.vo_state: 0 unknown, 1 tracking, 2 lost
 
 IDLE_STATES = ('WAIT_FOR_OFFBOARD', 'PAUSED')
 
@@ -57,6 +69,9 @@ PARAMETERS = (
     # pilot moved the drone): its first point is the launch mark.
     ('max_start_offset_m', 0.6),
     ('stall_timeout_s', 20.0),
+    # Keep-out from the net (drone is 0.475 m wide with props).
+    ('net_margin_m', 0.4),
+    ('odom_timeout_s', 0.5),
 )
 
 
@@ -83,6 +98,9 @@ class CourseMission(Node):
         self.max_lead = param('max_lead_m')
         self.max_start_offset = param('max_start_offset_m')
         self.stall_timeout = param('stall_timeout_s')
+        self.net_margin = param('net_margin_m')
+        self.odom_timeout = param('odom_timeout_s')
+        self.frame = None           # (launch mark xy, start bearing) once known
         self.route = self.load_route(
             str(self.get_parameter('route_file').value),
             param('start_bearing_deg'), param('start_height_m'))
@@ -95,11 +113,17 @@ class CourseMission(Node):
         self.create_subscription(
             Odometry, '/visual_slam/tracking/odometry', self.odometry_cb, 10)
         self.create_subscription(String, '/skybeta/state', self.state_cb, 10)
+        if VisualSlamStatus is not None:
+            self.create_subscription(
+                VisualSlamStatus, '/visual_slam/status', self.status_cb, 10)
 
         self.state = 'WAIT_FOR_OFFBOARD'
         self.state_since = self.now_s()
         self.target = None
         self.position = None
+        self.odom_at = None
+        self.vo_state = None
+        self.vio_was_ok = True
         self.offboard_active = False
         self.armed = False
         self.log_once = set()
@@ -122,6 +146,7 @@ class CourseMission(Node):
             return None
         odom = [course_to_odom(p, launch, bearing_deg, height_m)
                 for p in waypoints]
+        self.frame = (launch, bearing_deg)
         self.get_logger().info(
             f'route {kind} from {path}: {len(odom)} waypoints, launch mark '
             f'{launch}, start bearing {bearing_deg:.1f} deg, ends at odom '
@@ -132,6 +157,15 @@ class CourseMission(Node):
     def odometry_cb(self, msg):
         p = msg.pose.pose.position
         self.position = (float(p.x), float(p.y), float(p.z))
+        self.odom_at = self.now_s()
+
+    def status_cb(self, msg):
+        self.vo_state = int(msg.vo_state)
+
+    def vio_ok(self):
+        fresh = (self.odom_at is not None
+                 and self.now_s() - self.odom_at <= self.odom_timeout)
+        return fresh and self.vo_state != VO_LOST
 
     def state_cb(self, msg):
         try:
@@ -148,8 +182,15 @@ class CourseMission(Node):
                 f'{state.get("envelope")}')
 
     # -- outputs ---------------------------------------------------------
-    def send(self, x, y, z):
+    def send(self, x, y, z, fence=True):
         """One ENU pose setpoint in odom. Zero quaternion = hold heading."""
+        if fence and self.frame is not None:
+            (x, y, z), moved = clamp_to_net(
+                (x, y, z), self.frame[0], self.frame[1], self.net_margin)
+            if moved:
+                self.info_once(
+                    'fenced', f'setpoint pulled inside the net (margin '
+                    f'{self.net_margin:.2f} m); route or start bearing wrong?')
         msg = PoseStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = 'odom'
@@ -193,7 +234,7 @@ class CourseMission(Node):
 
     def _state_wait_for_offboard(self):
         if not self.offboard_active:
-            self.send(*self.position)
+            self.send(*self.position, fence=False)
             return
         x, y, _ = self.position
         self.goto('TAKEOFF', (x, y, self.takeoff_altitude))
@@ -231,9 +272,22 @@ class CourseMission(Node):
         now = self.now_s()
         dt = min(now - self.last_tick, 0.2)
         self.last_tick = now
-        point = self.carrot.step(self.position, dt)
+        vio_ok = self.vio_ok()
+        if vio_ok != self.vio_was_ok:
+            self.vio_was_ok = vio_ok
+            if vio_ok:
+                self.get_logger().info('VIO back: resuming the route.')
+            else:
+                self.get_logger().warn(
+                    f'VIO lost (vo_state {self.vo_state}, odometry '
+                    f'{now - (self.odom_at or now):.2f} s old): carrot '
+                    'frozen at its current point.')
+        # With no trustworthy position, do not move the target: PX4 falls
+        # back on its own estimate and holds the last point.
+        point = (self.carrot.step(self.position, dt) if vio_ok
+                 else self.carrot.point)
         self.send(*point)
-        if self.carrot.done(self.position, self.arrival_radius):
+        if vio_ok and self.carrot.done(self.position, self.arrival_radius):
             self.get_logger().info('route complete; holding at its end.')
             self.goto('HOLD', point)
             return
@@ -254,7 +308,7 @@ class CourseMission(Node):
         # PX4 ignores setpoints outside Offboard; keep the stream up so a
         # later arming can take over again, and re-arm the mission only
         # once the vehicle has been disarmed.
-        self.send(*self.position)
+        self.send(*self.position, fence=False)
         if not self.armed:
             self.goto('WAIT_FOR_OFFBOARD')
 
