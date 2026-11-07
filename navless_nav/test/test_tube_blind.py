@@ -130,20 +130,30 @@ def test_blind_carry_does_not_run_on_frozen_odometry():
     assert math.dist(last_pose(node), loss) < 1e-9
 
 
-def test_moving_odometry_during_a_loss_is_not_frozen():
-    # cuVSLAM may keep publishing IMU-propagated (moving) odometry while it
-    # reports lost; PX4 follows it like its own dead reckoning, so the carry
-    # should run, and with the carry off the old frozen carrot applies.
+def test_any_odometry_during_a_loss_holds_at_its_latest_pose():
+    # cuVSLAM has IMU fusion off on skybeta, so odometry that keeps coming
+    # while it reports lost is frozen or unreliable, and PX4 fuses it: hold at
+    # the latest pose (zero error), and never carry on it.
     node, px4, pos = fly_to_tube(blind_carry=True)
     s0 = node.carrot.point
-    for _ in range(20):
-        step(node, px4, pos, vo_state=2, moving=True)
-    assert math.dist(node.carrot.point, s0) > 0.6
-    node, px4, pos = fly_to_tube()
-    carrot = node.carrot.advance(0.3)
     for _ in range(10):
         step(node, px4, pos, vo_state=2, moving=True)
-    assert math.dist(last_pose(node), carrot) < 1e-9
+    assert math.dist(node.carrot.point, s0) < 0.11      # <= the 2 ticks to see it
+    assert math.dist(last_pose(node), node.position) < 1e-9
+
+
+def test_moving_then_frozen_odometry_holds_at_the_frozen_pose():
+    # Review of #18: odometry that moves for a tick or two after the loss and
+    # then freezes must still be held, not sent back to the carrot ahead.
+    for moving_ticks in (0, 1, 2):
+        node, px4, pos = fly_to_tube()
+        node.carrot.advance(0.3)
+        for _ in range(moving_ticks):
+            step(node, px4, pos, vo_state=2, moving=True)
+        frozen_at = tuple(pos)
+        for _ in range(10):
+            step(node, px4, pos, vo_state=2, frozen=frozen_at)
+        assert math.dist(last_pose(node), frozen_at) < 1e-9, moving_ticks
 
 
 def test_blind_carry_never_runs_outside_the_tube_zone():
