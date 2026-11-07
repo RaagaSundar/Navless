@@ -156,10 +156,78 @@ def test_fly_home_rearm_flies_back_to_the_launch_mark():
     top = fly(node, px4, pos, lambda: not px4['armed'])
     assert node.state == 'DONE'
     assert math.dist(pos[:2], (0.0, 0.0)) < 0.1 and pos[2] == 0.0
-    assert abs(top - (2.03 - 0.07)) < 0.3            # hopped the 1.727 m wall
+    assert abs(top - node.home_z) < 0.05             # hopped the 1.727 m wall
+
+
+def test_fly_home_hop_leaves_only_at_hop_height():
+    # The leg over Barrier 1 must not start at arrival_radius_m (0.25 m)
+    # below the hop height: SITL crossed the wall at 1.91-1.99 m that way.
+    node, px4, pad = run(fly_home=True)
+    t0 = T[0]
+    fly(node, px4, pad, lambda: T[0] - t0 >= 2.5, max_s=5.0)
+    pos = list(pad)
+    arm(px4)
+    fly(node, px4, pos, lambda: node.state == 'TAKEOFF')
+    seen = []
+    while node.state == 'TAKEOFF':
+        seen.append(pos[2])
+        fly(node, px4, pos, lambda: True, max_s=1.0)
+    assert node.state == 'ROUTE'
+    assert seen[-1] >= node.home_z - node.home_climb_tol - 1e-9
+    assert node.home_z == 2.2 - 0.07
+
+
+def test_fly_home_hop_that_never_reaches_height_holds_over_the_pad():
+    # e.g. a ceiling clamp below the hop: takeoff_timeout_s -> HOLD, and the
+    # leg over the wall never starts.
+    node, px4, pad = run(fly_home=True, takeoff_timeout_s=3.0)
+    t0 = T[0]
+    fly(node, px4, pad, lambda: T[0] - t0 >= 2.5, max_s=5.0)
+    pos = list(pad)
+    arm(px4)
+    cap = node.home_z - 0.2
+    t0 = T[0]
+    while node.state in ('WAIT_FOR_OFFBOARD', 'TAKEOFF') and T[0] - t0 < 10.0:
+        fly(node, px4, pos, lambda: True, max_s=1.0)
+        pos[2] = min(pos[2], cap)
+    assert node.state == 'HOLD'
+    assert math.dist(pos[:2], pad[:2]) < 0.05
+
+
+def test_fly_home_lands_only_close_to_the_launch_mark():
+    node, px4, pad = run(fly_home=True)
+    t0 = T[0]
+    fly(node, px4, pad, lambda: T[0] - t0 >= 2.5, max_s=5.0)
+    pos = list(pad)
+    arm(px4)
+    fly(node, px4, pos, lambda: node.state == 'ROUTE')
+    # A slower drone (0.3 m/s) lags the carrot, so it is still closing on the
+    # mark when the carrot gets there: the landing must wait for 0.10 m.
+    dt = 0.1
+    while node.state == 'ROUTE' and T[0] - t0 < 120.0:
+        node.odometry_cb(types.SimpleNamespace(pose=types.SimpleNamespace(
+            pose=types.SimpleNamespace(position=types.SimpleNamespace(
+                x=pos[0], y=pos[1], z=pos[2])))))
+        px4['local_enu'] = list(pos)
+        node.state_cb(types.SimpleNamespace(data=json.dumps(px4)))
+        SENT.clear()
+        node.tick()
+        seen = math.hypot(*pos[:2])
+        if SENT and SENT[-1][0] == course_mission.POSE_TOPIC:
+            m = SENT[-1][1]
+            goal = (m.pose.position.x, m.pose.position.y, m.pose.position.z)
+            d = math.dist(pos, goal)
+            f = min(1.0, 0.3 * dt / d) if d > 0 else 0.0
+            pos[:] = [a + (b - a) * f for a, b in zip(pos, goal)]
+        T[0] += dt
+    assert node.state == 'LAND'
+    assert seen <= node.home_arrival_radius + 1e-9
 
 
 if __name__ == '__main__':
     test_default_stops_on_the_pad()
     test_fly_home_rearm_flies_back_to_the_launch_mark()
+    test_fly_home_hop_leaves_only_at_hop_height()
+    test_fly_home_hop_that_never_reaches_height_holds_over_the_pad()
+    test_fly_home_lands_only_close_to_the_launch_mark()
     print('ok')

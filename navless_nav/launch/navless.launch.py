@@ -48,7 +48,11 @@ ARGUMENTS = [
     ('fly_home', 'false',
      'after the pad landing, the next arming flies back over the wall to '
      'the launch mark and lands there'),
-    ('home_altitude_m', '2.03', 'fly-home hop height above the floor, m'),
+    ('home_altitude_m', '2.2', 'fly-home hop height above the floor, m'),
+    ('home_climb_tol_m', '0.05',
+     'fly-home: start the leg over the wall only this close to hop height, m'),
+    ('home_arrival_radius_m', '0.10',
+     'fly-home: land only this close to the launch mark (Barrier 1 is behind it), m'),
     ('prearm_height_tol_m', '0.15',
      'pre-arm check: no setpoint stream (so no takeover) until PX4 height '
      'and odom z agree to this, m; 0 = off'),
@@ -66,7 +70,9 @@ MISSION_PARAMS = ('takeoff_altitude_m', 'takeoff_lead_m', 'arrival_radius_m',
                   'cruise_speed_mps', 'max_lead_m', 'max_lat_accel_mps2',
                   'net_margin_m',
                   'land_at_end', 'land_speed_mps', 'fly_home',
-                  'home_altitude_m', 'prearm_height_tol_m', 'prearm_settle_s')
+                  'home_altitude_m', 'home_climb_tol_m', 'home_arrival_radius_m',
+                  'prearm_height_tol_m',
+                  'prearm_settle_s')
 
 
 def generate_launch_description():
