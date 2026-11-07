@@ -1,10 +1,11 @@
 """Navless course node: take over on the pilot's arm, fly a planner route.
 
-Same contract as skybeta's competitor_example, and nothing else:
+It uses the stack's competitor topics, and nothing else (FI_NS below is the
+flight interface's topic namespace):
 
     subscribe  /visual_slam/tracking/odometry   where we are (ENU, odom)
-    subscribe  /skybeta/state                   what PX4 is doing (JSON)
-    publish    /skybeta/setpoint/pose           where we want to be (ENU, odom)
+    subscribe  FI_NS/state                      what PX4 is doing (JSON)
+    publish    FI_NS/setpoint/{pose,twist}      where we want to be (ENU, odom)
 
 Never publishes to /fmu/*, never arms, never changes mode: flight_interface
 owns that, and enters Offboard once when the pilot arms, then switches to
@@ -57,6 +58,12 @@ except ImportError:   # off the drone: fall back to odometry staleness only
     VisualSlamStatus = None
 
 VO_LOST = 2           # VisualSlamStatus.vo_state: 0 unknown, 1 tracking, 2 lost
+
+# The flight interface's topics. Their names are fixed by the image.
+FI_NS = '/skybeta'
+STATE_TOPIC = FI_NS + '/state'
+POSE_TOPIC = FI_NS + '/setpoint/pose'
+TWIST_TOPIC = FI_NS + '/setpoint/twist'
 
 IDLE_STATES = ('WAIT_FOR_OFFBOARD', 'PAUSED', 'DONE')
 
@@ -125,12 +132,12 @@ class CourseMission(Node):
         self.progress_at = None
 
         self.setpoint_pub = self.create_publisher(
-            PoseStamped, '/skybeta/setpoint/pose', 10)
+            PoseStamped, POSE_TOPIC, 10)
         self.twist_pub = self.create_publisher(
-            TwistStamped, '/skybeta/setpoint/twist', 10)
+            TwistStamped, TWIST_TOPIC, 10)
         self.create_subscription(
             Odometry, '/visual_slam/tracking/odometry', self.odometry_cb, 10)
-        self.create_subscription(String, '/skybeta/state', self.state_cb, 10)
+        self.create_subscription(String, STATE_TOPIC, self.state_cb, 10)
         if VisualSlamStatus is not None:
             self.create_subscription(
                 VisualSlamStatus, '/visual_slam/status', self.status_cb, 10)
@@ -285,7 +292,7 @@ class CourseMission(Node):
             self.get_logger().error(
                 f'takeoff target not reached in {self.takeoff_timeout:.0f} s '
                 f'({math.dist(self.position, self.target):.2f} m off); '
-                'holding here. Check `clamped` in /skybeta/state and VIO.')
+                f'holding here. Check `clamped` in {STATE_TOPIC} and VIO.')
             self.goto('HOLD', self.position)
 
     def start_route(self):
@@ -340,7 +347,7 @@ class CourseMission(Node):
                 f'no progress for {self.stall_timeout:.0f} s at waypoint '
                 f'{self.carrot.index + 1}/{len(self.route)} '
                 f'({math.dist(self.position, point):.2f} m off); holding. '
-                'Check `clamped` in /skybeta/state and VIO.')
+                f'Check `clamped` in {STATE_TOPIC} and VIO.')
             self.goto('HOLD', self.position)
 
     def _state_land(self):

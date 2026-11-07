@@ -4,8 +4,8 @@
   <version>0.1.0</version>
   <description>
     Navless DroneHacks competitor node. Takes over when the safety pilot arms,
-    then switches to Position, and flies the course through skybeta's
-    flight_interface (/skybeta/setpoint/*). Never publishes to /fmu/in/*.
+    then switches to Position, and flies the course through the stack's
+    flight_interface setpoint topics. Never publishes to /fmu/in/*.
   </description>
   <maintainer email="rsundar31@gatech.edu">Raaga Sundar</maintainer>
   <license>Apache-2.0</license>
@@ -16,7 +16,6 @@
   <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>isaac_ros_visual_slam_interfaces</exec_depend>
   <exec_depend>std_msgs</exec_depend>
-  <exec_depend>skybeta_flight_interface</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 

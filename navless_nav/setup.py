@@ -18,7 +18,7 @@ setup(
     zip_safe=True,
     maintainer='Raaga Sundar',
     maintainer_email='rsundar31@gatech.edu',
-    description='Navless DroneHacks competitor node (skybeta flight_interface).',
+    description='Navless DroneHacks competitor node.',
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
