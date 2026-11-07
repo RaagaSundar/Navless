@@ -86,6 +86,9 @@ IDLE_STATES = ('WAIT_FOR_OFFBOARD', 'PAUSED', 'DONE')
 
 PARAMETERS = (
     ('takeoff_altitude_m', 0.85),
+    # Climb target this far along the route's first leg instead of straight
+    # above the drone, m (see takeoff_target). 0 = straight up.
+    ('takeoff_lead_m', 0.0),
     ('arrival_radius_m', 0.25),
     ('takeoff_timeout_s', 15.0),
     ('publish_rate_hz', 10.0),
@@ -144,6 +147,7 @@ class CourseMission(Node):
             return float(self.get_parameter(name).value)
 
         self.takeoff_altitude = param('takeoff_altitude_m')
+        self.takeoff_lead = max(0.0, param('takeoff_lead_m'))
         self.arrival_radius = param('arrival_radius_m')
         self.takeoff_timeout = param('takeoff_timeout_s')
         rate_hz = param('publish_rate_hz')
@@ -397,12 +401,22 @@ class CourseMission(Node):
             self.goto('REFUSED', self.position)
             self._state_refused()       # no tick without a setpoint
             return
-        x, y, _ = self.position
-        # Climb to the route's first point, so the route doesn't open with a
-        # height step (Gazebo: 7 cm once start_height_m is set).
-        z = self.route[0][2] if self.route else self.takeoff_altitude
-        self.goto('TAKEOFF', (x, y, z))
+        self.goto('TAKEOFF', self.takeoff_target())
         self._state_takeoff()       # climb on this tick, not the next one
+
+    def takeoff_target(self):
+        """Straight up to the route's first height (no height step when the
+        route opens; Gazebo: 7 cm once start_height_m is set), leaning
+        takeoff_lead_m into the route's first leg. Barrier 1 is behind the
+        launch mark and the first corridor ahead of it; in Gazebo the liftoff
+        drifts ~15 cm backwards (thrust-model mismatch), to 3 cm from the
+        barrier, and the lean takes that margin back."""
+        x, y, _ = self.position
+        if not self.route:
+            return (x, y, self.takeoff_altitude)
+        r0 = self.route[0]
+        p = Carrot(self.route, 1.0, math.inf).advance(self.takeoff_lead)
+        return (x + p[0] - r0[0], y + p[1] - r0[1], r0[2])
 
     def _state_takeoff(self):
         self.send(*self.target)
@@ -429,6 +443,7 @@ class CourseMission(Node):
             return
         self.carrot = Carrot(self.route, self.cruise_speed, self.max_lead,
                              self.max_lat_accel)
+        self.carrot.advance(self.takeoff_lead)   # never pull back behind it
         self.last_tick = self.now_s()
         self.progress_at = (self.last_tick, 0, self.carrot.point)
         self.goto('ROUTE')

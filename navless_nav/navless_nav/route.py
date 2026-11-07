@@ -151,7 +151,11 @@ class Carrot:
     def step(self, drone, dt):
         if math.dist(drone, self.point) > self.max_lead:
             return self.point
-        budget = self.speed_here() * max(0.0, dt)
+        return self.advance(self.speed_here() * max(0.0, dt))
+
+    def advance(self, distance):
+        """Slide the carrot `distance` metres along the path, ignoring speed."""
+        budget = max(0.0, float(distance))
         while budget > 0.0 and self.index < len(self.path) - 1:
             nxt = self.path[self.index + 1]
             d = math.dist(self.point, nxt)
