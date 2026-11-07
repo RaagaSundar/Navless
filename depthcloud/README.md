@@ -58,6 +58,78 @@ Pass with `--ros-args -p name:=value`.
 | `http_port` | 8081 | browser view |
 | `max_view_points` | 40000 | points sent to the 3D viewer per update |
 
+## Localization against the course model: `cloud_localize.py`
+
+This runs alongside `stereo_cloud.py`, which it doesn't modify. It matches each `/team/stereo/points` cloud to an .obj using point-to-plane ICP, starting from the previous pose, and outputs:
+
+- `/team/localize/pose` (`geometry_msgs/PoseStamped`, `frame_id: course`): the camera's pose in the .obj frame, Z up, metres
+- `http://<drone>:8082/`: a 3D viewer of the best estimate. It shows the model (ceiling hidden) and the live cloud placed in it (green matched the model, orange didn't). The camera is drawn as a dot with a field-of-view wedge, a heading arrow on the floor and a trail. A HUD shows the position in feet and metres, the heading, and what the latest frame actually **measured** versus **held** (x, y, height, heading). It's coloured green when everything is measured, yellow when partly held (with a dashed ring if horizontal position is held), and grey when stale (no accepted frame for over 2 s). There's also a collapsible form to reset the pose. If `skybeta-19.local` doesn't open in the browser, use the drone's IPv4 address, for example `http://192.168.68.56:8082/`.
+
+It needs a starting pose, and then it tracks frame to frame, so move slowly. It reports the camera's position, not the drone's centre.
+
+Check the maths offline first (no ROS needed):
+
+```bash
+python3 cloud_localize.py --selftest test_room.obj
+```
+
+On the drone, with `stereo_cloud.py` already running, start it against the course model (`dronehacks-course-v3.obj`: metres, Z up, origin at the centre of the floor). With no `init_*` parameters it starts on the model's **launch mark** (−2.515, 0.914), camera 0.2 m up, facing **north (90°)**. The drone is always placed facing forward along the guideline, which runs north from the mark.
+
+```bash
+python3 /root/team_ws/src/dronehacks/cloud_localize.py --ros-args -p obj:=/root/team_ws/src/dronehacks/dronehacks-course-v3.obj
+```
+
+Start it with `docker exec -d ...` or in its own shell: a background `&` inside a plain `docker exec` is killed when that exec ends.
+
+**Odometry fusion:** each frame, the camera's motion since the previous frame comes from the stack's Isaac ROS Visual SLAM (TF `odom` → cloud frame). It's applied first as a prediction, then ICP corrects it against the course. When nothing matches (looking through the net), the estimate keeps moving on odometry, with status `odometry` shown in blue. Turn it off with `use_odometry:=false`.
+
+Simulated flights of `route_gate_b.json` (`--simflight dronehacks-course-v3.obj route=route_gate_b.json speed=0.3 yaw=travel`), with pessimistic odometry drift (3% scale, 0.3°/s heading):
+
+| | Position median / max / end | Heading median / max |
+|---|---|---|
+| odometry only | 17 / 98 / 98 cm | 6.2° / 18.6° |
+| fused, fixed heading 90° | 11 / 50 / 20 cm | 2.1° / 11.1° |
+| fused, facing direction of travel | 7 / 13 / 3 cm | 1.1° / 6.0° |
+| fused, facing travel, 1 m/s | 3 / 19 / 3 cm | 0.6° / 6.0° |
+
+Facing the direction of travel keeps the camera on the course; with a fixed heading the camera looks away from the tunnel and south side while flying through them.
+
+To watch a simulated flight live, add `view=8083`. It runs in real time, loops the route, and serves the same viewer, with the true pose drawn in white. Run it inside the stack container from `~/team_ws/src/dronehacks`:
+
+```bash
+python3 cloud_localize.py --simflight dronehacks-course-v3.obj route=route_gate_b.json speed=0.3 yaw=travel view=8083
+```
+
+**What the simulations do NOT show:** the camera data in them is generated from the .obj, with made-up noise and clutter. They test the matching and fusion logic, not real stereo depth, the real net, real lighting, or the real VSLAM's drift. See the team Slack post for the full list.
+
+The course .obj (`dronehacks-course-v3.obj`, 5.7 MB, from the organisers' zip) is not in the repo. Copy it next to the script.
+
+`search_heading:=true` (or the viewer's checkbox) tries every heading from the start position instead. That's unreliable on the launch mark, because Barrier 1 and the M1 divider, both about 0.5 m away, look alike.
+
+Useful parameters: `obj_up` (`z` or `y`), `obj_scale`, `max_range` (5 m), `max_points` (1500), `min_fitness` (0.35) or `min_matches` (300) matched points, `max_rmse` (0.06 m), `rate_hz` (3), `http_port` (8082), `match_ceiling` (true; the viewer always hides the ceiling, but matching keeps it because it's often a third of the cloud).
+
+The ICP only moves along directions the visible surfaces actually pin down. A view of just floor and table tops can't fix horizontal position, so it holds those directions at the previous estimate and shows status `weak` instead of drifting. ICP uses Tukey weighting (c = 6 cm) and a 0.3 → 0.08 m search schedule, so people and chairs near modelled surfaces can't drag the pose.
+
+Self-test options: `trials=`, `range=`, `perturb=` (0.4 is about frame-to-frame tracking; 1.0 is a rough manual reset), `points=`, `clutter=` (unmodelled points as a fraction of model points; 1.0 is about a crowded room), and `icp.kernel=`, `icp.c=`, `icp.schedule=` for experiments.
+
+## Stand-in course .obj for testing
+
+`scene_to_obj.js` turns tape measurements into an .obj, so localization can be tested before we have the real course. `test_room.json` is our 30 x 34 x 9 ft hackathon room with its 12 tables: 4 rows, each made of two tables joined end to end, an aisle, then one table, all running along the 30 ft wall. Positions are **scaled from a sketch** until someone measures them.
+
+```bash
+node depthcloud/scene_to_obj.js depthcloud/test_room.json depthcloud/test_room.obj --svg depthcloud/test_room_plan.svg
+```
+
+- The origin is the floor corner on the wall opposite the door, at the end farther from the door. x runs along the 30 ft wall (toward the door's wall), y runs along the 34 ft wall (toward the door's end), and z is up. Output is in metres.
+- `--svg` writes a top-down plan, with the origin at the bottom-left, drawn the same way as the room sketch. Compare it with the real room.
+- Item types, all in the scene's units:
+  - `{"type": "table", "center": [cx, cy], "yaw_deg": 0}`: yaw 0 means the long side runs along x. Sizes come from `defaults.table`, or set `length`, `width`, `height` or `top` per table. Only the top slab is modelled.
+  - `{"type": "table_grid", "rows": 4, "cols": 3, "first_center": [cx, cy], "pitch": [dx, dy], "yaw_deg": 0}`: a grid of tables. `first_center` is the centre of the table nearest the origin, and `pitch` is the centre-to-centre spacing along x and y. For uneven spacing, give either entry as a list, for example `[[6, 12], 6]`; a spacing equal to the table's length (across) or width (rows) makes the tables touch. Tables are named `T_r<row>c<col>`.
+  - `{"type": "chair", "center": [cx, cy], "yaw_deg": 90}`: a seat and a backrest, with the seat facing +x at yaw 0.
+  - `{"type": "box", "center": [cx, cy], "size": [sx, sy, sz], "yaw_deg": 0, "z0": 0}`
+- `--up y` writes Y-up instead. Match whatever the real course .obj uses.
+- An empty rectangular room looks the same after a 180° turn, and stereo depth only reaches about 5 m. The tables, measured accurately near where the drone will be, give the alignment something unique to lock onto.
+
 ## CPU cost
 
 It uses about 160 ms of CPU per frame at 5 Hz (roughly 80% of one core), on the same CPU as the flight stack. Lower `rate_hz` (for example to 3.0) or stop it before flying.
