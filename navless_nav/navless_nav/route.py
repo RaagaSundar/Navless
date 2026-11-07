@@ -133,9 +133,9 @@ def plan_dynamic_course_route(branch='window', start_enu=None, router=None):
     s_pt = tuple(float(v) for v in (start_enu or cp.start_pad))
     pad_goal, pad_r = router.landing_target_enu()
     features = router.grid.discover_course_features(standoff_distance_m=router.config.window_inspect_distance_m)
-    gate_a = features.gate_a_exit_m if features.gate_a_exit_m is not None else cp.gate_a_exit
-    tunnel_exit = features.tunnel_exit_m if features.tunnel_exit_m is not None else cp.tunnel_exit
-    win_center = features.window_center_m if features.window_center_m is not None else cp.window_aperture
+    gate_a = getattr(features, 'gate_a_exit_m', None) or cp.gate_a_exit
+    tunnel_exit = getattr(features, 'tunnel_exit_m', None) or cp.tunnel_exit
+    win_center = getattr(features, 'window_center_m', None) or cp.window_aperture
 
     waypoints = []
     # If still in Stage 1 (Maze), replan around maze obstacles (e.g. shifted M3) to Gate A first, then through Tunnel
