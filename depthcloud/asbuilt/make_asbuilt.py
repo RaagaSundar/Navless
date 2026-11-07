@@ -20,8 +20,8 @@ Everything else (launch mark, tube, C2a + window, C2b, barriers, boulders, pad, 
 In the .obj, the five walls' plan faces are dropped and boxes at the measured positions are added under the
 same group names, so cloud_localize and other tools find them as before.
 
-NOT tape-measured. Before planning a flight route on it, measure each moved wall's two ends from the west net
-and the floor-line corners, and update scan_walls.json (or the json directly).
+Shining confirmed the as-built walls against the real course on 2026-11-07, so this is the course to plan and
+fly on. To correct a wall later, edit scan_walls.json and re-run.
 """
 import argparse
 import copy
@@ -82,7 +82,7 @@ def build(plan, scan):
             dx, dy = w["end_in"][0] - w["start_in"][0], w["end_in"][1] - w["start_in"][1]
             w["length_in"] = round(math.hypot(dx, dy), 1)
             w["bearing_deg"] = round(math.degrees(math.atan2(dx, dy)) % 360, 1)
-            w["source"] = "phone scan 2026-11-06 (depthcloud/asbuilt), best guess, not tape-measured"
+            w["source"] = "phone scan 2026-11-06 (depthcloud/asbuilt), confirmed against the real course 2026-11-07"
     W = {w["name"]: w for w in c["walls"]}
     c["floor_line_in"] = floor_line(c)
     c["gates_in"]["gate_A"]["between"] = [ends(W["M3"])[1], [ends(W["M3"])[1][0], NET]]
@@ -102,7 +102,8 @@ def build(plan, scan):
     c["_notes"] = ("AS-BUILT course: course_v3.json (the organisers' temporary plan) with M1, M2, M3, A1 and C1 moved "
                    "to where the 2026-11-06 phone LiDAR scan puts them, and the floor line, gate A and the "
                    "wall-bounded checkpoint zones recomputed from them. Made by depthcloud/asbuilt/make_asbuilt.py; "
-                   "don't edit by hand, edit scan_walls.json and re-run. NOT tape-measured. clearances_in below are "
+                   "don't edit by hand, edit scan_walls.json and re-run. Walls confirmed against the real course "
+                   "2026-11-07; the floor line is computed, not observed. clearances_in below are "
                    "still the PLAN's. Same frame as course_v3.json: inches, origin = net's south-west corner, "
                    "x east, y north (OBJ/world metres = (inches - 120) * 0.0254). " + plan["_notes"])
     return c
@@ -123,7 +124,7 @@ def write_obj(src, dst, course):
                 continue
             fout.write(line)
         fout.write("\n# --- AS-BUILT walls from depthcloud/asbuilt/make_asbuilt.py (phone scan 2026-11-06, "
-                   "not tape-measured) ---\n")
+                   "confirmed against the real course 2026-11-07) ---\n")
         i = nv + 1
         for g, w in moved.items():
             (x0, y0), (x1, y1) = [((p[0] - 120) * IN, (p[1] - 120) * IN) for p in (w["start_in"], w["end_in"])]

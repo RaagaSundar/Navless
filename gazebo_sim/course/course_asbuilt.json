@@ -1,5 +1,5 @@
 {
-  "_notes": "AS-BUILT course: course_v3.json (the organisers' temporary plan) with M1, M2, M3, A1 and C1 moved to where the 2026-11-06 phone LiDAR scan puts them, and the floor line, gate A and the wall-bounded checkpoint zones recomputed from them. Made by depthcloud/asbuilt/make_asbuilt.py; don't edit by hand, edit scan_walls.json and re-run. NOT tape-measured. clearances_in below are still the PLAN's. Same frame as course_v3.json: inches, origin = net's south-west corner, x east, y north (OBJ/world metres = (inches - 120) * 0.0254). Origin = south-west corner of the 20x20 ft net. x = east, y = north, inches. Bearings clockwise from north. Extracted from the DroneHacks challenge page (course v3, preliminary). Multiply inches by 0.0254 for metres. Verified against the official dronehacks-course-v3.obj (OBJ origin is the floor centre: subtract 120 in from x and y to convert).",
+  "_notes": "AS-BUILT course: course_v3.json (the organisers' temporary plan) with M1, M2, M3, A1 and C1 moved to where the 2026-11-06 phone LiDAR scan puts them, and the floor line, gate A and the wall-bounded checkpoint zones recomputed from them. Made by depthcloud/asbuilt/make_asbuilt.py; don't edit by hand, edit scan_walls.json and re-run. Walls confirmed against the real course 2026-11-07; the floor line is computed, not observed. clearances_in below are still the PLAN's. Same frame as course_v3.json: inches, origin = net's south-west corner, x east, y north (OBJ/world metres = (inches - 120) * 0.0254). Origin = south-west corner of the 20x20 ft net. x = east, y = north, inches. Bearings clockwise from north. Extracted from the DroneHacks challenge page (course v3, preliminary). Multiply inches by 0.0254 for metres. Verified against the official dronehacks-course-v3.obj (OBJ origin is the floor centre: subtract 120 in from x and y to convert).",
   "net_in": {
     "x": 240,
     "y": 240,
@@ -21,7 +21,7 @@
       "bearing_deg": 8.2,
       "thickness_in": 4,
       "height_in": 68,
-      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), best guess, not tape-measured"
+      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), confirmed against the real course 2026-11-07"
     },
     {
       "name": "M2",
@@ -38,7 +38,7 @@
       "bearing_deg": 5.0,
       "thickness_in": 4,
       "height_in": 68,
-      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), best guess, not tape-measured"
+      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), confirmed against the real course 2026-11-07"
     },
     {
       "name": "M3",
@@ -55,7 +55,7 @@
       "bearing_deg": 1.7,
       "thickness_in": 4,
       "height_in": 68,
-      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), best guess, not tape-measured"
+      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), confirmed against the real course 2026-11-07"
     },
     {
       "name": "Barrier1",
@@ -120,7 +120,7 @@
       "bearing_deg": 13.0,
       "thickness_in": 4,
       "height_in": 68,
-      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), best guess, not tape-measured"
+      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), confirmed against the real course 2026-11-07"
     },
     {
       "name": "C1",
@@ -137,7 +137,7 @@
       "bearing_deg": 347.3,
       "thickness_in": 4,
       "height_in": 68,
-      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), best guess, not tape-measured"
+      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), confirmed against the real course 2026-11-07"
     },
     {
       "name": "C2a",

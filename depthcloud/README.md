@@ -100,7 +100,7 @@ FlyX Lab still simulates the plan. So there are two courses, and every tool pick
   ```
   The .obj lands next to the plan's. The as-built .obj is also committed, at the repo root (`dronehacks-course-asbuilt.obj`), so you only need to re-run this after changing `scan_walls.json`. The plan .obj comes from the organisers' zip and isn't in git. `asbuilt/asbuilt_vs_scan.png` shows the as-built walls over the scan.
 - **What it recomputes:** the moved walls keep their names. The floor line, gate A and the wall-bounded checkpoint zones are worked out from the walls, using the same rule that reproduces the plan's own floor line exactly.
-- **What it can't give you:** the floor line isn't observed (the tape doesn't show in the scan), and **nothing is tape-measured yet**. Fine for localization and simulation. Measure the moved walls' ends from the west net before planning a flight route on it.
+- **Status:** Shining confirmed the as-built walls against the real course on 2026-11-07, so this is the course to localize, simulate and plan routes on. The one computed part is the floor line, because the tape doesn't show in the scan.
 
 `cloud_localize.py` uses the **as-built** course by default: `-p course:=asbuilt` (default) or `plan`. It finds the .obj next to the script, in `~/team_ws/src/dronehacks`, or in the repo root; `-p obj:=...` overrides it. `walk_test.py --course asbuilt|plan` works the same way.
 

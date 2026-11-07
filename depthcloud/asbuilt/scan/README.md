@@ -15,4 +15,4 @@ These scripts are kept so the wall positions can be traced back to the scan. You
    - Writes the per-wall result. That result became `../scan_walls.json`.
 3. **`floor_view.py`** renders the floor in true colour, used to look for the taped guideline. It isn't visible in the scan: the floor is a uniform reddish mat with large unscanned gaps.
 
-These are best guesses, not tape measurements. To correct a wall, edit `../scan_walls.json`. Its `start_in` and `end_in` use `course_v3.json`'s frame: inches from the net's south-west corner, x east, y north. Then re-run `../make_asbuilt.py`.
+Shining confirmed the result against the real course on 2026-11-07. To correct a wall later, edit `../scan_walls.json`. Its `start_in` and `end_in` use `course_v3.json`'s frame: inches from the net's south-west corner, x east, y north. Then re-run `../make_asbuilt.py`.

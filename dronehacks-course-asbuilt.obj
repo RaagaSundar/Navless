@@ -161565,7 +161565,7 @@ f 40705//39095 40706//39095 40796//39095
 f 40706//39095 40707//39095 40796//39095 
 f 40707//39095 40708//39095 40796//39095 
 
-# --- AS-BUILT walls from depthcloud/asbuilt/make_asbuilt.py (phone scan 2026-11-06, not tape-measured) ---
+# --- AS-BUILT walls from depthcloud/asbuilt/make_asbuilt.py (phone scan 2026-11-06, confirmed against the real course 2026-11-07) ---
 g M1 maze divider
 v -2.01473 0.50079 0.00000
 v -1.73533 2.44897 0.00000
