@@ -76,16 +76,38 @@ def unit(q):
 
 
 class Placement:
-    """odom (power-up frame) -> course/world, as navless_nav's route.py does it."""
+    """odom (power-up frame) -> course/world, as navless_nav's route.py does it.
+
+    rezero(p, q) makes the drone's CURRENT pose the launch mark, nose along the start
+    bearing (for benches and rooms that are not the course); unzero() goes back to the
+    power-up frame. The flight code never sees this: it is only where the mirror draws.
+    """
 
     def __init__(self, launch, bearing_deg, start_height):
         self.launch, self.bearing, self.height = launch, bearing_deg, start_height
         self.q0 = qz(math.radians(90.0 - bearing_deg))      # ENU heading of odom +x
+        self.ref = None                                      # (odom p, odom yaw) taken as the launch mark
+
+    def rezero(self, p, q):
+        self.ref = (tuple(p), yaw_of(q))
+
+    def unzero(self):
+        self.ref = None
+
+    def _local(self, p):
+        if self.ref is None:
+            return p
+        (rx, ry, rz), yaw = self.ref
+        c, s = math.cos(-yaw), math.sin(-yaw)
+        dx, dy = p[0] - rx, p[1] - ry
+        return (c * dx - s * dy, s * dx + c * dy, p[2] - rz)
 
     def position(self, p):
-        return odom_to_course(p, self.launch, self.bearing, self.height)
+        return odom_to_course(self._local(p), self.launch, self.bearing, self.height)
 
     def orientation(self, q):
+        if self.ref is not None:
+            q = qmul(qz(-self.ref[1]), unit(q))
         return unit(qmul(self.q0, unit(q)))
 
 
@@ -196,7 +218,9 @@ img,canvas{width:100%;height:auto;border-radius:6px;display:block;background:#00
 dl{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:10px 0 0;font-variant-numeric:tabular-nums}dt{color:var(--muted)}dd{margin:0}
 </style></head><body>
 <header><h1>Drone mirror</h1><span id="link" class="pill">connecting...</span><span id="vio" class="pill">VIO ?</span>
-<span id="arm" class="pill">disarmed</span><span class="pill" style="color:var(--muted)">read-only: this page cannot command the drone</span></header>
+<span id="arm" class="pill">disarmed</span><span class="pill" style="color:var(--muted)">read-only: this page cannot command the drone</span>
+<button id="zero" title="Draw the drone's current pose as the launch mark, nose north. Changes only this page's drawing.">Put drone on launch mark</button>
+<button id="unzero" title="Back to the drone's power-up frame">Use power-up pose</button></header>
 <main><section class="card"><h2>What the drone would see (simulated left stereo lens)</h2><img src="/stream.mjpg" alt="simulated camera"></section>
 <section class="card"><h2>Where it is in the course (top-down, north up)</h2><canvas id="map" width="560" height="560"></canvas>
 <dl id="info"></dl></section></main>
@@ -217,6 +241,8 @@ if(trail.length>1){g.strokeStyle='rgba(62,207,142,.8)';g.lineWidth=2;g.beginPath
 if(s&&s.setpoint){g.fillStyle='#3ecf8e';g.beginPath();g.arc(X(s.setpoint[0]),Y(s.setpoint[1]),4,0,7);g.fill();}
 if(s&&s.world){const [x,y]=s.world,a=s.yaw_enu;g.save();g.translate(X(x),Y(y));g.rotate(-a);g.fillStyle=s.vo_state==2?'#f2555a':'#5aa9ff';
 g.beginPath();g.moveTo(12,0);g.lineTo(-8,7);g.lineTo(-4,0);g.lineTo(-8,-7);g.closePath();g.fill();g.restore();}}
+document.getElementById('zero').onclick=()=>{trail=[];fetch('/zero',{method:'POST'});};
+document.getElementById('unzero').onclick=()=>{trail=[];fetch('/unzero',{method:'POST'});};
 function pill(id,text,color){const e=document.getElementById(id);e.textContent=text;e.style.color=color;}
 async function poll(){try{const s=await (await fetch('/status')).json();
 pill('link',s.connected?`relay ${s.relay} · ${s.relay_hz.toFixed(0)} Hz`:`no relay (${s.relay})`,s.connected&&s.frame_age<1?'var(--ok)':'var(--bad)');
@@ -226,7 +252,7 @@ if(s.world){const l=trail[trail.length-1];if(!l||Math.hypot(l[0]-s.world[0],l[1]
 const f=v=>v==null?'—':v.map(x=>x.toFixed(2)).join(', ');
 document.getElementById('info').innerHTML=`<dt>course xyz (m)</dt><dd>${f(s.world)}</dd><dt>heading</dt><dd>${s.world?(90-s.yaw_enu*57.2958).toFixed(0)+'° from north':'—'}</dd>
 <dt>odom xyz (m)</dt><dd>${f(s.odom)}</dd><dt>setpoint</dt><dd>${f(s.setpoint)}</dd><dt>mode</dt><dd>${s.nav||'—'}</dd>
-<dt>camera mount</dt><dd>${s.cam_source}</dd><dt>sim camera</dt><dd>${s.camera_hz.toFixed(0)} Hz</dd><dt>frame age</dt><dd>${s.frame_age==null?'—':s.frame_age.toFixed(2)+' s'}</dd>`;
+<dt>placed by</dt><dd>${s.placement}</dd><dt>camera mount</dt><dd>${s.cam_source}</dd><dt>sim camera</dt><dd>${s.camera_hz.toFixed(0)} Hz</dd><dt>frame age</dt><dd>${s.frame_age==null?'—':s.frame_age.toFixed(2)+' s'}</dd>`;
 draw(s);}catch(e){pill('link','mirror offline','var(--bad)');}setTimeout(poll,200);}poll();
 </script></body></html>"""
 
@@ -235,7 +261,7 @@ draw(s);}catch(e){pill('link','mirror offline','var(--bad)');}setTimeout(poll,20
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--drone", required=True, help="host running navless_nav mirror_relay (e.g. 192.168.55.1)")
-    ap.add_argument("--port", type=int, default=8765, help="relay TCP port")
+    ap.add_argument("--port", type=int, default=8775, help="relay TCP port")
     ap.add_argument("--start-bearing", type=float, default=0.0, help="nose bearing at power-up, deg clockwise from course north")
     ap.add_argument("--start-height", type=float, default=0.07, help="base_link height above the floor at power-up, m")
     ap.add_argument("--launch", type=float, nargs=2, default=LAUNCH, metavar=("X", "Y"), help="power-up point, world m")
@@ -301,7 +327,8 @@ def main():
 
     status = {"connected": False, "relay": f"{a.drone}:{a.port}", "relay_hz": 0.0, "camera_hz": 0.0,
               "frame_age": None, "world": None, "yaw_enu": None, "odom": None, "setpoint": None,
-              "vo_state": None, "armed": False, "offboard": False, "nav": None, "cam_source": "waiting"}
+              "vo_state": None, "armed": False, "offboard": False, "nav": None, "cam_source": "waiting",
+              "placement": "power-up pose (launch mark, nose north)"}
     status_lock = threading.Lock()
     cmap = json.dumps(course_map(a.route))
 
@@ -315,6 +342,21 @@ def main():
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
+
+        def do_POST(self):
+            f, _, _, _ = relay.latest()
+            if self.path == "/zero" and f is not None:
+                place.rezero(f["p"], f["q"])
+                label = time.strftime("re-zeroed here at %H:%M:%S (drawn as the launch mark, nose north)")
+            elif self.path == "/unzero":
+                place.unzero()
+                label = "power-up pose (launch mark, nose north)"
+            else:
+                self.send_error(409 if self.path == "/zero" else 404)
+                return
+            with status_lock:
+                status["placement"] = label
+            self._send(b"ok", "text/plain")
 
         def do_GET(self):
             if self.path == "/":

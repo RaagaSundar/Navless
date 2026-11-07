@@ -27,7 +27,7 @@ LAUNCH = (-2.5146, 0.9144)
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("run", help="run directory (or its log.csv) from fly_navless.py")
-    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--port", type=int, default=8775)
     ap.add_argument("--speed", type=float, default=1.0, help="replay speed factor")
     ap.add_argument("--loop", action="store_true")
     ap.add_argument("--start-bearing", type=float, default=0.0)
