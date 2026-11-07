@@ -21,7 +21,11 @@ from planner.fsm_router import CourseStage, GlobalCourseRouter
 from planner.grid_map import OccupancyGrid3D
 from planner.px4_bridge_node import (
     ARMING_STATE_ARMED,
+    NAVIGATION_STATE_AUTO_LAND,
     NAVIGATION_STATE_OFFBOARD,
+    VEHICLE_CMD_COMPONENT_ARM_DISARM,
+    VEHICLE_CMD_DO_SET_MODE,
+    VEHICLE_CMD_NAV_LAND,
     PX4TrajectoryTrackerCore,
 )
 
@@ -415,6 +419,114 @@ class TestPlannerScaffold(unittest.TestCase):
         cmd_done = tracker.step_skybeta_mission(19.0)
         self.assertEqual(cmd_done.skybeta_state, "DONE")
         self.assertEqual(cmd_done.mode, "none")
+
+    def test_px4_mission_takeoff_route_pad_land_fly_home_land(self) -> None:
+        cfg = PlannerConfig()
+        router = GlobalCourseRouter(cfg, OccupancyGrid3D())
+        tracker = PX4TrajectoryTrackerCore(router)
+        origin = tracker.launch_origin_enu
+        DISARMED, MANUAL = 1, 2
+
+        def tick(t, ned, arming=DISARMED, nav=MANUAL, landed=True):
+            tracker.update_local_position(t, ned[0], ned[1], ned[2], 0.0, 0.0, 0.0, 0.0, True, True)
+            tracker.update_vehicle_status(t, arming, nav)
+            tracker.update_landed(t, landed)
+            tracker.update_estimator_health(True)
+            return tracker.step_px4_mission(t)
+
+        ground = (0.0, 0.0, -0.07)
+        # PREFLIGHT -> PRIME: streams a ground hold, sends nothing until PX4 has >= 1 s of stream
+        c = tick(0.0, ground)
+        self.assertEqual((c.state, c.commands), ("PRIME", ()))
+        self.assertIsNotNone(c.setpoint)
+        self.assertEqual(tick(0.5, ground).commands, ())
+        c = tick(1.1, ground)
+        self.assertEqual(c.state, "ARMING")
+        self.assertEqual(c.commands, ((VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0), (VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0, 0.0)))
+        self.assertEqual(tick(1.5, ground).commands, ())  # re-sent at most once a second
+
+        # Armed + Offboard -> TAKEOFF: climb to the start-pad height, leaning 0.20 m north
+        armed = dict(arming=ARMING_STATE_ARMED, nav=NAVIGATION_STATE_OFFBOARD, landed=False)
+        self.assertEqual(tick(2.0, ground, **armed).state, "TAKEOFF")
+        c = tick(2.1, (0.0, 0.0, -0.3), **armed)
+        assert c.setpoint is not None
+        self.assertAlmostEqual(c.setpoint.position_ned[0], 0.20, places=3)
+        self.assertAlmostEqual(c.setpoint.position_ned[2], -cfg.checkpoints.start_pad[2], places=3)
+        # The pre-arm zero-tare made the resting -0.07 m read as 0; PX4 must get its own frame back
+        self.assertAlmostEqual(tracker.to_px4_frame(c.setpoint.position_ned)[2], -cfg.checkpoints.start_pad[2] - 0.07, places=3)
+
+        # At height (raw -0.85 -> 0.78 m above the tared ground) -> ROUTE streams the live spline
+        c = tick(3.0, (0.2, 0.0, -0.85), **armed)
+        self.assertEqual(c.state, "ROUTE")
+        c = tick(3.1, (0.2, 0.0, -0.85), **armed)
+        self.assertEqual(c.state, "ROUTE")
+        self.assertIsNotNone(c.setpoint)
+
+        # Over the Concentric Pad -> LAND with PX4 NAV_LAND, re-sent once a second until PX4 is in Land
+        router.stage = CourseStage.STAGE_5_LANDING_PAD
+        pad = enu_to_ned_pos(cfg.checkpoints.landing_pad, origin_enu=origin)
+        c = tick(20.0, (pad[0], pad[1], -0.8), **armed)
+        self.assertEqual((c.state, c.commands), ("LAND", ((VEHICLE_CMD_NAV_LAND, 0.0, 0.0),)))
+        c = tick(21.5, (pad[0], pad[1], -0.4), arming=ARMING_STATE_ARMED, nav=NAVIGATION_STATE_AUTO_LAND, landed=False)
+        self.assertEqual((c.state, c.commands, c.setpoint), ("LAND", (), None))
+
+        # Disarmed on the pad -> fly-home leg: re-arm from the pad, then straight into ROUTE
+        pad_ground = (pad[0], pad[1], -0.07)
+        c = tick(25.0, pad_ground)
+        self.assertEqual((c.state, c.reason), ("PREFLIGHT", "landed_on_pad_rearming_for_fly_home"))
+        self.assertEqual(tick(25.1, pad_ground).state, "PRIME")
+        self.assertEqual(tick(26.2, pad_ground).state, "ARMING")
+        c = tick(27.0, pad_ground, **armed)
+        self.assertEqual(c.state, "ROUTE")
+        self.assertEqual(router.stage, CourseStage.STAGE_6_FLY_HOME)
+
+        # Back over the start pad -> LAND -> disarmed and landed -> DONE
+        c = tick(40.0, (0.0, 0.0, -1.0), **armed)
+        self.assertEqual(c.state, "LAND")
+        c = tick(45.0, ground)
+        self.assertEqual((c.state, c.reason), ("DONE", "landed_and_disarmed"))
+        self.assertEqual(tick(46.0, ground).setpoint, None)
+
+    def test_px4_mission_safety_exits(self) -> None:
+        def fresh():
+            t = PX4TrajectoryTrackerCore(GlobalCourseRouter(PlannerConfig(), OccupancyGrid3D()))
+            t.update_estimator_health(True)
+            return t
+
+        def feed(t, now, ned, arming, nav, landed):
+            t.update_local_position(now, ned[0], ned[1], ned[2], 0.0, 0.0, 0.0, 0.0, True, True)
+            t.update_vehicle_status(now, arming, nav)
+            t.update_landed(now, landed)
+            return t.step_px4_mission(now)
+
+        # Never takes over a vehicle that is already armed
+        t = fresh()
+        c = feed(t, 0.0, (0.0, 0.0, -0.07), ARMING_STATE_ARMED, 2, True)
+        self.assertEqual((c.state, c.commands, c.setpoint), ("ABORT", (), None))
+
+        # Not landed -> stays in PREFLIGHT, publishes nothing
+        t = fresh()
+        c = feed(t, 0.0, (0.0, 0.0, -1.0), 1, 2, False)
+        self.assertEqual((c.state, c.setpoint), ("PREFLIGHT", None))
+
+        # In flight: PX4 leaves Offboard (pilot/failsafe) -> yields, publishes nothing more
+        t = fresh()
+        for now, arming, nav, landed in ((0.0, 1, 2, True), (1.1, 1, 2, True), (2.0, ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD, False)):
+            feed(t, now, (0.0, 0.0, -0.07), arming, nav, landed)
+        self.assertEqual(t.px4_state, "TAKEOFF")
+        c = feed(t, 2.5, (0.0, 0.0, -0.4), ARMING_STATE_ARMED, 4, False)
+        self.assertEqual((c.state, c.setpoint), ("ABORT", None))
+
+        # In flight: estimator unhealthy -> hold for 1 s, then NAV_LAND
+        t = fresh()
+        for now, arming, nav, landed in ((0.0, 1, 2, True), (1.1, 1, 2, True), (2.0, ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD, False)):
+            feed(t, now, (0.0, 0.0, -0.07), arming, nav, landed)
+        t.update_estimator_health(False)
+        c = feed(t, 2.5, (0.0, 0.0, -0.4), ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD, False)
+        self.assertEqual(c.state, "TAKEOFF")
+        self.assertIsNotNone(c.setpoint)
+        c = feed(t, 3.6, (0.0, 0.0, -0.4), ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD, False)
+        self.assertEqual((c.state, c.commands), ("LAND", ((VEHICLE_CMD_NAV_LAND, 0.0, 0.0),)))
 
 
 if __name__ == "__main__":

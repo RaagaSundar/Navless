@@ -17,7 +17,9 @@ Strictly adheres to `AGENTS.md` and `AI_CONTEXT.md` rules:
   Checks fresh telemetry timestamps, `xy_valid`, `z_valid`, and `/estimator/healthy`.
   Stops publishing setpoints immediately if authority is lost (pilot RC takeover)
   or telemetry becomes stale.
-- Never arms without explicit team approval (`--approve-flight`).
+- Never arms without explicit team approval (`--approve-flight`). Without `--skybeta-mode`, approval
+  runs `step_px4_mission`: preflight, Offboard + arm, takeoff, route, `NAV_LAND` on the pad,
+  re-arm for fly-home, `NAV_LAND` at home (uses `/fmu/out/vehicle_land_detected`).
 """
 
 from __future__ import annotations
@@ -51,6 +53,11 @@ from .grid_map import OccupancyGrid3D
 # Standard PX4 VehicleStatus constants
 ARMING_STATE_ARMED = 2
 NAVIGATION_STATE_OFFBOARD = 14
+NAVIGATION_STATE_AUTO_LAND = 18
+# px4_msgs VehicleCommand ids, kept here so the core stays importable without ROS
+VEHICLE_CMD_NAV_LAND = 21
+VEHICLE_CMD_DO_SET_MODE = 176
+VEHICLE_CMD_COMPONENT_ARM_DISARM = 400
 
 
 @dataclass
@@ -134,6 +141,16 @@ class SkybetaMissionCommand:
     reason: str = "idle"
 
 
+@dataclass(frozen=True)
+class PX4MissionCommand:
+    """One tick of the plain-PX4 mission: an optional setpoint to stream plus VehicleCommands to send."""
+
+    setpoint: Optional[PX4SetpointSample]
+    commands: Tuple[Tuple[int, float, float], ...] = ()
+    state: str = "PREFLIGHT"
+    reason: str = "idle"
+
+
 class PX4TrajectoryTrackerCore:
     """Testable core tracker evaluating the active EGO B-spline at 30-50 Hz for PX4 & `/skybeta`."""
 
@@ -196,6 +213,14 @@ class PX4TrajectoryTrackerCore:
         self.landed_flag: bool = False
         self.pad_touchdown_since_s: Optional[float] = None
         self.last_safe_course_pos_enu: Optional[Tuple[float, float, float]] = None
+        # Plain-PX4 (`/fmu/in/*`) mission state machine, see `step_px4_mission`
+        self.px4_state: str = "PREFLIGHT"
+        self.px4_leg: str = "course"  # "course" -> land on pad, then "home" -> land on start pad
+        self.px4_state_since_s: float = 0.0
+        self.px4_last_cmd_s: float = -1e9
+        self.px4_unhealthy_since_s: Optional[float] = None
+        self.px4_takeoff_enu: Optional[Tuple[float, float, float]] = None
+        self.last_landed_time_s: Optional[float] = None
 
     def update_px4_skybeta_height(self, now_s: float, px4_z_enu: float) -> None:
         """Update PX4's `local_enu` z height from `/skybeta/state` for pre-arm height agreement."""
@@ -430,6 +455,16 @@ class PX4TrajectoryTrackerCore:
 
     def update_estimator_health(self, healthy: bool) -> None:
         self.telemetry.estimator_healthy = bool(healthy)
+
+    def to_px4_frame(self, position_ned: Tuple[float, float, float]) -> Tuple[float, float, float]:
+        """Undo the pre-arm zero-tare for an outgoing setpoint: PX4 flies in its own (raw) local frame."""
+        ox, oy, oz = self.nav_zero_offset_ned
+        return (float(position_ned[0]) + ox, float(position_ned[1]) + oy, float(position_ned[2]) + oz)
+
+    def update_landed(self, now_s: float, landed: bool) -> None:
+        """PX4 `vehicle_land_detected` (slow: ~0.8 Hz in the FlyX lab, so freshness allows 2.5 s)."""
+        self.landed_flag = bool(landed)
+        self.last_landed_time_s = float(now_s)
 
     def _rate_limit_yaw_enu(self, now_s: float, target_yaw_enu_rad: float) -> float:
         """Rate-limit camera yaw heading changes to `max_yaw_rate_rad_s` so cuVSLAM tracks smoothly."""
@@ -1000,6 +1035,204 @@ class PX4TrajectoryTrackerCore:
             reason="idle",
         )
 
+    # ---------- plain PX4 (`/fmu/in/*`) mission: takeoff, route, NAV_LAND ----------
+
+    def _px4_enter(self, state: str, now_s: float) -> None:
+        self.px4_state = state
+        self.px4_state_since_s = float(now_s)
+        self.px4_last_cmd_s = -1e9
+
+    def _px4_hold(self, now_s: float, pos_enu, yaw_enu: float) -> PX4SetpointSample:
+        """Position-only setpoint (velocity NaN = unset) at a course-ENU point."""
+        return PX4SetpointSample(
+            position_ned=enu_to_ned_pos(pos_enu, convention=self.frame_convention, origin_enu=self.launch_origin_enu),
+            velocity_ned=(math.nan, math.nan, math.nan),
+            yaw_ned=enu_yaw_to_ned_yaw(yaw_enu, convention=self.frame_convention),
+            timestamp_us=int(now_s * 1_000_000),
+            stage=self.router.stage,
+            branch=self.router.selected_branch,
+            yaw_enu=float(yaw_enu),
+        )
+
+    def _px4_cmd(self, now_s: float, *commands: Tuple[int, float, float]) -> Tuple[Tuple[int, float, float], ...]:
+        """Send `commands` now and then at most once a second while the state lasts."""
+        if now_s - self.px4_last_cmd_s < 1.0:
+            return ()
+        self.px4_last_cmd_s = float(now_s)
+        return tuple(commands)
+
+    def step_px4_mission(
+        self,
+        now_s: float,
+        *,
+        external_window_confidence: Optional[float] = None,
+    ) -> PX4MissionCommand:
+        """Plain-PX4 mission for the FlyX lab / any native `px4_msgs` link (not `--skybeta-mode`).
+
+        `PREFLIGHT` (fresh healthy telemetry, landed, disarmed) -> `PRIME` (stream a ground hold >= 1 s,
+        then request Offboard + arm) -> `ARMING` -> `TAKEOFF` (climb to the start-pad height, leaning
+        0.20 m north as in `step_skybeta_mission`) -> `ROUTE` (live EGO B-spline via `sample_setpoint`) ->
+        `LAND` (PX4 `NAV_LAND` over the Concentric Pad). With fly-home enabled, the disarmed drone on the
+        pad is re-armed and flies `STAGE_6_FLY_HOME` straight from the pad, then `LAND`s at home -> `DONE`.
+        Never takes over an already-armed vehicle; yields (`ABORT`, no more publishing) if PX4 leaves
+        Offboard; lands if planner/estimator health is lost for more than 1 s in flight.
+        """
+        tel = self.telemetry
+        state = self.px4_state
+        if state in ("DONE", "ABORT"):
+            return PX4MissionCommand(None, (), state, "finished")
+        if tel.last_local_pos_time_s is None or tel.last_status_time_s is None:
+            return PX4MissionCommand(None, (), state, "waiting_for_px4_telemetry")
+
+        safety = self.config.safety
+        healthy, why = tel.check_authority_and_health(
+            now_s,
+            max_age_s=safety.max_telemetry_age_s,
+            require_xy_valid=safety.require_xy_valid,
+            require_z_valid=safety.require_z_valid,
+            require_estimator_healthy=safety.require_estimator_healthy,
+        )
+        armed = tel.arming_state == ARMING_STATE_ARMED
+        offboard = tel.nav_state == NAVIGATION_STATE_OFFBOARD
+        landed = (
+            self.landed_flag
+            and self.last_landed_time_s is not None
+            and (now_s - self.last_landed_time_s) <= 2.5
+        )
+        pos_enu, yaw_enu = self.current_course_pose_enu(now_s)
+        land_cmd = (VEHICLE_CMD_NAV_LAND, 0.0, 0.0)
+
+        if state == "PREFLIGHT":
+            if armed:
+                self._px4_enter("ABORT", now_s)
+                return PX4MissionCommand(None, (), "ABORT", "armed_before_our_request")
+            if not healthy or not landed:
+                return PX4MissionCommand(None, (), state, f"preflight_wait ({why if not healthy else 'not_landed'})")
+            settled, settle_why = self.check_prearm_navigation_ready(now_s)  # stationary + zero-tare
+            if not settled:
+                return PX4MissionCommand(None, (), state, f"preflight_wait ({settle_why})")
+            pos_enu, yaw_enu = self.current_course_pose_enu(now_s)  # after any zero-tare
+            self.px4_takeoff_enu = (float(pos_enu[0]), float(pos_enu[1]), float(pos_enu[2]))
+            if self.router.recorded_start_pos_enu is None:
+                self.router.recorded_start_pos_enu = (
+                    float(pos_enu[0]),
+                    float(pos_enu[1]),
+                    float(self.config.checkpoints.start_pad[2]),
+                )
+            self.commanded_yaw_enu_rad = float(yaw_enu)
+            self._px4_enter("PRIME", now_s)
+            state = "PRIME"
+
+        if state in ("PRIME", "ARMING"):
+            hold = self._px4_hold(now_s, self.px4_takeoff_enu, self.commanded_yaw_enu_rad or yaw_enu)
+            if state == "PRIME":
+                if armed or not healthy or not landed:  # nothing sent yet: just start over
+                    self._px4_enter("PREFLIGHT", now_s)
+                    return PX4MissionCommand(None, (), "PREFLIGHT", f"prime_cancelled ({why})")
+                if now_s - self.px4_state_since_s < 1.0:  # PX4 needs a live stream before Offboard
+                    return PX4MissionCommand(hold, (), state, "prestreaming_ground_hold")
+                self._px4_enter("ARMING", now_s)
+            if armed and offboard:
+                if self.px4_leg == "course":
+                    self._px4_enter("TAKEOFF", now_s)
+                    return PX4MissionCommand(hold, (), "TAKEOFF", "armed_offboard")
+                self._px4_enter("ROUTE", now_s)
+                self.router.spline_start_time_s = now_s
+                self.router.step(now_s, pos_enu, force_replan=True)
+                return PX4MissionCommand(hold, (), "ROUTE", "armed_offboard_fly_home")
+            if now_s - self.px4_state_since_s > 8.0:
+                nxt = "LAND" if armed else "ABORT"
+                self._px4_enter(nxt, now_s)
+                return PX4MissionCommand(None, (land_cmd,) if armed else (), nxt, "offboard_or_arm_refused")
+            cmds = self._px4_cmd(
+                now_s,
+                (VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0),
+                (VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0, 0.0),
+            )
+            return PX4MissionCommand(hold, cmds, "ARMING", "offboard_and_arm_requested")
+
+        if state in ("TAKEOFF", "ROUTE"):
+            if not armed:
+                self._px4_enter("ABORT", now_s)
+                return PX4MissionCommand(None, (), "ABORT", "disarmed_in_flight")
+            if not offboard:  # pilot or failsafe took over: never fight it
+                self._px4_enter("ABORT", now_s)
+                return PX4MissionCommand(None, (), "ABORT", f"left_offboard (nav_state={tel.nav_state})")
+            if not healthy:
+                if self.px4_unhealthy_since_s is None:
+                    self.px4_unhealthy_since_s = float(now_s)
+                if now_s - self.px4_unhealthy_since_s > 1.0:
+                    self._px4_enter("LAND", now_s)
+                    return PX4MissionCommand(None, self._px4_cmd(now_s, land_cmd), "LAND", f"unhealthy ({why})")
+                hold_enu = self.last_safe_course_pos_enu or self.px4_takeoff_enu or tuple(pos_enu)
+                return PX4MissionCommand(self._px4_hold(now_s, hold_enu, self.commanded_yaw_enu_rad or yaw_enu),
+                                         (), state, f"hold ({why})")
+            self.px4_unhealthy_since_s = None
+
+        if state == "TAKEOFF":
+            assert self.px4_takeoff_enu is not None
+            takeoff_z = float(self.config.checkpoints.start_pad[2])
+            target = (self.px4_takeoff_enu[0], self.px4_takeoff_enu[1] + 0.20, takeoff_z)
+            if float(pos_enu[2]) >= takeoff_z - 0.15:
+                self._px4_enter("ROUTE", now_s)
+                self.router.spline_start_time_s = now_s
+                self.router.step(now_s, pos_enu, force_replan=True)
+                state = "ROUTE"
+            else:
+                yaw = self._rate_limit_yaw_enu(now_s, self.commanded_yaw_enu_rad or yaw_enu)
+                return PX4MissionCommand(self._px4_hold(now_s, target, yaw), (), state, "climbing_to_takeoff_altitude")
+
+        if state == "ROUTE":
+            if self.px4_leg == "course":
+                pad_goal_enu, _ = self.router.landing_target_enu()
+                d_land = float(math.hypot(pos_enu[0] - pad_goal_enu[0], pos_enu[1] - pad_goal_enu[1]))
+                at_goal = self.router.stage in (
+                    CourseStage.STAGE_5_LANDING_PAD,
+                    CourseStage.STAGE_6_FLY_HOME,
+                    CourseStage.MISSION_COMPLETE,
+                ) and d_land <= 0.35
+            else:
+                home = self.router.home_target_enu()
+                d_land = float(math.hypot(pos_enu[0] - home[0], pos_enu[1] - home[1]))
+                at_goal = self.router.stage == CourseStage.MISSION_COMPLETE or (d_land <= 0.35 and float(pos_enu[1]) > 0.20)
+            if at_goal:
+                self._px4_enter("LAND", now_s)
+                return PX4MissionCommand(None, self._px4_cmd(now_s, land_cmd), "LAND", f"over_{self.px4_leg}_landing_target")
+            sample, reason = self.sample_setpoint(now_s, external_window_confidence=external_window_confidence)
+            if sample is None:  # no feasible spline: hold, and land if it lasts
+                if self.px4_unhealthy_since_s is None:
+                    self.px4_unhealthy_since_s = float(now_s)
+                if now_s - self.px4_unhealthy_since_s > 1.0:
+                    self._px4_enter("LAND", now_s)
+                    return PX4MissionCommand(None, self._px4_cmd(now_s, land_cmd), "LAND", f"planner_hold_timeout ({reason})")
+                hold_enu = self.last_safe_course_pos_enu or tuple(pos_enu)
+                return PX4MissionCommand(self._px4_hold(now_s, hold_enu, self.commanded_yaw_enu_rad or yaw_enu),
+                                         (), state, f"hold ({reason})")
+            return PX4MissionCommand(sample, (), state, reason)
+
+        if state == "LAND":  # PX4 Land mode owns the vehicle; we only (re)send NAV_LAND and watch
+            if armed:
+                cmds = self._px4_cmd(now_s, land_cmd) if tel.nav_state != NAVIGATION_STATE_AUTO_LAND else ()
+                # Until PX4 accepts NAV_LAND, keep the Offboard stream alive (as takeoff_land.py does)
+                hold = self._px4_hold(now_s, tuple(pos_enu), self.commanded_yaw_enu_rad or yaw_enu) if offboard else None
+                return PX4MissionCommand(hold, cmds, state, "landing")
+            if not landed:
+                if now_s - self.px4_state_since_s > 30.0:
+                    self._px4_enter("ABORT", now_s)
+                    return PX4MissionCommand(None, (), "ABORT", "disarmed_without_ground_confirmation")
+                return PX4MissionCommand(None, (), state, "disarmed_waiting_for_land_detected")
+            if self.px4_leg == "course" and self.config.enable_fly_home:
+                self.px4_leg = "home"
+                self.router.primary_landed = True
+                self.router.stage = CourseStage.STAGE_6_FLY_HOME
+                self._px4_enter("PREFLIGHT", now_s)
+                return PX4MissionCommand(None, (), "PREFLIGHT", "landed_on_pad_rearming_for_fly_home")
+            self.router.stage = CourseStage.MISSION_COMPLETE
+            self._px4_enter("DONE", now_s)
+            return PX4MissionCommand(None, (), "DONE", "landed_and_disarmed")
+
+        return PX4MissionCommand(None, (), state, "idle")
+
 
 def decode_ros_depth_image(message) -> np.ndarray:
     """Decode a ROS `sensor_msgs/msg/Image` (`16UC1` mm or `32FC1` m) into a 2D float32 array in metres.
@@ -1153,7 +1386,8 @@ def run_ros2_node(argv=None) -> int:
     parser.add_argument(
         "--pilot-arms",
         action="store_true",
-        help="Wait for external pilot/script to switch to Offboard and arm instead of auto-arming",
+        help="Direct PX4 mode: wait for an external pilot/script to switch to Offboard and arm, instead of "
+        "the autonomous preflight -> arm -> takeoff -> route -> NAV_LAND sequence (step_px4_mission)",
     )
     args, unknown_args = parser.parse_known_args(argv)
     # Support `-p fly_home:=true` passed by master_sim/run_master.sh
@@ -1209,7 +1443,14 @@ def run_ros2_node(argv=None) -> int:
     from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
     from sensor_msgs.msg import CameraInfo, Image, PointCloud2
     from std_msgs.msg import Bool, String
-    from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleLocalPosition, VehicleStatus
+    from px4_msgs.msg import (
+        OffboardControlMode,
+        TrajectorySetpoint,
+        VehicleCommand,
+        VehicleLandDetected,
+        VehicleLocalPosition,
+        VehicleStatus,
+    )
 
     rclpy.init()
     node = Node("ego_px4_planner_bridge")
@@ -1250,6 +1491,9 @@ def run_ros2_node(argv=None) -> int:
     def on_estimator_health(msg: Bool) -> None:
         tracker.update_estimator_health(bool(msg.data))
 
+    def on_land_detected(msg: VehicleLandDetected) -> None:
+        tracker.update_landed(now_sec(), bool(msg.landed))
+
     def on_camera_info(msg: CameraInfo) -> None:
         if len(msg.k) >= 6:
             cam_intrinsics["fx"] = float(msg.k[0])
@@ -1259,6 +1503,9 @@ def run_ros2_node(argv=None) -> int:
             cam_intrinsics["width"] = float(msg.width) if msg.width > 0 else 0.0
             cam_intrinsics["height"] = float(msg.height) if msg.height > 0 else 0.0
 
+    # With a prior map, live depth stays out of the planning grid unless asked for: its projection uses
+    # yaw only (no tilt, mount offset or frame latency), so in flight it paints phantom walls into the
+    # corridors -> constant "collision_avoidance_replan" and detours (FlyX lab, 2026-11-07).
     def on_depth(msg: Image) -> None:
         if (prior_loaded and not args.live_depth_mapping) or "fx" not in cam_intrinsics or tracker.telemetry.last_local_pos_time_s is None:
             return
@@ -1408,6 +1655,9 @@ def run_ros2_node(argv=None) -> int:
         # PX4's local frame on `skybeta-19` is rotated 90 deg relative to VIO odom
         node.create_subscription(VehicleLocalPosition, "/fmu/out/vehicle_local_position_v1", on_local_pos, px4_qos)
         node.create_subscription(VehicleStatus, "/fmu/out/vehicle_status_v1", on_status, px4_qos)
+        land_version = int(getattr(VehicleLandDetected, "MESSAGE_VERSION", 0))
+        land_topic = "/fmu/out/vehicle_land_detected" + (f"_v{land_version}" if land_version else "")
+        node.create_subscription(VehicleLandDetected, land_topic, on_land_detected, px4_qos)
     node.create_subscription(Bool, "/estimator/healthy", on_estimator_health, px4_qos)
     node.create_subscription(CameraInfo, "/camera/depth/camera_info", on_camera_info, px4_qos)
     node.create_subscription(CameraInfo, "/oak/left/camera_info", on_camera_info, px4_qos)
@@ -1439,9 +1689,26 @@ def run_ros2_node(argv=None) -> int:
     )
     skybeta_pose_pub = node.create_publisher(PoseStamped, "/skybeta/setpoint/pose", 10)
     skybeta_twist_pub = node.create_publisher(TwistStamped, "/skybeta/setpoint/twist", 10)
+    # Autonomous plain-PX4 mission (arms, takes off, lands itself) unless a pilot arms (`--pilot-arms`)
+    px4_mission = (not args.skybeta_mode) and args.approve_flight and not args.pilot_arms
+    last_logged = [None]
 
-    prearm_stream_since_s: List[Optional[float]] = [None]
-    last_arm_offboard_cmd_s: List[float] = [-1e9]
+    def publish_px4_setpoint(sample: PX4SetpointSample) -> None:
+        ocm = OffboardControlMode()
+        ocm.position = True
+        ocm.velocity = True
+        ocm.acceleration = False
+        ocm.attitude = False
+        ocm.body_rate = False
+        ocm.timestamp = sample.timestamp_us
+        offboard_pub.publish(ocm)
+
+        sp = TrajectorySetpoint()
+        sp.position = list(tracker.to_px4_frame(sample.position_ned))  # tracker works in the zero-tared frame
+        sp.velocity = [float(sample.velocity_ned[0]), float(sample.velocity_ned[1]), float(sample.velocity_ned[2])]
+        sp.yaw = float(sample.yaw_ned)
+        sp.timestamp = sample.timestamp_us
+        setpoint_pub.publish(sp)
 
     def _send_vehicle_cmd(t_now: float, command: int, param1: float = 0.0, param2: float = 0.0) -> None:
         if cmd_pub is None or not args.approve_flight:
@@ -1496,6 +1763,26 @@ def run_ros2_node(argv=None) -> int:
                 skybeta_twist_pub.publish(twist_msg)
             return
 
+        if px4_mission:
+            mcmd = tracker.step_px4_mission(t_now)
+            quiet = ("tracking_active_spline", "periodic_1hz_route_verified_clear")
+            key = (mcmd.state, tracker.router.stage.value, mcmd.reason.split(" (")[0],
+                   t_now if mcmd.state == "ROUTE" and mcmd.reason not in quiet else None)
+            if mcmd.state == "ROUTE" and mcmd.reason in quiet:
+                key = (mcmd.state, tracker.router.stage.value, "", None)
+            if key != last_logged[0]:
+                last_logged[0] = key
+                here, _ = tracker.current_course_pose_enu(t_now)
+                node.get_logger().info(
+                    f"[{mcmd.state}] stage={tracker.router.stage.value} {mcmd.reason} "
+                    f"at course ({here[0]:.2f}, {here[1]:.2f}, {here[2]:.2f})"
+                )
+            for command, p1, p2 in mcmd.commands:
+                _send_vehicle_cmd(t_now, command, p1, p2)
+            if mcmd.setpoint is not None:
+                publish_px4_setpoint(mcmd.setpoint)
+            return
+
         sample, status_reason = tracker.sample_setpoint(t_now)
         if sample is None:
             if tracker.telemetry.arming_state == ARMING_STATE_ARMED and (
@@ -1513,34 +1800,9 @@ def run_ros2_node(argv=None) -> int:
         if not args.approve_flight:
             # Read-only / dry-run planning mode until team explicitly approves flight (AGENTS.md)
             return
-
-        ocm = OffboardControlMode()
-        ocm.position = True
-        ocm.velocity = True
-        ocm.acceleration = False
-        ocm.attitude = False
-        ocm.body_rate = False
-        ocm.timestamp = sample.timestamp_us
-        offboard_pub.publish(ocm)
-
-        sp = TrajectorySetpoint()
-        sp.position = [float(sample.position_ned[0]), float(sample.position_ned[1]), float(sample.position_ned[2])]
-        sp.velocity = [float(sample.velocity_ned[0]), float(sample.velocity_ned[1]), float(sample.velocity_ned[2])]
-        sp.yaw = float(sample.yaw_ned)
-        sp.timestamp = sample.timestamp_us
-        setpoint_pub.publish(sp)
-
-        if not args.pilot_arms and sample.branch == "PREARM_STREAM":
-            if prearm_stream_since_s[0] is None:
-                prearm_stream_since_s[0] = t_now
-                node.get_logger().info("Pre-arm navigation zeroed & settled; streaming setpoints for 1.0 s before Offboard/Arm...")
-            elif (t_now - prearm_stream_since_s[0]) >= 1.0 and (t_now - last_arm_offboard_cmd_s[0]) >= 1.0:
-                last_arm_offboard_cmd_s[0] = t_now
-                node.get_logger().info("Requesting PX4 Offboard mode and Arming...")
-                _send_vehicle_cmd(t_now, int(getattr(VehicleCommand, "VEHICLE_CMD_DO_SET_MODE", 176)), 1.0, 6.0)
-                _send_vehicle_cmd(t_now, int(getattr(VehicleCommand, "VEHICLE_CMD_COMPONENT_ARM_DISARM", 400)), 1.0, 0.0)
-        else:
-            prearm_stream_since_s[0] = None
+        publish_px4_setpoint(sample)
+        # Auto-arming lives in `step_px4_mission` (the default with --approve-flight): it arms once per
+        # leg and ends in DONE/ABORT, so a landed drone is never re-armed by a still-streaming node.
 
     period_s = 1.0 / max(10.0, cfg.tracker_rate_hz)
     timer = node.create_timer(period_s, timer_callback)
@@ -1550,17 +1812,22 @@ def run_ros2_node(argv=None) -> int:
     )
 
     try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        if tracker.telemetry.arming_state == ARMING_STATE_ARMED:
+        if px4_mission:
+            while rclpy.ok() and tracker.px4_state not in ("DONE", "ABORT"):
+                rclpy.spin_once(node, timeout_sec=0.1)
+        else:
+            rclpy.spin(node)
+    except KeyboardInterrupt:  # Ctrl-C mid-flight means land, not "stop streaming into a failsafe"
+        if cmd_pub is not None and tracker.telemetry.arming_state == ARMING_STATE_ARMED:
             for _ in range(5):
-                _send_vehicle_cmd(now_sec(), int(getattr(VehicleCommand, "VEHICLE_CMD_NAV_LAND", 21)))
+                _send_vehicle_cmd(now_sec(), VEHICLE_CMD_NAV_LAND)
             node.get_logger().warning("Ctrl-C: VEHICLE_CMD_NAV_LAND sent.")
+        return 130
     finally:
         node.destroy_timer(timer)
         node.destroy_node()
         rclpy.try_shutdown()
-    return 0
+    return 1 if px4_mission and tracker.px4_state == "ABORT" else 0
 
 
 if __name__ == "__main__":
