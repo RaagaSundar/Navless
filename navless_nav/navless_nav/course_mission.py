@@ -552,7 +552,14 @@ class CourseMission(Node):
         if vio_ok != self.vio_was_ok:
             self.vio_was_ok = vio_ok
             if vio_ok:
-                self.get_logger().info('VIO back: resuming the route.')
+                # If the drone got ahead of the carrot while blind, move the
+                # carrot up to it rather than flying back (in the tube, back
+                # into the dark).
+                moved = self.carrot.catch_up(self.position)
+                self.get_logger().info(
+                    'VIO back: resuming the route'
+                    + (f' ({moved:.2f} m further on, where the drone is).'
+                       if moved > 0.0 else '.'))
             else:
                 self.get_logger().warn(
                     f'VIO lost (vo_state {self.vo_state}, odometry '

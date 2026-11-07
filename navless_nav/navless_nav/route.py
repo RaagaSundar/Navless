@@ -168,6 +168,30 @@ class Carrot:
                 budget = 0.0
         return self.point
 
+    def catch_up(self, drone, window=2.5, max_off=0.5):
+        """Slide the carrot forward to the drone's own place on the path,
+        when the drone is ahead of it (e.g. it flew on after the carrot froze,
+        or on a drifting estimate) and within max_off of the path. Looks at
+        most `window` metres ahead; never moves the carrot back. Returns how
+        far it moved, m."""
+        best_s, best_d = 0.0, float(max_off)
+        s, a, i = 0.0, self.point, self.index
+        while i < len(self.path) - 1 and s < window:
+            b = self.path[i + 1]
+            seg = math.dist(a, b)
+            if seg > 0.0:
+                t = sum((d - x) * (y - x) for d, x, y in zip(drone, a, b)) / seg ** 2
+                t = max(0.0, min(1.0, t))
+                q = tuple(x + (y - x) * t for x, y in zip(a, b))
+                dq = math.dist(drone, q)
+                if dq <= best_d:
+                    best_d, best_s = dq, s + t * seg
+            s += seg
+            a, i = b, i + 1
+        if best_s > 0.0:
+            self.advance(best_s)
+        return best_s
+
     @property
     def at_end(self):
         return self.index == len(self.path) - 1

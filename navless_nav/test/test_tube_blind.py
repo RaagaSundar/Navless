@@ -122,6 +122,24 @@ def test_blind_carry_needs_px4_position():
     assert node.carrot.point == s0
 
 
+def test_vio_back_moves_the_carrot_up_to_a_drone_that_got_ahead():
+    # Frozen carrot (blind_carry off), but the drone drifted 0.8 m on down
+    # the tube while blind: on VIO back the route continues from the drone,
+    # instead of flying it back into the dark.
+    node, px4, pos = fly_to_tube()
+    frozen = node.carrot.point
+    for _ in range(10):
+        step(node, px4, pos, vo_state=2)
+    assert node.carrot.point == frozen
+    # put the drone 0.8 m further along the route (down the tube)
+    ahead = cm.Carrot(node.route, 1.0, math.inf)
+    ahead.index, ahead.point = node.carrot.index, node.carrot.point
+    pos[:] = list(ahead.advance(0.8))
+    step(node, px4, pos)                               # VIO back
+    assert math.dist(node.carrot.point, pos) < 0.15
+    assert math.dist(node.carrot.point, frozen) > 0.65
+
+
 def test_vio_back_resumes_normally():
     node, px4, pos = fly_to_tube(blind_carry=True)
     lose_vio(node, px4, pos, 1.0)
