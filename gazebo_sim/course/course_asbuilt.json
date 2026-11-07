@@ -1,0 +1,458 @@
+{
+  "_notes": "AS-BUILT course: course_v3.json (the organisers' temporary plan) with M1, M2, M3, A1 and C1 moved to where the 2026-11-06 phone LiDAR scan puts them, and the floor line, gate A and the wall-bounded checkpoint zones recomputed from them. Made by depthcloud/asbuilt/make_asbuilt.py; don't edit by hand, edit scan_walls.json and re-run. NOT tape-measured. clearances_in below are still the PLAN's. Same frame as course_v3.json: inches, origin = net's south-west corner, x east, y north (OBJ/world metres = (inches - 120) * 0.0254). Origin = south-west corner of the 20x20 ft net. x = east, y = north, inches. Bearings clockwise from north. Extracted from the DroneHacks challenge page (course v3, preliminary). Multiply inches by 0.0254 for metres. Verified against the official dronehacks-course-v3.obj (OBJ origin is the floor centre: subtract 120 in from x and y to convert).",
+  "net_in": {
+    "x": 240,
+    "y": 240,
+    "height": 120
+  },
+  "walls": [
+    {
+      "name": "M1",
+      "kind": "maze",
+      "start_in": [
+        38.7,
+        140.0
+      ],
+      "end_in": [
+        49.7,
+        216.7
+      ],
+      "length_in": 77.5,
+      "bearing_deg": 8.2,
+      "thickness_in": 4,
+      "height_in": 68,
+      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), best guess, not tape-measured"
+    },
+    {
+      "name": "M2",
+      "kind": "maze",
+      "start_in": [
+        96.8,
+        180.6
+      ],
+      "end_in": [
+        102.0,
+        240.0
+      ],
+      "length_in": 59.6,
+      "bearing_deg": 5.0,
+      "thickness_in": 4,
+      "height_in": 68,
+      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), best guess, not tape-measured"
+    },
+    {
+      "name": "M3",
+      "kind": "maze",
+      "start_in": [
+        160.1,
+        140.0
+      ],
+      "end_in": [
+        162.4,
+        215.7
+      ],
+      "length_in": 75.7,
+      "bearing_deg": 1.7,
+      "thickness_in": 4,
+      "height_in": 68,
+      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), best guess, not tape-measured"
+    },
+    {
+      "name": "Barrier1",
+      "kind": "barrier",
+      "start_in": [
+        0,
+        138
+      ],
+      "end_in": [
+        63.5,
+        138.0
+      ],
+      "length_in": 63.5,
+      "bearing_deg": 90,
+      "thickness_in": 4,
+      "height_in": 68
+    },
+    {
+      "name": "Barrier2",
+      "kind": "barrier",
+      "start_in": [
+        63.5,
+        138
+      ],
+      "end_in": [
+        127.0,
+        138.0
+      ],
+      "length_in": 63.5,
+      "bearing_deg": 90,
+      "thickness_in": 4,
+      "height_in": 68
+    },
+    {
+      "name": "Barrier3",
+      "kind": "barrier",
+      "start_in": [
+        127,
+        138
+      ],
+      "end_in": [
+        182.0,
+        138.0
+      ],
+      "length_in": 55,
+      "bearing_deg": 90,
+      "thickness_in": 4,
+      "height_in": 68
+    },
+    {
+      "name": "A1",
+      "kind": "approach",
+      "start_in": [
+        58.6,
+        85.7
+      ],
+      "end_in": [
+        70.2,
+        136.0
+      ],
+      "length_in": 51.6,
+      "bearing_deg": 13.0,
+      "thickness_in": 4,
+      "height_in": 68,
+      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), best guess, not tape-measured"
+    },
+    {
+      "name": "C1",
+      "kind": "chicane",
+      "start_in": [
+        179.7,
+        75.3
+      ],
+      "end_in": [
+        166.0,
+        136.0
+      ],
+      "length_in": 62.2,
+      "bearing_deg": 347.3,
+      "thickness_in": 4,
+      "height_in": 68,
+      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), best guess, not tape-measured"
+    },
+    {
+      "name": "C2a",
+      "kind": "chicane_window",
+      "start_in": [
+        90.6,
+        0.72
+      ],
+      "end_in": [
+        112.32,
+        60.39
+      ],
+      "length_in": 63.5,
+      "bearing_deg": 20,
+      "thickness_in": 4,
+      "height_in": 68,
+      "window": {
+        "center_in": [
+          101.46,
+          30.56
+        ],
+        "width_in": 36,
+        "height_in": 36,
+        "bottom_above_floor_in": 12,
+        "top_above_floor_in": 48,
+        "cross_heading_deg": 290
+      }
+    },
+    {
+      "name": "C2b",
+      "kind": "chicane",
+      "start_in": [
+        112.3217,
+        60.3989
+      ],
+      "end_in": [
+        126.17,
+        98.46
+      ],
+      "length_in": 40.5,
+      "bearing_deg": 20,
+      "thickness_in": 4,
+      "height_in": 68
+    }
+  ],
+  "tunnel": {
+    "footprint_in": {
+      "x_min": 182,
+      "x_max": 240,
+      "y_min": 108,
+      "y_max": 168
+    },
+    "interior_oval_in": {
+      "width": 58,
+      "height": 72
+    },
+    "length_in": 60,
+    "axis": "north-south",
+    "enter": "north mouth y=168",
+    "exit": "south mouth y=108 (checkpoint 3)",
+    "note": "Sits about 1 in off the floor on three low cradles (10.9 in tall). Top of tube is 73 in, above the 68 in walls. Dark inside.",
+    "interior_z_in": [
+      1,
+      73
+    ]
+  },
+  "boulders_in": [
+    {
+      "center": [
+        199.2,
+        22.8
+      ],
+      "diameter": 18,
+      "height": 21,
+      "shape": "half dome"
+    },
+    {
+      "center": [
+        219.6,
+        58.8
+      ],
+      "diameter": 18,
+      "height": 21,
+      "shape": "half dome"
+    },
+    {
+      "center": [
+        151.2,
+        27.6
+      ],
+      "diameter": 18,
+      "height": 21,
+      "shape": "half dome"
+    },
+    {
+      "center": [
+        19.2,
+        21.6
+      ],
+      "diameter": 18,
+      "height": 21,
+      "shape": "half dome"
+    },
+    {
+      "center": [
+        67.2,
+        26.4
+      ],
+      "diameter": 18,
+      "height": 21,
+      "shape": "half dome"
+    }
+  ],
+  "landing_pad_in": {
+    "center": [
+      39.6,
+      88.8
+    ],
+    "outer_ring_radius": 30,
+    "inner_ring_radii": [
+      20,
+      9
+    ],
+    "approach_ring_radius": 39
+  },
+  "launch_mark_in": [
+    21,
+    156
+  ],
+  "floor_line_in": [
+    [
+      21,
+      156
+    ],
+    [
+      24.68,
+      228.35
+    ],
+    [
+      76.18,
+      228.35
+    ],
+    [
+      68.32,
+      160.3
+    ],
+    [
+      127.87,
+      160.3
+    ],
+    [
+      131.86,
+      227.85
+    ],
+    [
+      162.4,
+      227.85
+    ]
+  ],
+  "gates_in": {
+    "gate_A": {
+      "between": [
+        [
+          162.4,
+          215.7
+        ],
+        [
+          162.4,
+          240.0
+        ]
+      ],
+      "note": "maze exit, end of floor line (checkpoint 2)"
+    },
+    "gate_B": {
+      "between": [
+        [
+          126.17,
+          98.46
+        ],
+        [
+          126.17,
+          136
+        ]
+      ],
+      "note": "north end of chicane into landing area"
+    }
+  },
+  "checkpoints": [
+    {
+      "n": 1,
+      "name": "First corridor",
+      "points": 4,
+      "area_in": [
+        [
+          0,
+          140.0
+        ],
+        [
+          38.7,
+          140.0
+        ],
+        [
+          51.4,
+          228.35
+        ],
+        [
+          0,
+          228.35
+        ]
+      ]
+    },
+    {
+      "n": 2,
+      "name": "Maze",
+      "points": 7,
+      "area_in": [
+        [
+          0,
+          228.35
+        ],
+        [
+          51.4,
+          228.35
+        ],
+        [
+          38.7,
+          140.0
+        ],
+        [
+          160.1,
+          140.0
+        ],
+        [
+          163.1,
+          240.0
+        ],
+        [
+          0,
+          240.0
+        ]
+      ]
+    },
+    {
+      "n": 3,
+      "name": "Tunnel",
+      "points": 10,
+      "area_in": [
+        [
+          160.1,
+          140.0
+        ],
+        [
+          182,
+          140
+        ],
+        [
+          182,
+          108
+        ],
+        [
+          240,
+          108
+        ],
+        [
+          240,
+          240
+        ],
+        [
+          163.1,
+          240.0
+        ]
+      ]
+    },
+    {
+      "n": 4,
+      "name": "Chicane",
+      "points": 7
+    },
+    {
+      "n": 5,
+      "name": "Landing",
+      "points": 7
+    }
+  ],
+  "clearances_in": {
+    "window_lateral_each_side": 8.6,
+    "window_vertical_each_side_at_30in": 13.4,
+    "gate_B_clear_width": 35.5,
+    "gate_B_lateral_each_side": 8.4,
+    "maze_turn_openings": 36.5,
+    "maze_corridor_clear_width": 40,
+    "tunnel_lateral_each_side": 19.6,
+    "return_hop_pad_to_launch": 69.7
+  },
+  "drone_m": {
+    "overall_with_props": {
+      "length_x": 0.366,
+      "width_y": 0.475,
+      "height_z": 0.116
+    },
+    "overall_with_props_in": {
+      "length": 14.4,
+      "width": 18.7,
+      "height": 4.6
+    },
+    "motor_xy_front": [
+      0.08,
+      0.16
+    ],
+    "motor_xy_rear": [
+      -0.15,
+      0.14
+    ],
+    "prop_diameter_in_model_in": 6.1,
+    "battery": "OVONIC 4S 5000 mAh",
+    "motors": "DYS X2807 1500KV"
+  }
+}

@@ -10,9 +10,9 @@ COMPETITOR_PKG=navless_nav and COMPETITOR_LAUNCH=navless_course.launch.py.
                                       readings fit the tube's width
   mirror_relay (relay:=true)          read-only telemetry for the laptop dashboard, port 8775
 
-The ToF chain is recorded and shown on the dashboard, but course_mission does not steer on
-it yet: that waits until the sensors are proven on the real drone and the steering has
-flown in Gazebo with simulated ToF.
+skybeta-19's flight branch: the route is planned on the as-built course map (Shining's phone
+scan of the real course, gazebo_sim/course/course_asbuilt.json). The ToF chain is recorded and
+shown on the dashboard; course_mission does not steer on it.
 
 Never start planner/px4_bridge_node.py or mission/mission.py alongside this: both are
 commanders too, and the drone gets exactly one.
@@ -36,8 +36,17 @@ TOF_MOUNT_M = '0.075'
 TUBE_WIDTH_M = '1.45'
 
 ARGUMENTS = [
-    ('route_file', 'gazebo_sim/course/route_centreline_window.json',
-     'route to fly (repo-relative): the centreline route keeps >= 16.6 cm to every wall'),
+    # The window route on the as-built course (tools/export_route.py --course course/course_asbuilt.json
+    # --tube-exit-drop-in 42 --pad-from-south-in 26 --maze-top-north-m 0.04): planned >= 8.6 cm to
+    # every wall (M1's north end; M3 11.1, net 9.8, A1 19.6, window 21.0); flown on the stub drone at
+    # both speed settings >= 8.4 cm. The plan's route (route_centreline_window.json) passes 3.6 cm
+    # from a real wall. The as-built walls are a scan best guess, not tape-measured yet.
+    ('route_file', 'gazebo_sim/course/route_centreline_window_asbuilt.json',
+     'route to fly (repo-relative): the window route on the as-built course map'),
+    # On the as-built course the gaps between M1's and M3's north ends and the north net are only
+    # ~0.6 m, and the route crosses them 0.256 m from the net. navless.launch.py's 0.4 m would pull
+    # those setpoints into the wall ends (stub drone: M1 -4.3 cm, M3 -1.2 cm).
+    ('net_margin_m', '0.25', 'keep setpoints this far inside the net, m'),
     ('start_bearing_deg', '0.0', 'nose bearing on the launch mark at power-up (0 = north)'),
     # Speed, tuned for the centreline window route above (Gazebo + PX4 SITL, drone profile, real pilot
     # sequence). Arm to touchdown took 32.6 s on 3 of 3 laps, against 42.9 s at navless.launch.py's
@@ -78,7 +87,7 @@ def generate_launch_description():
         launch_arguments={n: LaunchConfiguration(n)
                           for n in ('route_file', 'start_bearing_deg', 'cruise_speed_mps',
                                     'max_lead_m', 'max_lat_accel_mps2', 'max_turn_sagitta_m',
-                                    'odometry_topic')}.items(),
+                                    'odometry_topic', 'net_margin_m')}.items(),
     )
     # VL53L1X: from the team image, or from ~/team_ws/pylibs (pip install --target) if it is there.
     pylibs = '/root/team_ws/pylibs'
