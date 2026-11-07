@@ -39,7 +39,21 @@ ARGUMENTS = [
     ('route_file', 'gazebo_sim/course/route_centreline_window.json',
      'route to fly (repo-relative): the centreline route keeps >= 16.6 cm to every wall'),
     ('start_bearing_deg', '0.0', 'nose bearing on the launch mark at power-up (0 = north)'),
-    ('cruise_speed_mps', '0.5', 'route speed on straights, m/s'),
+    # Speed, tuned for the centreline window route above (Gazebo + PX4 SITL, drone profile, real pilot
+    # sequence). Arm to touchdown took 32.6 s on 3 of 3 laps, against 42.9 s at navless.launch.py's
+    # 0.5 / 0.6 / 0.25. Every lap kept >= 11.9 cm to every wall (window wall >= 12.9 cm) and landed
+    # 12-13 cm from the pad centre. Going faster costs window-wall margin first: 0.9 m/s left 11.9 cm,
+    # and a 1 deg placement error takes about 3 cm more there, so place the drone within about 0.5 deg
+    # at these speeds. For another route, set the three back to navless.launch.py's 0.5 / 0.6 / 0.25;
+    # for the Gate B route also set max_turn_sagitta_m below to 0.08.
+    ('cruise_speed_mps', '0.7', 'route speed on straights, m/s'),
+    ('max_lead_m', '0.8',
+     'how far the carrot may run ahead of the drone, m: PX4 flies at about 0.95 x this, so keep it '
+     'above cruise_speed_mps / 0.95'),
+    ('max_lat_accel_mps2', '0.5', 'slow through bends: speed <= sqrt(this * radius); 0 = off'),
+    ('max_turn_sagitta_m', '0.0',
+     'shrink the carrot lead in tight turns so the drone cuts inside by at most this, m; 0 = off '
+     '(0.08 for the Gate B route)'),
     ('odometry_topic', '/visual_slam/tracking/odometry',
      'odometry for flight_interface and course_mission: the topic that feeds the PX4 vision '
      "fusion (/mapping/validated_odometry if PX4 is fed through Koji's gate)"),
@@ -60,6 +74,7 @@ def generate_launch_description():
             get_package_share_directory('navless_nav'), 'launch', 'navless.launch.py')),
         launch_arguments={n: LaunchConfiguration(n)
                           for n in ('route_file', 'start_bearing_deg', 'cruise_speed_mps',
+                                    'max_lead_m', 'max_lat_accel_mps2', 'max_turn_sagitta_m',
                                     'odometry_topic')}.items(),
     )
     # VL53L1X: from the team image, or from ~/team_ws/pylibs (pip install --target) if it is there.
