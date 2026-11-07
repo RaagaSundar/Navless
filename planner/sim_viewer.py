@@ -109,8 +109,10 @@ def run_simulation_episode(
     # Physical Landing -> Disarm -> Re-arm sequence state at Primary Landing Pad & Final Start Pad
     pad_sequence_state = "NONE"  # NONE -> LANDING_PAD_DESCEND -> LANDING_PAD_DISARMED -> DONE
     pad_disarm_ticks = 0
+    pad_descend_z_sp = cfg.checkpoints.landing_pad[2]
     home_sequence_state = "NONE"  # NONE -> HOME_PAD_DESCEND -> HOME_PAD_DISARMED -> DONE
     home_disarm_ticks = 0
+    home_descend_z_sp = cfg.checkpoints.fly_home_altitude_m
 
     for step_i in range(950):
         sim_t = round(step_i * dt, 3)
@@ -164,21 +166,26 @@ def run_simulation_episode(
             lp = np.asarray(cfg.checkpoints.landing_pad, dtype=np.float64)
             if float(np.linalg.norm(est_enu[:2] - lp[:2])) <= 0.32:
                 pad_sequence_state = "LANDING_PAD_DESCEND"
+                pad_descend_z_sp = float(phys.true_pos_enu[2])
 
         px4_state = "ARMED (OFFBOARD)"
         armed_flag = True
         stage_label = router.stage.value
 
         if pad_sequence_state == "LANDING_PAD_DESCEND":
-            # Descend vertically onto the Landing Pad surface (z = 0.05 m) via PX4 NAV_LAND
-            lp_ground_enu = np.array([cfg.checkpoints.landing_pad[0], cfg.checkpoints.landing_pad[1], 0.05])
-            lp_ground_ned = enu_to_ned_pos(lp_ground_enu, origin_enu=tracker.launch_origin_enu)
-            phys.step_physics(dt, sim_t, lp_ground_ned, (0.0, 0.0, 0.45), meas_yaw_ned, 0.85)
-            sp_enu = lp_ground_enu
+            # Controlled two-stage vertical descent onto the Landing Pad surface (z = 0.05 m):
+            # - Above z = 0.35 m: descend at 0.38 m/s
+            # - Below z = 0.35 m (Ground-effect flare): slow down to 0.18 m/s soft touchdown
+            vz_rate = 0.38 if phys.true_pos_enu[2] > 0.35 else 0.18
+            pad_descend_z_sp = max(0.05, pad_descend_z_sp - vz_rate * dt)
+            lp_carrot_enu = np.array([cfg.checkpoints.landing_pad[0], cfg.checkpoints.landing_pad[1], pad_descend_z_sp])
+            lp_carrot_ned = enu_to_ned_pos(lp_carrot_enu, origin_enu=tracker.launch_origin_enu)
+            phys.step_physics(dt, sim_t, lp_carrot_ned, (0.0, 0.0, vz_rate), meas_yaw_ned, vz_rate + 0.15)
+            sp_enu = lp_carrot_enu
             stage_label = "STAGE_5_LANDING"
-            px4_state = "LANDING (NAV_LAND)"
-            reason = "descending_to_landing_pad"
-            if phys.true_pos_enu[2] <= 0.065 and float(np.linalg.norm(phys.true_pos_enu[:2] - lp_ground_enu[:2])) <= 0.15:
+            px4_state = "LANDING (FLARE)" if phys.true_pos_enu[2] <= 0.35 else "LANDING (NAV_LAND)"
+            reason = "descending_to_landing_pad_controlled_flare"
+            if phys.true_pos_enu[2] <= 0.065 and float(np.linalg.norm(phys.true_pos_enu[:2] - lp_carrot_enu[:2])) <= 0.15:
                 phys.true_pos_enu[2] = 0.05
                 phys.true_vel_enu[:] = 0.0
                 phys.true_acc_enu[:] = 0.0
@@ -211,15 +218,19 @@ def run_simulation_episode(
                         active_spline_pts = np.round(router.active_spline.sample_points(30), 3).tolist()
 
         elif home_sequence_state == "HOME_PAD_DESCEND":
-            # Descend vertically onto the Start Pad surface (z = 0.05 m) after crossing the wall
-            hp_ground_enu = np.array([cfg.checkpoints.start_pad[0], cfg.checkpoints.start_pad[1], 0.05])
-            hp_ground_ned = enu_to_ned_pos(hp_ground_enu, origin_enu=tracker.launch_origin_enu)
-            phys.step_physics(dt, sim_t, hp_ground_ned, (0.0, 0.0, 0.55), meas_yaw_ned, 1.0)
-            sp_enu = hp_ground_enu
+            # Controlled two-stage vertical descent onto the Start Pad surface (z = 0.05 m) after crossing the wall:
+            # - Above z = 0.35 m: descend at 0.45 m/s (avoiding Vortex Ring State propwash drop)
+            # - Below z = 0.35 m (Ground-effect flare): slow down to 0.18 m/s soft touchdown
+            vz_rate = 0.45 if phys.true_pos_enu[2] > 0.35 else 0.18
+            home_descend_z_sp = max(0.05, home_descend_z_sp - vz_rate * dt)
+            hp_carrot_enu = np.array([cfg.checkpoints.start_pad[0], cfg.checkpoints.start_pad[1], home_descend_z_sp])
+            hp_carrot_ned = enu_to_ned_pos(hp_carrot_enu, origin_enu=tracker.launch_origin_enu)
+            phys.step_physics(dt, sim_t, hp_carrot_ned, (0.0, 0.0, vz_rate), meas_yaw_ned, vz_rate + 0.15)
+            sp_enu = hp_carrot_enu
             stage_label = "STAGE_6_LANDING_HOME"
-            px4_state = "LANDING (START PAD)"
-            reason = "descending_to_start_pad"
-            if phys.true_pos_enu[2] <= 0.065 and float(np.linalg.norm(phys.true_pos_enu[:2] - hp_ground_enu[:2])) <= 0.18:
+            px4_state = "LANDING (FLARE)" if phys.true_pos_enu[2] <= 0.35 else "LANDING (START PAD)"
+            reason = "descending_to_start_pad_controlled_flare"
+            if phys.true_pos_enu[2] <= 0.065 and float(np.linalg.norm(phys.true_pos_enu[:2] - hp_carrot_enu[:2])) <= 0.18:
                 phys.true_pos_enu[2] = 0.05
                 phys.true_vel_enu[:] = 0.0
                 phys.true_acc_enu[:] = 0.0
@@ -245,22 +256,24 @@ def run_simulation_episode(
             # If router just jumped to STAGE_6_FLY_HOME before our pad landing sequence ran, intercept it!
             if pad_sequence_state == "NONE" and router.stage == CourseStage.STAGE_6_FLY_HOME:
                 pad_sequence_state = "LANDING_PAD_DESCEND"
-                lp_ground_enu = np.array([cfg.checkpoints.landing_pad[0], cfg.checkpoints.landing_pad[1], 0.05])
-                lp_ground_ned = enu_to_ned_pos(lp_ground_enu, origin_enu=tracker.launch_origin_enu)
-                phys.step_physics(dt, sim_t, lp_ground_ned, (0.0, 0.0, 0.45), meas_yaw_ned, 0.85)
-                sp_enu = lp_ground_enu
+                pad_descend_z_sp = max(0.05, float(phys.true_pos_enu[2]) - 0.38 * dt)
+                lp_carrot_enu = np.array([cfg.checkpoints.landing_pad[0], cfg.checkpoints.landing_pad[1], pad_descend_z_sp])
+                lp_carrot_ned = enu_to_ned_pos(lp_carrot_enu, origin_enu=tracker.launch_origin_enu)
+                phys.step_physics(dt, sim_t, lp_carrot_ned, (0.0, 0.0, 0.38), meas_yaw_ned, 0.50)
+                sp_enu = lp_carrot_enu
                 stage_label = "STAGE_5_LANDING"
                 px4_state = "LANDING (NAV_LAND)"
-                reason = "descending_to_landing_pad"
+                reason = "descending_to_landing_pad_controlled_flare"
             elif router.stage == CourseStage.MISSION_COMPLETE and home_sequence_state == "NONE":
                 home_sequence_state = "HOME_PAD_DESCEND"
-                hp_ground_enu = np.array([cfg.checkpoints.start_pad[0], cfg.checkpoints.start_pad[1], 0.05])
-                hp_ground_ned = enu_to_ned_pos(hp_ground_enu, origin_enu=tracker.launch_origin_enu)
-                phys.step_physics(dt, sim_t, hp_ground_ned, (0.0, 0.0, 0.55), meas_yaw_ned, 1.0)
-                sp_enu = hp_ground_enu
+                home_descend_z_sp = max(0.05, float(phys.true_pos_enu[2]) - 0.45 * dt)
+                hp_carrot_enu = np.array([cfg.checkpoints.start_pad[0], cfg.checkpoints.start_pad[1], home_descend_z_sp])
+                hp_carrot_ned = enu_to_ned_pos(hp_carrot_enu, origin_enu=tracker.launch_origin_enu)
+                phys.step_physics(dt, sim_t, hp_carrot_ned, (0.0, 0.0, 0.45), meas_yaw_ned, 0.60)
+                sp_enu = hp_carrot_enu
                 stage_label = "STAGE_6_LANDING_HOME"
                 px4_state = "LANDING (START PAD)"
-                reason = "descending_to_start_pad"
+                reason = "descending_to_start_pad_controlled_flare"
             elif sample is not None:
                 if router.active_spline is not None:
                     active_spline_pts = np.round(router.active_spline.sample_points(120), 3).tolist()
