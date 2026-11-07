@@ -16,6 +16,15 @@ def test_frame_carries_tof_and_node_with_no_return_as_null():
     assert json.loads(make_frame(1.0, 0.0, ((0, 0, 0), (0, 0, 0, 1))))['tof'] is None
 
 
+def test_frame_forwards_px4_view_for_the_height_check():
+    f = json.loads(make_frame(1.0, 0.0, ((0, 0, 0.01), (0, 0, 0, 1)),
+                              state={'px4_link': True, 'landed': True,
+                                     'local_enu': [0.02, -0.01, 0.61]}))
+    assert f['px4_link'] is True and f['landed'] is True and f['local_enu'] == [0.02, -0.01, 0.61]
+    f = json.loads(make_frame(1.0, 0.0, ((0, 0, 0), (0, 0, 0, 1))))
+    assert f['local_enu'] is None and f['px4_link'] is None
+
+
 def test_image_frame_round_trips_the_jpeg_bytes():
     import base64
     f = json.loads(make_image_frame(2.5, b'\xff\xd8fakejpeg\xff\xd9', 320, 200))
