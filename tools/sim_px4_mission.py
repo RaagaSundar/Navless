@@ -46,10 +46,13 @@ def main() -> int:
     ap.add_argument("--prior", type=Path, default=ROOT / "gazebo_sim/models/dh_course/meshes/course_visual.obj")
     ap.add_argument("--planner", choices=("nmpc", "ego"), default=None, help="short-term planner (default: config)")
     ap.add_argument("--speed", type=float, default=None, help="maze/chicane cruise speed override, as px4_bridge_node --speed")
+    ap.add_argument("--kp-pos", type=float, default=0.95, help="PX4 position gain MPC_XY_P (the old stand-in used 3.4)")
+    ap.add_argument("--fast-mode", action="store_true", help="as px4_bridge_node --fast-mode")
     a = ap.parse_args()
 
     cfg = PlannerConfig.from_json(ROOT / "planner/config/course_config.json")
     cfg.enable_fly_home = not a.no_fly_home
+    cfg.fast_mode = a.fast_mode
     if a.speed:
         from dataclasses import replace
         cfg.maze_profile = replace(cfg.maze_profile, v_max=a.speed)
@@ -67,6 +70,7 @@ def main() -> int:
     router = GlobalCourseRouter(cfg, grid)
     tracker = PX4TrajectoryTrackerCore(router, launch_origin_enu=SPAWN_ENU, prearm_settle_s=2.0)
     phys = QuadrotorPhysicsAndVIOSim(SPAWN_ENU, SPAWN_ENU, seed=a.seed)
+    phys.kp_pos = a.kp_pos  # PX4 MPC_XY_P: 0.95 default; the FlyX lab data fits it (0.48 m lead -> ~0.41 m/s)
 
     dt, t = 1.0 / 30.0, 0.0
     armed, nav, landed_since = False, POSCTL, None
