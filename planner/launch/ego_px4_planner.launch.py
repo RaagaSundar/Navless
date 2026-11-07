@@ -62,7 +62,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("config", default_value=default_cfg),
             DeclareLaunchArgument("prior", default_value=default_prior),
             DeclareLaunchArgument("skybeta_mode", default_value="true"),
-            DeclareLaunchArgument("approve_flight", default_value="true"),
+            DeclareLaunchArgument("approve_flight", default_value="false"),
             DeclareLaunchArgument("sim_time", default_value="false"),
             DeclareLaunchArgument("fast_mode", default_value="false"),
             DeclareLaunchArgument("stop_on_pad", default_value="false"),
