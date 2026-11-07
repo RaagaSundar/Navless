@@ -32,6 +32,20 @@ interface package (`ros_ws/`, the `VisualSlamStatus` stand-in) into `~/master_si
 - each blind pass through the tube;
 - perception: point-cloud rate, localization rate and error against ground truth.
 
+**Several laps, one table:** `master_sim/regress.py` runs named cases for N laps each and tabulates
+pass rate, pad distance, minimum clearance and where it occurred, as median (min–max). One lap can
+mislead: the planner was clean through the maze in one run and stalled against M2 in another, on the
+same code.
+
+```bash
+master_sim/regress.py --list                          # the cases
+master_sim/regress.py --laps 5                        # all of them (~4 min per lap)
+master_sim/regress.py --laps 3 default gate_b         # before/after a change
+```
+
+Results go to `gazebo_sim/runs/regress-<time>/`: `results.json` after every lap, so a cut-short run
+keeps what it has, and `table.md` at the end.
+
 **While it runs:** http://localhost:8081 (stereo depth and cloud), http://localhost:8082 (localization).
 Logs: `~/dh_sim_logs/master/*.log`.
 
