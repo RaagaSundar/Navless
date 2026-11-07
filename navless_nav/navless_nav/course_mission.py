@@ -91,7 +91,8 @@ PARAMETERS = (
     # profile, centreline route: Barrier 1 clearance during the climb 3.1-4.7
     # cm at 0, 16.1 cm at 0.15, 18.3 cm at 0.25. The first corridor is open
     # for 1.6 m ahead, so the larger lean is free if the real drone does not
-    # drift at all, and it covers more backward drift if it does.
+    # drift at all, and it covers more backward drift if it does. Never on
+    # the fly_home take-off from the pad (see lead_m).
     ('takeoff_lead_m', 0.25),
     ('arrival_radius_m', 0.25),
     ('takeoff_timeout_s', 15.0),
@@ -419,8 +420,15 @@ class CourseMission(Node):
         if not self.route:
             return (x, y, self.takeoff_altitude)
         r0 = self.route[0]
-        p = Carrot(self.route, 1.0, math.inf).advance(self.takeoff_lead)
+        p = Carrot(self.route, 1.0, math.inf).advance(self.lead_m())
         return (x + p[0] - r0[0], y + p[1] - r0[1], r0[2])
+
+    def lead_m(self):
+        """takeoff_lead_m, but 0 on the fly_home take-off: the pad has room
+        all round (over 0.7 m to anything in Gazebo's model), and a lean
+        there only starts the hop over Barrier 1 closer to the wall, with
+        less run-up to finish the climb."""
+        return 0.0 if self.going_home else self.takeoff_lead
 
     def _state_takeoff(self):
         self.send(*self.target)
@@ -437,7 +445,12 @@ class CourseMission(Node):
         if not self.route:
             self.goto('HOLD', self.target)
             return
-        offset = math.dist(self.position[:2], self.route[0][:2])
+        carrot = Carrot(self.route, self.cruise_speed, self.max_lead,
+                        self.max_lat_accel)
+        carrot.advance(self.lead_m())       # never pull back behind the lean
+        # Measured from where the route starts after the lean, so the lean
+        # does not use up max_start_offset_m.
+        offset = math.dist(self.position[:2], carrot.point[:2])
         if offset > self.max_start_offset:
             self.get_logger().error(
                 f'{offset:.2f} m from the route start (limit '
@@ -445,9 +458,7 @@ class CourseMission(Node):
                 'Holding. Power up on the launch mark.')
             self.goto('HOLD', self.target)
             return
-        self.carrot = Carrot(self.route, self.cruise_speed, self.max_lead,
-                             self.max_lat_accel)
-        self.carrot.advance(self.takeoff_lead)   # never pull back behind it
+        self.carrot = carrot
         self.last_tick = self.now_s()
         self.progress_at = (self.last_tick, 0, self.carrot.point)
         self.goto('ROUTE')
