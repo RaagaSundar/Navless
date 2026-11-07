@@ -6,7 +6,21 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from navless_nav.mirror_relay import FrameServer, make_frame  # noqa: E402
+from navless_nav.mirror_relay import FrameServer, make_frame, make_image_frame  # noqa: E402
+
+
+def test_frame_carries_tof_and_node_with_no_return_as_null():
+    f = json.loads(make_frame(1.0, 0.0, ((0, 0, 0), (0, 0, 0, 1)),
+                              tof=(0.4123, float('inf'), 0.03), node='ROUTE'))
+    assert f['tof'] == {'left': 0.412, 'right': None, 'age': 0.03} and f['node'] == 'ROUTE'
+    assert json.loads(make_frame(1.0, 0.0, ((0, 0, 0), (0, 0, 0, 1))))['tof'] is None
+
+
+def test_image_frame_round_trips_the_jpeg_bytes():
+    import base64
+    f = json.loads(make_image_frame(2.5, b'\xff\xd8fakejpeg\xff\xd9', 320, 200))
+    assert base64.b64decode(f['img']) == b'\xff\xd8fakejpeg\xff\xd9'
+    assert (f['w'], f['h'], f['t']) == (320, 200, 2.5) and 'p' not in f
 
 
 def test_frame_carries_pose_state_setpoint_and_camera():
