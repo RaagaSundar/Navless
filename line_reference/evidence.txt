@@ -1,0 +1,35 @@
+2026-11-07 America/Los_Angeles — editor: Koji
+Offline only; no ROS, aircraft connection, arming, deployment or moving test.
+
+Baseline attempted before changes:
+$ python3 -m pytest Navless/navless_nav/test/test_route.py -q
+FAILED to start: /opt/homebrew/opt/python@3.14/bin/python3.14: No module named pytest
+Preserved failure; no code change was made to resolve this environment issue.
+
+Baseline rerun using an isolated uv tool environment:
+$ uv run --no-project --with pytest python -m pytest Navless/navless_nav/test/test_route.py -q
+20 passed in 0.09s
+
+Prototype code SHA256:
+3c9092f24ab63d7f1a5d6b9f5f57a73ef421299c1b512fef41b893a63964ed7d  reference.py
+25fe099c72da754bba21fbc2129dc90d9363cede4c11af65fb542cc6144f8df4  test_reference.py
+
+Settings: default arguments in reference.py; synthetic fixtures in test_reference.py.
+$ python3 -m unittest discover -s Navless/line_reference -p test_*.py -v
+test_along_line_translation_unobservable (test_reference.ReferenceTests.test_along_line_translation_unobservable) ... ok
+test_forward_camera_projection_and_lateral_sign (test_reference.ReferenceTests.test_forward_camera_projection_and_lateral_sign) ... ok
+test_heading_and_endpoint_order (test_reference.ReferenceTests.test_heading_and_endpoint_order) ... ok
+test_horizon_upward_distant_and_nonfinite_pixels (test_reference.ReferenceTests.test_horizon_upward_distant_and_nonfinite_pixels) ... ok
+test_invalid_calibration (test_reference.ReferenceTests.test_invalid_calibration) ... ok
+test_mount_translation (test_reference.ReferenceTests.test_mount_translation) ... ok
+test_reject_corner_mixed_parallel_lines_short_and_missing (test_reference.ReferenceTests.test_reject_corner_mixed_parallel_lines_short_and_missing) ... ok
+test_reject_stale_future_and_nonfinite_time (test_reference.ReferenceTests.test_reject_stale_future_and_nonfinite_time) ... ok
+test_tilted_camera (test_reference.ReferenceTests.test_tilted_camera) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.001s
+
+OK
+
+Exit code: 0
+No recorded-camera or control performance claim.
