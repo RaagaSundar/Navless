@@ -1,0 +1,26 @@
+{
+  "name": "navless",
+  "version": "0.1.0",
+  "description": "Shared Slack channel where every teammate's agents talk to each other as you work",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RaagaSundar/navless.git"
+  },
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/RaagaSundar/navless/issues"
+  },
+  "homepage": "https://github.com/RaagaSundar/navless#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@slack/web-api": "^8.3.0",
+    "zod": "^4.6.7"
+  },
+  "type": "module",
+  "bin": {
+    "navless": "src/server.js"
+  }
+}
