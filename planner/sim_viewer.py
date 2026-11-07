@@ -96,14 +96,21 @@ def run_simulation_episode(
 
     router = GlobalCourseRouter(cfg, planner_grid)
     tracker = PX4TrajectoryTrackerCore(router, lookahead_s=0.35)
-    phys = QuadrotorPhysicsAndVIOSim(cfg.checkpoints.start_pad, tracker.launch_origin_enu, seed=42)
+    start_ground = (cfg.checkpoints.start_pad[0], cfg.checkpoints.start_pad[1], 0.05)
+    phys = QuadrotorPhysicsAndVIOSim(start_ground, tracker.launch_origin_enu, seed=42)
     depth_cam = RaycastOakDDepthCamera(seed=101)
 
     dt = 0.08
     frames: List[Dict] = []
     active_spline_pts: List[List[float]] = []
 
-    for step_i in range(800):
+    # Physical Landing -> Disarm -> Re-arm sequence state at Primary Landing Pad & Final Start Pad
+    pad_sequence_state = "NONE"  # NONE -> LANDING_PAD_DESCEND -> LANDING_PAD_DISARMED -> DONE
+    pad_disarm_ticks = 0
+    home_sequence_state = "NONE"  # NONE -> HOME_PAD_DESCEND -> HOME_PAD_DISARMED -> DONE
+    home_disarm_ticks = 0
+
+    for step_i in range(950):
         sim_t = round(step_i * dt, 3)
         meas_pos_ned, meas_vel_ned, meas_yaw_ned = phys.observe_noisy_vio_ned(dt)
         est_enu = ned_to_enu_pos(meas_pos_ned, origin_enu=tracker.launch_origin_enu)
@@ -142,31 +149,132 @@ def run_simulation_episode(
                 est_enu,
                 est_yaw_enu,
             )
-            # Extract recently discovered voxels for 3D visualization
             diff_vox = np.argwhere(planner_grid.raw_grid & ~initial_raw)
             if diff_vox.size > 0:
                 centers = planner_grid.bounds_min + (diff_vox.astype(np.float64) + 0.5) * planner_grid.resolution
                 depth_hits_world = np.round(centers[:: max(1, len(centers) // 120)], 3).tolist()
 
-        sample, reason = tracker.sample_setpoint(
-            sim_t,
-            external_window_confidence=(0.35 if block_window else 0.95),
-        )
-        if sample is not None:
-            if router.active_spline is not None:
-                active_spline_pts = np.round(router.active_spline.sample_points(30), 3).tolist()
-            prof = router.profile_for_stage(router.stage)
-            phys.step_physics(
-                dt,
-                sim_t,
-                sample.position_ned,
-                sample.velocity_ned,
-                sample.yaw_ned,
-                prof.v_max,
-            )
-            sp_enu = ned_to_enu_pos(sample.position_ned, origin_enu=tracker.launch_origin_enu)
+        # Check if we just reached the Landing Pad hover point and need to Land -> Disarm -> Re-arm before Fly-Home
+        if (
+            pad_sequence_state == "NONE"
+            and router.stage in (CourseStage.STAGE_5_LANDING_PAD, CourseStage.STAGE_6_FLY_HOME)
+        ):
+            lp = np.asarray(cfg.checkpoints.landing_pad, dtype=np.float64)
+            if float(np.linalg.norm(est_enu[:2] - lp[:2])) <= 0.32:
+                pad_sequence_state = "LANDING_PAD_DESCEND"
+
+        px4_state = "ARMED (OFFBOARD)"
+        armed_flag = True
+        stage_label = router.stage.value
+
+        if pad_sequence_state == "LANDING_PAD_DESCEND":
+            # Descend vertically onto the Landing Pad surface (z = 0.05 m) via PX4 NAV_LAND
+            lp_ground_enu = np.array([cfg.checkpoints.landing_pad[0], cfg.checkpoints.landing_pad[1], 0.05])
+            lp_ground_ned = enu_to_ned_pos(lp_ground_enu, origin_enu=tracker.launch_origin_enu)
+            phys.step_physics(dt, sim_t, lp_ground_ned, (0.0, 0.0, 0.45), meas_yaw_ned, 0.85)
+            sp_enu = lp_ground_enu
+            stage_label = "STAGE_5_LANDING"
+            px4_state = "LANDING (NAV_LAND)"
+            reason = "descending_to_landing_pad"
+            if phys.true_pos_enu[2] <= 0.065 and float(np.linalg.norm(phys.true_pos_enu[:2] - lp_ground_enu[:2])) <= 0.15:
+                phys.true_pos_enu[2] = 0.05
+                phys.true_vel_enu[:] = 0.0
+                phys.true_acc_enu[:] = 0.0
+                pad_sequence_state = "LANDING_PAD_DISARMED"
+                pad_disarm_ticks = 0
+
+        elif pad_sequence_state == "LANDING_PAD_DISARMED":
+            # Hold disarmed on the Landing Pad for ~1.1 s, then re-arm and trigger Stage 6 Fly-Home climb!
+            pad_disarm_ticks += 1
+            phys.true_pos_enu[2] = 0.05
+            phys.true_vel_enu[:] = 0.0
+            phys.true_acc_enu[:] = 0.0
+            sp_enu = phys.true_pos_enu.copy()
+            if pad_disarm_ticks <= 12:
+                armed_flag = False
+                stage_label = "STAGE_5_DISARMED_ON_PAD"
+                px4_state = "DISARMED (LANDING PAD)"
+                reason = "landed_and_disarmed_on_primary_pad"
+            else:
+                armed_flag = True
+                stage_label = "STAGE_5_REARM_TAKEOFF"
+                px4_state = "RE-ARMED (OFFBOARD)"
+                reason = "rearmed_on_landing_pad_for_fly_home"
+                if pad_disarm_ticks >= 16:
+                    pad_sequence_state = "DONE"
+                    router.stage = CourseStage.STAGE_6_FLY_HOME
+                    router.primary_landed = True
+                    router.step(sim_t, est_enu, force_replan=True)
+                    if router.active_spline is not None:
+                        active_spline_pts = np.round(router.active_spline.sample_points(30), 3).tolist()
+
+        elif home_sequence_state == "HOME_PAD_DESCEND":
+            # Descend vertically onto the Start Pad surface (z = 0.05 m) after crossing the wall
+            hp_ground_enu = np.array([cfg.checkpoints.start_pad[0], cfg.checkpoints.start_pad[1], 0.05])
+            hp_ground_ned = enu_to_ned_pos(hp_ground_enu, origin_enu=tracker.launch_origin_enu)
+            phys.step_physics(dt, sim_t, hp_ground_ned, (0.0, 0.0, 0.55), meas_yaw_ned, 1.0)
+            sp_enu = hp_ground_enu
+            stage_label = "STAGE_6_LANDING_HOME"
+            px4_state = "LANDING (START PAD)"
+            reason = "descending_to_start_pad"
+            if phys.true_pos_enu[2] <= 0.065 and float(np.linalg.norm(phys.true_pos_enu[:2] - hp_ground_enu[:2])) <= 0.18:
+                phys.true_pos_enu[2] = 0.05
+                phys.true_vel_enu[:] = 0.0
+                phys.true_acc_enu[:] = 0.0
+                home_sequence_state = "HOME_PAD_DISARMED"
+                home_disarm_ticks = 0
+
+        elif home_sequence_state == "HOME_PAD_DISARMED":
+            home_disarm_ticks += 1
+            phys.true_pos_enu[2] = 0.05
+            phys.true_vel_enu[:] = 0.0
+            phys.true_acc_enu[:] = 0.0
+            sp_enu = phys.true_pos_enu.copy()
+            armed_flag = False
+            stage_label = "MISSION_COMPLETE"
+            px4_state = "DISARMED (START PAD)"
+            reason = "mission_complete_landed_and_disarmed"
+
         else:
-            sp_enu = phys.true_pos_enu
+            sample, reason = tracker.sample_setpoint(
+                sim_t,
+                external_window_confidence=(0.35 if block_window else 0.95),
+            )
+            # If router just jumped to STAGE_6_FLY_HOME before our pad landing sequence ran, intercept it!
+            if pad_sequence_state == "NONE" and router.stage == CourseStage.STAGE_6_FLY_HOME:
+                pad_sequence_state = "LANDING_PAD_DESCEND"
+                lp_ground_enu = np.array([cfg.checkpoints.landing_pad[0], cfg.checkpoints.landing_pad[1], 0.05])
+                lp_ground_ned = enu_to_ned_pos(lp_ground_enu, origin_enu=tracker.launch_origin_enu)
+                phys.step_physics(dt, sim_t, lp_ground_ned, (0.0, 0.0, 0.45), meas_yaw_ned, 0.85)
+                sp_enu = lp_ground_enu
+                stage_label = "STAGE_5_LANDING"
+                px4_state = "LANDING (NAV_LAND)"
+                reason = "descending_to_landing_pad"
+            elif router.stage == CourseStage.MISSION_COMPLETE and home_sequence_state == "NONE":
+                home_sequence_state = "HOME_PAD_DESCEND"
+                hp_ground_enu = np.array([cfg.checkpoints.start_pad[0], cfg.checkpoints.start_pad[1], 0.05])
+                hp_ground_ned = enu_to_ned_pos(hp_ground_enu, origin_enu=tracker.launch_origin_enu)
+                phys.step_physics(dt, sim_t, hp_ground_ned, (0.0, 0.0, 0.55), meas_yaw_ned, 1.0)
+                sp_enu = hp_ground_enu
+                stage_label = "STAGE_6_LANDING_HOME"
+                px4_state = "LANDING (START PAD)"
+                reason = "descending_to_start_pad"
+            elif sample is not None:
+                if router.active_spline is not None:
+                    active_spline_pts = np.round(router.active_spline.sample_points(30), 3).tolist()
+                prof = router.profile_for_stage(router.stage)
+                phys.step_physics(
+                    dt,
+                    sim_t,
+                    sample.position_ned,
+                    sample.velocity_ned,
+                    sample.yaw_ned,
+                    prof.v_max,
+                )
+                sp_enu = ned_to_enu_pos(sample.position_ned, origin_enu=tracker.launch_origin_enu)
+                stage_label = router.stage.value
+            else:
+                sp_enu = phys.true_pos_enu
 
         speed_mps = float(np.linalg.norm(phys.true_vel_enu))
         vio_err_cm = float(np.linalg.norm(est_enu - phys.true_pos_enu) * 100.0)
@@ -174,7 +282,9 @@ def run_simulation_episode(
         frames.append(
             {
                 "t": sim_t,
-                "stage": router.stage.value,
+                "stage": stage_label,
+                "px4_state": px4_state,
+                "armed": armed_flag,
                 "branch": router.selected_branch,
                 "reason": reason,
                 "true_enu": [round(float(x), 4) for x in phys.true_pos_enu],
@@ -188,7 +298,7 @@ def run_simulation_episode(
             }
         )
 
-        if router.stage == CourseStage.MISSION_COMPLETE:
+        if home_sequence_state == "HOME_PAD_DISARMED" and home_disarm_ticks >= 10:
             break
 
     return {
@@ -225,6 +335,7 @@ HTML_PAGE = """<!DOCTYPE html>
     .badge-stage { background: #1e3a8a; color: #93c5fd; }
     .badge-win { background: #065f46; color: #6ee7b7; }
     .badge-gateb { background: #78350f; color: #fcd34d; }
+    .badge-disarmed { background: #7f1d1d; color: #fca5a5; }
     .controls { margin-top: 12px; border-top: 1px solid #334155; padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
     .btn-group { display: flex; gap: 6px; flex-wrap: wrap; }
     button {
@@ -252,6 +363,7 @@ HTML_PAGE = """<!DOCTYPE html>
   <div id="hud">
     <h1>DroneHacks 2026 — 3D Sim & EGO-Planner</h1>
     <div class="row"><span class="label">Sim Time:</span><span class="val" id="val-t">0.00 s</span></div>
+    <div class="row"><span class="label">PX4 Arm/Mode:</span><span class="val badge badge-win" id="val-px4">ARMED (OFFBOARD)</span></div>
     <div class="row"><span class="label">FSM Stage:</span><span class="val badge badge-stage" id="val-stage">LOADING...</span></div>
     <div class="row"><span class="label">Chicane Branch:</span><span class="val badge badge-win" id="val-branch">PENDING</span></div>
     <div class="row"><span class="label">Planner Event:</span><span class="val" id="val-reason">-</span></div>
@@ -313,6 +425,29 @@ HTML_PAGE = """<!DOCTYPE html>
     const gridHelper = new THREE.GridHelper(6.096, 20, 0x334155, 0x1e293b);
     gridHelper.rotation.x = Math.PI / 2;
     scene.add(gridHelper);
+
+    // Visual Start Pad (-2.515, 0.914) and Primary Landing Pad (-2.042, -0.792) on the floor
+    const startPadMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.32, 0.32, 0.02, 32),
+      new THREE.MeshBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.65 })
+    );
+    startPadMesh.rotation.x = Math.PI / 2;
+    startPadMesh.position.set(-2.515, 0.914, 0.01);
+    scene.add(startPadMesh);
+
+    const landPadMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.32, 0.32, 0.02, 32),
+      new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.70 })
+    );
+    landPadMesh.rotation.x = Math.PI / 2;
+    landPadMesh.position.set(-2.042, -0.792, 0.01);
+    scene.add(landPadMesh);
+
+    // 20x20 ft (±3.048 m) Outer Perimeter Net Cage wireframe
+    const netGeom = new THREE.EdgesGeometry(new THREE.BoxGeometry(6.096, 6.096, 2.4));
+    const netWire = new THREE.LineSegments(netGeom, new THREE.LineBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0.35 }));
+    netWire.position.set(0, 0, 1.2);
+    scene.add(netWire);
 
     // Load actual dronehacks-course-v3.obj mesh
     const loader = new OBJLoader();
@@ -440,6 +575,12 @@ HTML_PAGE = """<!DOCTYPE html>
       }
 
       document.getElementById('val-t').textContent = `${f.t.toFixed(2)} s / ${episode.total_time_s.toFixed(2)} s`;
+      const px4El = document.getElementById('val-px4');
+      if (px4El) {
+        px4El.textContent = f.px4_state || 'ARMED (OFFBOARD)';
+        px4El.className = 'val badge ' + (f.armed === false ? 'badge-disarmed' : (f.px4_state && f.px4_state.includes('LANDING') ? 'badge-gateb' : 'badge-win'));
+      }
+      bodyMesh.material.color.setHex(f.armed === false ? 0xf59e0b : 0x22d3ee);
       document.getElementById('val-stage').textContent = f.stage;
       const brEl = document.getElementById('val-branch');
       brEl.textContent = f.branch;

@@ -191,9 +191,10 @@ class PX4TrajectoryTrackerCore:
         profile = self.router.profile_for_stage(decision.stage)
         t_rel = max(0.0, now_s - self.router.spline_start_time_s)
         t_eval = min(spline.duration, t_rel + self.lookahead_s)
+        z_min_clamp = 0.05 if decision.stage == CourseStage.STAGE_6_FLY_HOME else profile.z_min_enu
         pos_enu = clamp_altitude_enu(
             spline.evaluate_position(t_eval),
-            profile.z_min_enu,
+            z_min_clamp,
             profile.z_max_enu,
         )
         vel_enu = spline.evaluate_velocity(t_eval)

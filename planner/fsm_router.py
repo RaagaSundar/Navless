@@ -317,8 +317,11 @@ class GlobalCourseRouter:
                 use_clearance_cost=False,
             )
             if spline is not None:
+                z_start = max(0.05, float(pos[2]))
                 ctrl_with_climb = np.vstack([
-                    clamp_altitude_enu(pos, 0.5, hop_z),
+                    np.array([float(pos[0]), float(pos[1]), z_start], dtype=np.float64),
+                    np.array([float(pos[0]), float(pos[1]), 0.5 * (z_start + hop_z)], dtype=np.float64),
+                    np.array([float(pos[0]), float(pos[1]), hop_z], dtype=np.float64),
                     spline.control_points,
                 ])
                 spline = UniformBspline(ctrl_with_climb, spline.dt).reallocate_time(profile.v_max, profile.a_max)
