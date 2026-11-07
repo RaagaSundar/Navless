@@ -1,4 +1,4 @@
-"""Navless course node: take over on the pilot's arm, take off, hover.
+"""Navless course node: take over on the pilot's arm, fly a planner route.
 
 Same contract as skybeta's competitor_example, and nothing else:
 
@@ -18,6 +18,8 @@ States (10 Hz timer):
     TAKEOFF            climb straight up. PX4 disarms if we are not off the
                        ground 10 s after arming, so this starts on the first
                        tick of Offboard.
+    ROUTE              walk route_file's waypoints with a speed-limited
+                       carrot (navless_nav/route.py).
     HOLD               hover at the last target.
     PAUSED             the pilot took over. Nothing advances; once the
                        vehicle is disarmed we go back to waiting.
@@ -30,9 +32,32 @@ from rclpy.node import Node
 
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
+from rcl_interfaces.msg import ParameterDescriptor
 from std_msgs.msg import String
 
+from navless_nav.route import (Carrot, course_to_odom, load_route,
+                               resolve_route_path)
+
 IDLE_STATES = ('WAIT_FOR_OFFBOARD', 'PAUSED')
+
+PARAMETERS = (
+    ('takeoff_altitude_m', 0.85),
+    ('arrival_radius_m', 0.25),
+    ('takeoff_timeout_s', 15.0),
+    ('publish_rate_hz', 10.0),
+    # Route: a planner file, and how the drone sat on the launch mark at
+    # power-up (nose bearing clockwise from course north; height of the odom
+    # origin above the floor).
+    ('route_file', 'route_gate_b.json'),
+    ('start_bearing_deg', 0.0),
+    ('start_height_m', 0.0),
+    ('cruise_speed_mps', 0.5),
+    ('max_lead_m', 0.6),
+    # Refuse to start the route from somewhere else (e.g. a re-arm after the
+    # pilot moved the drone): its first point is the launch mark.
+    ('max_start_offset_m', 0.6),
+    ('stall_timeout_s', 20.0),
+)
 
 
 class CourseMission(Node):
@@ -40,10 +65,12 @@ class CourseMission(Node):
     def __init__(self, **kwargs):
         super().__init__('navless_nav', **kwargs)
 
-        self.declare_parameter('takeoff_altitude_m', 0.85)
-        self.declare_parameter('arrival_radius_m', 0.25)
-        self.declare_parameter('takeoff_timeout_s', 15.0)
-        self.declare_parameter('publish_rate_hz', 10.0)
+        # dynamic_typing: `start_bearing_deg:=90` arrives as an int, and a
+        # typed double parameter would kill the node at startup -- which on
+        # the day means no takeover at all.
+        any_type = ParameterDescriptor(dynamic_typing=True)
+        for name, default in PARAMETERS:
+            self.declare_parameter(name, default, any_type)
 
         def param(name):
             return float(self.get_parameter(name).value)
@@ -52,6 +79,16 @@ class CourseMission(Node):
         self.arrival_radius = param('arrival_radius_m')
         self.takeoff_timeout = param('takeoff_timeout_s')
         rate_hz = param('publish_rate_hz')
+        self.cruise_speed = param('cruise_speed_mps')
+        self.max_lead = param('max_lead_m')
+        self.max_start_offset = param('max_start_offset_m')
+        self.stall_timeout = param('stall_timeout_s')
+        self.route = self.load_route(
+            str(self.get_parameter('route_file').value),
+            param('start_bearing_deg'), param('start_height_m'))
+        self.carrot = None
+        self.last_tick = None
+        self.progress_at = None
 
         self.setpoint_pub = self.create_publisher(
             PoseStamped, '/skybeta/setpoint/pose', 10)
@@ -69,8 +106,27 @@ class CourseMission(Node):
 
         self.create_timer(1.0 / rate_hz, self.tick)
         self.get_logger().info(
-            f'navless_nav ready: take off to {self.takeoff_altitude:.2f} m. '
-            'Waiting for the pilot to arm, then switch to Position...')
+            f'navless_nav ready: take off to {self.takeoff_altitude:.2f} m, '
+            f'then fly {len(self.route or [])} waypoints at '
+            f'{self.cruise_speed:.2f} m/s. Waiting for the pilot to arm, '
+            'then switch to Position...')
+
+    def load_route(self, name, bearing_deg, height_m):
+        """Odom-frame waypoints, or None (we then only take off and hover)."""
+        try:
+            path = resolve_route_path(name)
+            waypoints, launch, kind = load_route(path)
+        except (OSError, ValueError, KeyError) as exc:
+            self.get_logger().error(
+                f'route not loaded ({exc}); will take off and hover only.')
+            return None
+        odom = [course_to_odom(p, launch, bearing_deg, height_m)
+                for p in waypoints]
+        self.get_logger().info(
+            f'route {kind} from {path}: {len(odom)} waypoints, launch mark '
+            f'{launch}, start bearing {bearing_deg:.1f} deg, ends at odom '
+            f'({odom[-1][0]:.2f}, {odom[-1][1]:.2f}, {odom[-1][2]:.2f})')
+        return odom
 
     # -- inputs ----------------------------------------------------------
     def odometry_cb(self, msg):
@@ -146,12 +202,49 @@ class CourseMission(Node):
     def _state_takeoff(self):
         self.send(*self.target)
         if self.arrived(self.target):
-            self.goto('HOLD', self.target)
+            self.start_route()
         elif self.now_s() - self.state_since > self.takeoff_timeout:
             self.get_logger().error(
                 f'takeoff target not reached in {self.takeoff_timeout:.0f} s '
                 f'({math.dist(self.position, self.target):.2f} m off); '
                 'holding here. Check `clamped` in /skybeta/state and VIO.')
+            self.goto('HOLD', self.position)
+
+    def start_route(self):
+        if not self.route:
+            self.goto('HOLD', self.target)
+            return
+        offset = math.dist(self.position[:2], self.route[0][:2])
+        if offset > self.max_start_offset:
+            self.get_logger().error(
+                f'{offset:.2f} m from the route start (limit '
+                f'{self.max_start_offset:.2f} m): not flying it from here. '
+                'Holding. Power up on the launch mark.')
+            self.goto('HOLD', self.target)
+            return
+        self.carrot = Carrot(self.route, self.cruise_speed, self.max_lead)
+        self.last_tick = self.now_s()
+        self.progress_at = (self.last_tick, 0, self.carrot.point)
+        self.goto('ROUTE')
+
+    def _state_route(self):
+        now = self.now_s()
+        dt = min(now - self.last_tick, 0.2)
+        self.last_tick = now
+        point = self.carrot.step(self.position, dt)
+        self.send(*point)
+        if self.carrot.done(self.position, self.arrival_radius):
+            self.get_logger().info('route complete; holding at its end.')
+            self.goto('HOLD', point)
+            return
+        if (self.carrot.index, point) != self.progress_at[1:]:
+            self.progress_at = (now, self.carrot.index, point)
+        elif now - self.progress_at[0] > self.stall_timeout:
+            self.get_logger().error(
+                f'no progress for {self.stall_timeout:.0f} s at waypoint '
+                f'{self.carrot.index + 1}/{len(self.route)} '
+                f'({math.dist(self.position, point):.2f} m off); holding. '
+                'Check `clamped` in /skybeta/state and VIO.')
             self.goto('HOLD', self.position)
 
     def _state_hold(self):

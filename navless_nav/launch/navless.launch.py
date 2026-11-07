@@ -26,8 +26,20 @@ ARGUMENTS = [
     ('takeoff_altitude_m', '0.85', 'climb-out height above the origin, metres'),
     ('arrival_radius_m', '0.25', 'how close counts as arrived, metres'),
     ('takeoff_timeout_s', '15.0', 'give up climbing and hold after this'),
+    ('route_file', 'route_gate_b.json',
+     'planner route: absolute, or relative to the Navless repo root'),
+    ('start_bearing_deg', '0.0',
+     'nose bearing on the launch mark at power-up, deg clockwise from course '
+     'north (0 = facing up the first corridor)'),
+    ('start_height_m', '0.0', 'height of the odom origin above the floor, m'),
+    ('cruise_speed_mps', '0.5', 'carrot speed along the route, m/s'),
+    ('max_lead_m', '0.6', 'how far the carrot may run ahead of the drone, m'),
     ('competitor', 'true', 'also start the course node'),
 ]
+
+MISSION_PARAMS = ('takeoff_altitude_m', 'arrival_radius_m', 'takeoff_timeout_s',
+                  'route_file', 'start_bearing_deg', 'start_height_m',
+                  'cruise_speed_mps', 'max_lead_m')
 
 
 def generate_launch_description():
@@ -60,11 +72,8 @@ def generate_launch_description():
         output='screen',
         emulate_tty=True,
         condition=IfCondition(LaunchConfiguration('competitor')),
-        parameters=[{
-            'takeoff_altitude_m': LaunchConfiguration('takeoff_altitude_m'),
-            'arrival_radius_m': LaunchConfiguration('arrival_radius_m'),
-            'takeoff_timeout_s': LaunchConfiguration('takeoff_timeout_s'),
-        }],
+        parameters=[{name: LaunchConfiguration(name)
+                     for name in MISSION_PARAMS}],
     )
 
     return LaunchDescription(declared + [flight_interface, mission])
