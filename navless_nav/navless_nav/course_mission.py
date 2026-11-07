@@ -682,7 +682,7 @@ class CourseMission(Node):
         if carrying == self.blind_carrying:
             if not carrying and self.blind_since is not None:
                 self.info_once(f'frozen:{self.blind_since}',
-                               f'carrot frozen at its current point ({why}).')
+                               f'carrot frozen ({why}).')
             return
         self.blind_carrying = carrying
         if carrying:
