@@ -23,5 +23,6 @@ Jetson installation changes:
 No heavy image/PX4 build, vendor-image provisioning, remote copy, CUDA test,
 simulator lifecycle, arming or flight was performed for this packaging review.
 No clean-install full-course success is claimed. The included213553 baseline
-failed its height gate; corrected height/forward-window work must be referenced
+stopped airborne at the elevated sill on an overly strict conditional-range gate
+while EV/baro remained healthy; corrected height/forward-window work must be referenced
 separately before those variants are selected.

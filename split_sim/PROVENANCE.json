@@ -1,6 +1,6 @@
 {
   "baseline_run": "20261107T213553Z-split-astar-flight",
-  "outcome": "failed: strict terrain-fusion profile gate rejected; NOT a course pass",
+  "outcome": "airborne candidate stopped at elevated sill: strict guard required continuously active conditional terrain/range fusion despite healthy EV/baro height; NOT a course pass",
   "frozen_runtime_archive_sha256": "e6aa7d281e9bfeef52bdd8bd5d3d20800c82b6ed0cb73f9345ba467ea4067884",
   "runtime_manifest_sha256": "6eeba7ca0b0554c60811f52dfdf7e358b1de7bb2b7b4396243e4da74c7ca487b",
   "files": {

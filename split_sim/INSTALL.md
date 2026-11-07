@@ -7,8 +7,9 @@ video workers run on the Mac. ROS domain219 is simulation-only; physical domain1
 and Mac-only domain220 are separate.
 
 The packaged controller is the exact32-file source manifest retained from run
-`20261107T213553Z-split-astar-flight`. **That run failed a height-profile readiness
-gate; this package does not claim a course pass.** `PROVENANCE.json` records its
+`20261107T213553Z-split-astar-flight`. **That airborne run stopped at the elevated sill because its new guard required
+continuously active conditional range/terrain fusion, despite healthy EV/baro
+height. This package does not claim a course pass.** `PROVENANCE.json` records its
 archive identity. The height correction is a separate reviewed change; apply the
 referenced height PR before selecting `ev-terrain`. The default `range` profile
 remains available. Do not weaken readiness gates to make setup appear successful.
