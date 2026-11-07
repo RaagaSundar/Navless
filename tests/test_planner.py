@@ -547,30 +547,62 @@ class TestPlannerScaffold(unittest.TestCase):
         self.assertEqual(c.state, "ROUTE")
         self.assertIsNotNone(c.setpoint)
 
-        # Over the Concentric Pad -> LAND with PX4 NAV_LAND, re-sent once a second until PX4 is in Land
+        # Over the Concentric Pad but 0.25 m off centre -> ALIGN: hold over the centre, no NAV_LAND yet
         router.stage = CourseStage.STAGE_5_LANDING_PAD
         pad = enu_to_ned_pos(cfg.checkpoints.landing_pad, origin_enu=origin)
-        c = tick(20.0, (pad[0], pad[1], -0.8), **armed)
+        c = tick(20.0, (pad[0] + 0.25, pad[1], -0.8), **armed)
+        self.assertEqual((c.state, c.commands), ("ALIGN", ()))
+        assert c.setpoint is not None
+        self.assertAlmostEqual(c.setpoint.position_ned[0], pad[0], places=3)
+        self.assertAlmostEqual(c.setpoint.position_ned[1], pad[1], places=3)
+        # Centred and still -> LAND with PX4 NAV_LAND, re-sent once a second until PX4 is in Land
+        c = tick(21.0, (pad[0], pad[1], -0.8), **armed)
         self.assertEqual((c.state, c.commands), ("LAND", ((VEHICLE_CMD_NAV_LAND, 0.0, 0.0),)))
-        c = tick(21.5, (pad[0], pad[1], -0.4), arming=ARMING_STATE_ARMED, nav=NAVIGATION_STATE_AUTO_LAND, landed=False)
+        c = tick(22.5, (pad[0], pad[1], -0.4), arming=ARMING_STATE_ARMED, nav=NAVIGATION_STATE_AUTO_LAND, landed=False)
         self.assertEqual((c.state, c.commands, c.setpoint), ("LAND", (), None))
 
-        # Disarmed on the pad -> fly-home leg: re-arm from the pad, then straight into ROUTE
+        # Disarmed on the pad -> fly-home leg: re-arm, climb straight up to hop height, then ROUTE
         pad_ground = (pad[0], pad[1], -0.07)
         c = tick(25.0, pad_ground)
         self.assertEqual((c.state, c.reason), ("PREFLIGHT", "landed_on_pad_rearming_for_fly_home"))
         self.assertEqual(tick(25.1, pad_ground).state, "PRIME")
         self.assertEqual(tick(26.2, pad_ground).state, "ARMING")
-        c = tick(27.0, pad_ground, **armed)
+        self.assertEqual(tick(27.0, pad_ground, **armed).state, "TAKEOFF")
+        c = tick(27.5, (pad[0], pad[1], -1.0), **armed)  # part way up: no lateral motion yet
+        hop_z = tracker.px4_hop_z  # from the wall between pad and home (none in this empty map: the floor)
+        assert c.setpoint is not None and hop_z is not None
+        self.assertGreaterEqual(hop_z, 1.85)
+        self.assertEqual(c.state, "TAKEOFF")
+        self.assertAlmostEqual(c.setpoint.position_ned[0], pad[0], places=3)
+        self.assertAlmostEqual(c.setpoint.position_ned[1], pad[1], places=3)
+        self.assertAlmostEqual(c.setpoint.position_ned[2], -hop_z, places=3)
+        c = tick(29.0, (pad[0], pad[1], -hop_z - 0.02), **armed)
         self.assertEqual(c.state, "ROUTE")
         self.assertEqual(router.stage, CourseStage.STAGE_6_FLY_HOME)
 
-        # Back over the start pad -> LAND -> disarmed and landed -> DONE
+        # Back over the start pad -> ALIGN (descend to approach height, centred) -> LAND -> DONE
         c = tick(40.0, (0.0, 0.0, -1.0), **armed)
         self.assertEqual(c.state, "LAND")
         c = tick(45.0, ground)
         self.assertEqual((c.state, c.reason), ("DONE", "landed_and_disarmed"))
         self.assertEqual(tick(46.0, ground).setpoint, None)
+
+    def test_px4_align_times_out_into_land(self) -> None:
+        tracker = PX4TrajectoryTrackerCore(GlobalCourseRouter(PlannerConfig(), OccupancyGrid3D()))
+        tracker.update_estimator_health(True)
+
+        def tick(t, ned):
+            tracker.update_local_position(t, ned[0], ned[1], ned[2], 0.2, 0.0, 0.0, 0.0, True, True)  # drifting
+            tracker.update_vehicle_status(t, ARMING_STATE_ARMED, NAVIGATION_STATE_OFFBOARD)
+            tracker.update_landed(t, False)
+            return tracker.step_px4_mission(t)
+
+        tracker.px4_state, tracker.px4_state_since_s = "ALIGN", 0.0
+        tracker.px4_align_target = (0.0, 0.0, 0.8)
+        self.assertEqual(tick(4.0, (0.3, 0.0, -0.8)).state, "ALIGN")   # off centre and moving: keep centring
+        c = tick(8.5, (0.3, 0.0, -0.8))                                  # never settles: land anyway
+        self.assertEqual(c.state, "LAND")
+        self.assertIn("align timeout", c.reason)
 
     def test_px4_mission_safety_exits(self) -> None:
         def fresh():
