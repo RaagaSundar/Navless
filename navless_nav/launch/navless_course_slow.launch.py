@@ -11,6 +11,11 @@ it, set the drone's drone.env to
 Switch back to navless_course.launch.py once these flights look like the sim. Nothing on the drone
 needs editing, and there is nothing to remember to revert. In Gazebo these speeds flew the window route
 from arming to touchdown in about 43 s (the tuned launch: 32.6 s).
+
+The three speeds are pinned. An include's launch arguments are applied after the command line, so
+`navless_course_slow.launch.py cruise_speed_mps:=0.3` still flies 0.5. For any other speed, launch
+navless_course.launch.py with the values given explicitly. navless_course.launch.py's other arguments
+(route_file, relay, ...) still take command-line values here.
 """
 import os
 
