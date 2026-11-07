@@ -443,6 +443,21 @@ class OccupancyGrid3D:
         keep = (pts[:, 2] >= z_min_m) & (pts[:, 2] <= z_max_m)
         return pts[keep]
 
+    def is_discrepancy_occupied(
+        self,
+        point_m: np.ndarray | Tuple[float, float, float],
+        *,
+        clearance_m: Optional[float] = None,
+    ) -> bool:
+        """Return True if `point_m` lies within `clearance_m` of a newly discovered live discrepancy voxel."""
+        pts = self.get_discovered_discrepancy_points()
+        if pts.size == 0:
+            return False
+        rad = float(self.inflation_radius if clearance_m is None else clearance_m)
+        p = np.asarray(point_m, dtype=np.float64).reshape(1, 3)
+        d2 = np.sum((pts - p) ** 2, axis=1)
+        return bool(np.any(d2 <= rad * rad))
+
     def insert_point_cloud(
         self,
         points_world_m: np.ndarray,
