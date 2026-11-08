@@ -2,7 +2,11 @@
 
 import { AnimatePresence, motion } from 'framer-motion';
 import { useEffect, useRef } from 'react';
+import { RUN_NOTES } from '@/data/facts';
 import { exitOverride } from '@/lib/deckControls';
+import { EVIDENCE } from '@/lib/evidence';
+import { replay, startReplay, stopReplay, useReplay } from '@/lib/replay';
+import { START } from '@/lib/course';
 import { flight, useDeck } from '@/lib/store';
 
 /**
@@ -56,6 +60,49 @@ function FlightLine() {
   );
 }
 
+/** the left panel while a real flight is replaying: the log's own numbers, not the planner's */
+function ReplayStats({ label }: { label: string }) {
+  const t = useRef<HTMLSpanElement>(null);
+  const alt = useRef<HTMLSpanElement>(null);
+  const spd = useRef<HTMLSpanElement>(null);
+  const dist = useRef<HTMLSpanElement>(null);
+  const hit = useReplay((s) => s.hit);
+  const run = EVIDENCE.runs[Math.max(0, replay.run)];
+  useEffect(() => {
+    let raf = 0;
+    let last = 0;
+    const tick = (now: number) => {
+      if (now - last > 90) {
+        last = now;
+        if (t.current) t.current.textContent = `+${Math.max(0, Math.min(replay.t, run.tContact)).toFixed(1)} s`;
+        if (alt.current) alt.current.textContent = `${flight.z.toFixed(2)} m`;
+        if (spd.current) spd.current.textContent = `${flight.speed.toFixed(2)} m/s`;
+        if (dist.current) dist.current.textContent = `${Math.hypot(flight.x - START[0], flight.y - START[1]).toFixed(2)} m`;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [run]);
+  return (
+    <>
+      <div className="hud-label mb-2.5 flex items-center gap-2">
+        <i className="inline-block size-1.5 bg-[var(--accent)]" />
+        FLIGHT RECORDER · {label}
+      </div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 border-l border-white/20 pl-3">
+        <Cell k="STATE" v={hit ? 'TOUCHED' : 'IN FLIGHT'} tone={hit ? 'err' : 'ok'} />
+        <Cell k="LOG TIME" v="+0.0 s" valueRef={t} />
+        <Cell k="BELIEVED ALT" v="0.00 m" valueRef={alt} />
+        <Cell k="BELIEVED SPEED" v="0.00 m/s" valueRef={spd} />
+        <Cell k="FROM THE MARK" v="0.00 m" valueRef={dist} />
+        <Cell k="TOUCH AT" v={`+${run.tContact.toFixed(1)} s`} />
+      </div>
+      <div className="hud-label mt-3 max-w-[17rem] normal-case leading-[1.5] tracking-[0.04em] opacity-70">Replayed from the recorder&rsquo;s own CSV, one point per 0.1 s. Not simulated.</div>
+    </>
+  );
+}
+
 function Ctl({ children, onClick, disabled, hot }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; hot?: boolean }) {
   return (
     <button
@@ -85,13 +132,21 @@ export default function OverridePanel() {
   const engage = useDeck((s) => s.engage);
   const resetFlight = useDeck((s) => s.resetFlight);
   const auto = useDeck((s) => s.auto);
+  const rp = useReplay((s) => s.run);
+  const rpHit = useReplay((s) => s.hit);
+  const rpRun = rp >= 0 ? EVIDENCE.runs[rp] : null;
+  const rpNote = rpRun ? RUN_NOTES[rpRun.id] : null;
 
   const base = useRef<number | null>(null);
   if (status === 'nominal' && plan?.ok) base.current = plan.length;
   const delta = plan?.ok && base.current ? plan.length - base.current : 0;
   const sealed = status === 'sealed';
 
-  const hint = auto
+  const hint = rpNote
+    ? rpHit
+      ? rpNote.happened
+      : `it believed: ${rpNote.believed}`
+    : auto
     ? 'auto demo: two scripted drops, then it is yours'
     : sealed
       ? 'route sealed: the corridor is narrower than the keep-out · [z] undo'
@@ -107,17 +162,23 @@ export default function OverridePanel() {
         <motion.div key="override" className="pointer-events-none fixed inset-0 z-30" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, transition: { duration: 0.4 } }} transition={{ duration: 0.6, delay: 0.5 }}>
           {/* banner */}
           <motion.div data-hud="ov-banner" className="absolute left-1/2 top-[4.6rem] -translate-x-1/2 text-center lg:left-[calc((100%-30.5rem)/2)]" initial={{ y: -16, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.7, duration: 0.5 }}>
-            <div className="font-display text-[clamp(1.7rem,3.6vw,3.4rem)] text-ember">OVERRIDE MODE</div>
-            <div className="hud-label mt-2">YOUR TURN · DROP A BLOCKER · WATCH IT RE-PLAN · SIMULATION</div>
+            <div className="font-display text-[clamp(1.7rem,3.6vw,3.4rem)] text-ember">{rpRun ? 'REAL FLIGHT' : 'OVERRIDE MODE'}</div>
+            <div className="hud-label mt-2">
+              {rpRun ? `FLIGHT RECORDER · ${rpRun.label.toUpperCase()} · ${rpRun.clock} · WHAT THE DRONE BELIEVED · REAL LOG` : 'YOUR TURN · DROP A BLOCKER · WATCH IT RE-PLAN · SIMULATION'}
+            </div>
           </motion.div>
 
           {/* stats */}
           <motion.div data-hud="ov-stats" className="absolute left-5 top-[9.2rem] hidden w-[17.5rem] sm:left-8 xl:block" initial={{ x: -24, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ delay: 0.9, duration: 0.5 }}>
+            {rpRun ? (
+              <ReplayStats label={rpRun.label.toUpperCase()} />
+            ) : (
+              <>
             <div className="hud-label mb-2.5 flex items-center gap-2">
               <i className="inline-block size-1.5 bg-[var(--accent)]" />
               PLANNER · LIVE
-            </div>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 border-l border-white/20 pl-3">
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 border-l border-white/20 pl-3">
               <Cell k="STATE" v={STATUS_LABEL[status]} tone={sealed ? 'err' : status === 'replanned' ? 'warn' : 'ok'} />
               <Cell k="OBSTACLES" v={String(nObs)} />
               <Cell k="PATH" v={plan?.ok ? `${plan.length.toFixed(2)} m` : '—'} />
@@ -129,7 +190,9 @@ export default function OverridePanel() {
               <Cell k="ROUTE" v={plan?.usedFallback ? 'GATE B BACKUP' : 'WINDOW'} tone={plan?.usedFallback ? 'warn' : undefined} />
               <Cell k="DRONE" v={FLIGHT_LABEL[flightMode]} tone={flightMode === 'hold' ? 'err' : flightMode === 'landed' ? 'ok' : undefined} />
               <FlightLine />
-            </div>
+                </div>
+              </>
+            )}
           </motion.div>
 
           {/* controls */}
@@ -142,7 +205,10 @@ export default function OverridePanel() {
 
             <motion.button
               type="button"
-              onClick={() => setArmed(!armed)}
+              onClick={() => {
+                stopReplay();
+                setArmed(!armed);
+              }}
               disabled={auto}
               data-armed={armed}
               className="inject-btn pointer-events-auto font-mono text-[clamp(1rem,2.35vw,2.3rem)] font-bold uppercase tracking-[0.06em] px-[clamp(1.2rem,3vw,3rem)] py-[clamp(0.9rem,1.6vw,1.5rem)]"
@@ -153,9 +219,24 @@ export default function OverridePanel() {
             </motion.button>
 
             <div className="flex flex-wrap items-center justify-center gap-2">
-              <Ctl onClick={dropOnPath} disabled={auto}>[ Drop on path ]</Ctl>
+              <Ctl
+                onClick={() => {
+                  stopReplay();
+                  dropOnPath();
+                }}
+                disabled={auto}
+              >
+                [ Drop on path ]
+              </Ctl>
               {flightMode === 'idle' || flightMode === 'landed' ? (
-                <Ctl onClick={engage} disabled={sealed || auto} hot>
+                <Ctl
+                  onClick={() => {
+                    stopReplay();
+                    engage();
+                  }}
+                  disabled={sealed || auto}
+                  hot
+                >
                   [ {flightMode === 'landed' ? 'Fly again' : 'Engage flight'} ]
                 </Ctl>
               ) : (
@@ -164,6 +245,16 @@ export default function OverridePanel() {
               <Ctl onClick={undo} disabled={nObs === 0 || auto}>[ Undo · Z ]</Ctl>
               <Ctl onClick={clear} disabled={nObs === 0 || auto}>[ Clear · C ]</Ctl>
               <Ctl onClick={exitOverride}>[ Esc · Exit ]</Ctl>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <span className="hud-label pr-1">Replay the real flights</span>
+              {EVIDENCE.runs.map((r, i) => (
+                <Ctl key={r.id} onClick={() => startReplay(i)} disabled={auto} hot={rp === i}>
+                  [ {r.label} ]
+                </Ctl>
+              ))}
+              {rpRun ? <Ctl onClick={stopReplay}>[ Back to the plan ]</Ctl> : null}
             </div>
           </motion.div>
         </motion.div>

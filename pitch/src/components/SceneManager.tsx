@@ -13,6 +13,7 @@ import Effects from './three/Effects';
 import FeatureCloud from './three/FeatureCloud';
 import HeroType from './three/HeroType';
 import DevSnap from './three/DevSnap';
+import Dust from './three/Dust';
 import Sky from './three/Sky';
 
 /**
@@ -54,6 +55,7 @@ export default function SceneManager() {
         <SceneEnvironment />
         <HeroType />
         <FeatureCloud />
+        <Dust />
         <DroneModel />
         <InteractiveJudgeOverride />
         <Effects />

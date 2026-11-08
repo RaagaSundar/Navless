@@ -148,6 +148,12 @@ export const view: View = {
   introT: 0,
 };
 
+/**
+ * A scene can take the camera for a moment (the real-flight replay chases the drone). While `on`, the camera targets this pose
+ * instead of the scroll keyframes; CameraRig still eases onto it, so the hand-over is a glide.
+ */
+export const camOverride = { on: false, pos: new THREE.Vector3(), look: new THREE.Vector3(), fov: 34 };
+
 /** Ask the camera for a soft settle (blocker impact). 0..1, capped low on purpose: it is a nudge, never a shake. */
 export const kick = (amount: number) => {
   view.shake = Math.min(0.4, view.shake + amount);
@@ -242,5 +248,10 @@ export function updateView(dt: number, time: number) {
     _b.set(gw[0], gw[1] + 0.05, gw[2]);
     view.camPos.lerp(_a, clamp(v.followW * 0.6));
     view.camLook.lerp(_b, clamp(v.followW * 0.85));
+  }
+  if (camOverride.on) {
+    view.camPos.copy(camOverride.pos);
+    view.camLook.copy(camOverride.look);
+    view.camFov = camOverride.fov;
   }
 }

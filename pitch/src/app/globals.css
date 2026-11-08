@@ -200,6 +200,79 @@ html.lenis body {
   }
 }
 
+/* ───────────────────────────── talk mode (the presenter deck) ─────────────────────────────
+   Slides are laid out on a fixed 1920x1080 stage that is scaled to fit the screen, so a projector at any size shows the same
+   composition. Motion is slow fades and one slow line-draw; nothing flashes. */
+.t-label {
+  font: 500 20px/1.2 var(--font-mono);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+.t-claim {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: -0.04em;
+  line-height: 0.94;
+  font-size: 64px;
+  color: var(--color-ink);
+  text-shadow: 0 2px 30px rgb(13 8 7 / 0.7);
+}
+.t-panel {
+  background: rgb(18 10 8 / 0.7);
+  border: 1px solid rgb(246 233 217 / 0.14);
+  backdrop-filter: blur(8px);
+}
+.t-reveal {
+  transition: opacity 0.7s ease, transform 0.7s ease;
+}
+@keyframes talk-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.talk-slide {
+  animation: talk-in 0.6s ease both;
+}
+@keyframes t-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.t-fade {
+  animation: t-fade 0.9s ease both;
+}
+@keyframes t-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.t-draw {
+  stroke-dasharray: 1;
+  animation: t-draw 3.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .talk-slide,
+  .t-fade,
+  .t-draw {
+    animation: none;
+  }
+  .t-reveal {
+    transition: none;
+  }
+}
+
 /* ───────────────────────────── in-scene tags (drei <Html>) ───────────────────────────── */
 .hud-tag {
   position: relative;

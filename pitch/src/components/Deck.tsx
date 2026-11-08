@@ -2,13 +2,17 @@
 
 import Lenis from 'lenis';
 import { memo, useEffect, useState } from 'react';
-import { INTRO_S, SCROLL_VH, T, view } from '@/lib/choreography';
+import { INTRO_S, SCROLL_VH, T, camOverride, view } from '@/lib/choreography';
 import { controls, enterOverride, exitOverride, jumpToScene, startDemo, stopDemo, toProgress, toggleDemoPause } from '@/lib/deckControls';
 import { demo } from '@/lib/director';
 import { clamp } from '@/lib/math';
 import { progress, scrollVelocity } from '@/lib/motion';
-import { useDeck } from '@/lib/store';
+import { EVIDENCE } from '@/lib/evidence';
+import { replay as replayState, startReplay, stopReplay } from '@/lib/replay';
+import { flight, useDeck } from '@/lib/store';
+import { getMode, useTalk } from '@/lib/talk';
 import SceneManager from './SceneManager';
+import Talk from './talk/Talk';
 import Callouts from './hud/Callouts';
 import DemoControls from './hud/DemoControls';
 import FxLayers from './hud/FxLayers';
@@ -20,16 +24,26 @@ import TelemetryHUD from './hud/TelemetryHUD';
 
 const Scene = memo(SceneManager);
 
+/** the dusk gradient used behind the slides when the 3D backdrop is switched off (B) */
+function Dusk() {
+  return <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, #0e0809 0%, #2a140e 58%, #8a4520 100%)' }} />;
+}
+
 /**
- * Deck: the page. Two ways through it, one timeline:
- *   MANUAL  a tall invisible track gives the scroll length; Lenis smooths the wheel; at the end of the track the scroll
- *           LOCKS and OVERRIDE MODE takes over until you release it (esc, the button, or a hard scroll back up).
- *   AUTO    [ SEQUENCE INITIATED: PLAY DEMO ] hands the camera to the AutoDirector for a 2-minute run (lib/director.ts).
+ * Deck: the page. Two modes, one scene:
+ *   TALK (default)  the presenter deck: seven sections in the judges' order, one build per click (components/talk, data/script.ts).
+ *                   L opens the interactive part (OVERRIDE MODE: drop a blocker on the planner); esc returns to the slide.
+ *   TOUR (?mode=tour, or T)  the cinematic scroll deck:
+ *     MANUAL  a tall invisible track gives the scroll length; Lenis smooths the wheel; at the end of the track the scroll
+ *             LOCKS and OVERRIDE MODE takes over until you release it (esc, the button, or a hard scroll back up).
+ *     AUTO    [ SEQUENCE INITIATED: PLAY DEMO ] hands the camera to the AutoDirector for a 2-minute run (lib/director.ts).
  * Everything you see is `position: fixed`: one WebGL canvas, the HUD, the scene type, the telemetry stream.
  */
 export default function Deck() {
   const override = useDeck((s) => s.override);
   const ready = useDeck((s) => s.ready);
+  const talk = getMode() === 'talk';
+  const bg = useTalk((s) => s.bg);
   const [webgl, setWebgl] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -43,15 +57,16 @@ export default function Deck() {
 
   /* ───────── smooth scroll + the lock ───────── */
   useEffect(() => {
+    const talk = getMode() === 'talk';
     if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
     window.scrollTo(0, 0);
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const lenis = new Lenis({ lerp: reduce ? 1 : 0.085, wheelMultiplier: 0.85, touchMultiplier: 1.5, smoothWheel: !reduce });
     controls.lenis = lenis;
-    lenis.stop(); // frozen until the boot screen clears
+    lenis.stop(); // frozen until the boot screen clears (and for good in talk mode: slides, not scroll)
     lenis.on('scroll', (l: Lenis) => {
-      // while the AutoDirector runs the clock, the scroll position is not the source of truth
-      if (demo.active) return;
+      // while the AutoDirector runs the clock, the scroll position is not the source of truth; in talk mode the slides are
+      if (demo.active || talk) return;
       const p = toProgress(l.scroll, l.limit);
       if (!useDeck.getState().override) progress.set(p);
       scrollVelocity.set(clamp(Math.abs(l.velocity) / 55));
@@ -68,7 +83,7 @@ export default function Deck() {
     const q = new URLSearchParams(window.location.search);
     const start = Number(q.get('p'));
     const startTimer = window.setTimeout(() => {
-      if (Number.isFinite(start) && start > 0) lenis.scrollTo(Math.min(1, start) * lenis.limit, { immediate: true, force: true });
+      if (!talk && Number.isFinite(start) && start > 0) lenis.scrollTo(Math.min(1, start) * lenis.limit, { immediate: true, force: true });
     }, 50);
     const qual = q.get('q');
     if (qual === 'low' || qual === 'medium' || qual === 'high') {
@@ -94,6 +109,11 @@ export default function Deck() {
           useDeck.getState().setPaused(false);
         },
         store: useDeck,
+        talk: useTalk,
+        enter: enterOverride,
+        replay: { start: startReplay, stop: stopReplay },
+        rs: replayState,
+        dbg: () => ({ flight: { ...flight }, cam: { pos: camOverride.pos.toArray(), look: camOverride.look.toArray(), on: camOverride.on }, view: { camPos: view.camPos.toArray(), camLook: view.camLook.toArray(), fov: view.camFov, startW: view.startW, o: view.o }, replay: { ...replayState } }),
       };
     }
     return () => {
@@ -106,23 +126,86 @@ export default function Deck() {
 
   useEffect(() => {
     if (!ready) return;
+    const talk = getMode() === 'talk';
     // the hero builds itself now (opening reveal); reduced-motion visitors get the finished hero straight away
     view.introGo = true;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) view.introT = INTRO_S;
-    if (!useDeck.getState().override && !useDeck.getState().auto) controls.lenis?.start();
+    if (!talk && !useDeck.getState().override && !useDeck.getState().auto) controls.lenis?.start();
     // warm the planner while nobody is looking, so the first replan is instant
     const idle = (window as unknown as { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
     const t = idle ? idle(() => useDeck.getState().initPlan()) : window.setTimeout(() => useDeck.getState().initPlan(), 400);
     const autoplay = new URLSearchParams(window.location.search).get('demo') === '1';
-    const at = autoplay ? window.setTimeout(startDemo, 700) : 0;
+    const at = autoplay && !talk ? window.setTimeout(startDemo, 700) : 0;
     return () => {
       if (!idle) window.clearTimeout(t as number);
       if (at) window.clearTimeout(at);
     };
   }, [ready]);
 
+  /* ───────── attract loop: this laptop is for the eye, so it never sits still ─────────
+     20 s without a touch on the hero starts the 2-minute sequence by itself. After it hands the grid to the judge, 25 s of nobody
+     touching anything replays the four real flights from the logs one after another, and then the sequence starts again.
+     A click or key stops the wait (esc aborts the sequence). ?attract=0 turns all of this off. */
+  useEffect(() => {
+    if (talk || !ready) return;
+    if (new URLSearchParams(window.location.search).get('attract') === '0') return;
+    const HERO_IDLE_MS = 20_000;
+    const OVERRIDE_IDLE_MS = 25_000;
+    const HOLD_AFTER_TOUCH_S = 6;
+    let last = performance.now();
+    let cycling = false; // we started the replays ourselves
+    const touch = (e?: Event) => {
+      last = performance.now();
+      if (cycling && e && e.type !== 'pointermove') {
+        cycling = false;
+        stopReplay();
+      }
+    };
+    const evs = ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart'] as const;
+    evs.forEach((e) => window.addEventListener(e, touch, { passive: true }));
+    const timer = window.setInterval(() => {
+      const st = useDeck.getState();
+      if (st.auto) {
+        cycling = false;
+        touch(); // the sequence is running: nothing is idle
+        return;
+      }
+      if (st.override) {
+        if (cycling) {
+          const run = EVIDENCE.runs[replayState.run];
+          if (!replayState.active || !run) {
+            cycling = false;
+          } else if (replayState.t > run.tContact + HOLD_AFTER_TOUCH_S) {
+            const next = replayState.run + 1;
+            if (next < EVIDENCE.runs.length) startReplay(next);
+            else {
+              cycling = false;
+              touch();
+              startDemo();
+            }
+          }
+          return;
+        }
+        if (performance.now() - last > OVERRIDE_IDLE_MS && !replayState.active) {
+          cycling = true;
+          startReplay(0);
+        }
+        return;
+      }
+      if (performance.now() - last > HERO_IDLE_MS) {
+        touch();
+        startDemo();
+      }
+    }, 1000);
+    return () => {
+      window.clearInterval(timer);
+      evs.forEach((e) => window.removeEventListener(e, touch));
+    };
+  }, [ready, talk]);
+
   /* ───────── keyboard + hard scroll-up release ───────── */
   useEffect(() => {
+    const talk = getMode() === 'talk';
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const st = useDeck.getState();
@@ -141,6 +224,7 @@ export default function Deck() {
         return;
       }
       if (!st.override) {
+        if (talk) return; // components/talk/Talk.tsx owns the keys until the live demo opens
         if (k === '1' || k === '2' || k === '3') jumpToScene(Number(k) - 1);
         else if (k === 'd' && st.ready) startDemo();
         return;
@@ -191,19 +275,26 @@ export default function Deck() {
         </div>
       ) : (
         <>
-          <div className="fixed inset-0 z-0 bg-void">{webgl ? <Scene /> : null}</div>
+          <div className="fixed inset-0 z-0 bg-void">{webgl && (!talk || bg || override) ? <Scene /> : <Dusk />}</div>
           <FxLayers />
-          <HudFrame />
-          <HeroOverlay />
-          <Callouts />
+          {talk ? (
+            // the slides; while the live demo is open the usual HUD (live clock, esc to release) takes their place
+            override ? <HudFrame /> : <Talk />
+          ) : (
+            <>
+              <HudFrame />
+              <HeroOverlay />
+              <Callouts />
+            </>
+          )}
           <TelemetryHUD />
           <OverridePanel />
-          <DemoControls />
+          {talk ? null : <DemoControls />}
           <Loader />
         </>
       )}
-      {/* the scroll track */}
-      <div aria-hidden style={{ height: `${SCROLL_VH}vh` }} />
+      {/* the scroll track (tour only: talk mode has no scrolling) */}
+      {talk ? null : <div aria-hidden style={{ height: `${SCROLL_VH}vh` }} />}
     </main>
   );
 }

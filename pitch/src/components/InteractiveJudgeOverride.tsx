@@ -9,8 +9,10 @@ import { COURSE, FLIGHT_Z, GUIDES, PAD, START, VIA, WALL_H, enu } from '@/lib/co
 import { clamp, dampAngle, easeOutCubic, remap } from '@/lib/math';
 import { PAL } from '@/lib/palette';
 import { DEFAULT_CONFIG, occupiedAt, planMission, pointAt, type PlanResult } from '@/lib/planner';
+import { replay } from '@/lib/replay';
 import { flight, log, useDeck, type Obstacle } from '@/lib/store';
 import { Blocker } from './Blocker';
+import FlightReplay from './FlightReplay';
 import { GlowLine, type GlowLineHandle } from './three/GlowLine';
 
 /**
@@ -44,6 +46,7 @@ export default function InteractiveJudgeOverride() {
       <Obstacles />
       <HoverGhost />
       <FlightController />
+      <FlightReplay />
     </group>
   );
 }
@@ -168,6 +171,13 @@ const PlanPath = memo(function PlanPath() {
   const seal = useRef<THREE.Group>(null!);
 
   useFrame((s, dt) => {
+    if (replay.active) {
+      // a real flight is on screen: the planner's lines step aside
+      for (const h of [core.current, glow.current, flow.current, old.current]) if (h) h.mesh.visible = false;
+      if (head.current) head.current.visible = false;
+      if (seal.current) seal.current.visible = false;
+      return;
+    }
     const st = useDeck.getState();
     const now = performance.now();
     const age = (now - st.planStamp) / 1000;
@@ -358,6 +368,7 @@ function FlightController() {
   }, [plan]);
 
   useFrame((_, dtRaw) => {
+    if (replay.active) return; // the replay drives the drone
     const dt = Math.min(dtRaw, 0.05);
     const p = planRef.current;
     if (flight.mode === 'idle' || flight.mode === 'landed') {

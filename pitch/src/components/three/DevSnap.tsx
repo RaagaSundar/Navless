@@ -2,6 +2,7 @@
 
 import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useRef } from 'react';
+import * as THREE from 'three';
 
 /**
  * DEV ONLY (mounted only when NODE_ENV !== 'production'): `window.__snap('name')` saves the next fully post-processed frame of
@@ -11,6 +12,7 @@ import { useEffect, useRef } from 'react';
 export default function DevSnap() {
   const gl = useThree((s) => s.gl);
   const advance = useThree((s) => s.advance);
+  const camera = useThree((s) => s.camera);
   const want = useRef<string | null>(null);
   useEffect(() => {
     (window as unknown as { __snap: (n: string) => void }).__snap = (n: string) => {
@@ -21,7 +23,12 @@ export default function DevSnap() {
     (window as unknown as { __advance: (n?: number) => void }).__advance = (n = 1) => {
       for (let i = 0; i < n; i++) advance(performance.now() / 1000, true);
     };
-  }, [advance]);
+    // `window.__project(x, y, z)` -> normalised device coords of a three.js world point (QA: is the camera looking where we think?)
+    (window as unknown as { __project: (x: number, y: number, z: number) => number[] }).__project = (x, y, z) => {
+      const v = new THREE.Vector3(x, y, z).project(camera);
+      return [Number(v.x.toFixed(3)), Number(v.y.toFixed(3)), Number(v.z.toFixed(3))];
+    };
+  }, [advance, camera]);
   useFrame(() => {
     const name = want.current;
     if (!name) return;

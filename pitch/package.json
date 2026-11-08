@@ -9,6 +9,8 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "assets:data": "node scripts/extract-course-data.mjs",
+    "assets:evidence": "node scripts/extract-evidence.mjs",
+    "script": "node --no-warnings --experimental-strip-types scripts/export-script.mts",
     "assets:course": "node scripts/obj-to-glb.mjs",
     "assets:drone": "node scripts/step-to-glb.mjs",
     "test:planner": "node --experimental-strip-types scripts/test-planner.mts"

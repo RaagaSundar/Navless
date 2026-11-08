@@ -3,7 +3,7 @@
 import { useFrame, useThree } from '@react-three/fiber';
 import { useLayoutEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { updateView, view } from '@/lib/choreography';
+import { camOverride, updateView, view } from '@/lib/choreography';
 import { damp } from '@/lib/math';
 
 /**
@@ -26,6 +26,7 @@ export default function CameraRig() {
   const basePos = useRef(new THREE.Vector3());
   const look = useRef(new THREE.Vector3());
   const lastShift = useRef(0);
+  const par = useRef({ x: 0, y: 0 });
   const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera;
 
   useLayoutEffect(() => {
@@ -61,6 +62,16 @@ export default function CameraRig() {
     const t = state.clock.elapsedTime;
     const s = view.shake;
     camera.position.copy(basePos.current);
+    // the pointer nudges the camera a little: the scene is alive, and looking around needs no click. Off in the live demo (the grid
+    // is for clicking), softer on the director's rails and the replay chase.
+    par.current.x = damp(par.current.x, state.pointer.x, 2.5, dt);
+    par.current.y = damp(par.current.y, state.pointer.y, 2.5, dt);
+    const amt = Math.max(0, 1 - view.o * 1.6) * (view.directed ? 0.55 : 1) * (camOverride.on ? 0.35 : 1);
+    if (amt > 0.001) {
+      const d = basePos.current.distanceTo(look.current);
+      camera.position.x += par.current.x * d * 0.03 * amt;
+      camera.position.y += par.current.y * d * 0.018 * amt;
+    }
     if (s > 0.002) {
       // a soft settle, not a shake: one slow, tiny sway that dies away (the old 9-12 Hz jitter is gone)
       camera.position.y += Math.sin(t * 7) * 0.012 * s;

@@ -9,6 +9,8 @@ import { demo, demoTime, resetDemoFlags } from './director';
 import { clamp, easeInOutCubic } from './math';
 import { overrideMix, progress } from './motion';
 import { clearLogQueue, flight, log, useDeck } from './store';
+import { stopReplay } from './replay';
+import { getMode, settleBackdrop } from './talk';
 
 export const controls: { lenis: Lenis | null } = { lenis: null };
 
@@ -37,9 +39,15 @@ export function exitOverride() {
   const { lenis } = controls;
   const st = useDeck.getState();
   if (!st.override) return;
+  stopReplay();
   st.setArmed(false);
   st.setOverride(false);
   animate(overrideMix, 0, { duration: 0.9, ease: [0.22, 1, 0.36, 1] });
+  if (getMode() === 'talk') {
+    // back to the slide the live demo was opened from: no scrolling in talk mode
+    settleBackdrop(1.4);
+    return;
+  }
   if (lenis) {
     lenis.start();
     lenis.scrollTo(lenis.limit * 0.88, { duration: 1.8, easing: easeInOutCubic, force: true });
@@ -67,6 +75,7 @@ export const toProgress = (scroll: number, limit: number) => clamp(limit > 0 ? s
 export function startDemo() {
   const st = useDeck.getState();
   if (!st.ready || st.auto) return;
+  stopReplay();
   // clean slate: leave override, drop blockers, park the drone
   if (st.override) {
     st.setOverride(false);
