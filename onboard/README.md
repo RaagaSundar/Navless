@@ -7,7 +7,7 @@ They never generate odometry, start another XRCE agent, or change PX4 parameters
 | Script in `examples/` | Requested plan |
 | --- | --- |
 | `hover_land.py` | Climb 1 m, hold initial XY/heading for 10 continuous seconds, land |
-| `hover_yaw_180_land.py` | Climb 1 m, hover 2 s, yaw clockwise 180 degrees at a 30 degree/s setpoint slew, settle 2 s, land |
+| `hover_yaw_180_land.py` | Climb 1 m, hover 2 s, yaw clockwise 180 degrees at a 10 degree/s setpoint slew, settle 2 s, land |
 | `forward_2m_return_land.py` | Climb 1 m, move 2 m along initial heading at a 0.4 m/s setpoint slew, settle, hold 10 s, return to initial XY without turning, settle, land |
 
 Positions are local NED; negative Z is up. Height is relative to initial estimated
@@ -185,16 +185,16 @@ to get past a failed check.
 A user-provided FlyX log reached YAW and then reported
 `SLAM odometry missing, invalid or stale; stopping Offboard stream`. The visible
 run report marked program/flight failed and said landing was not confirmed.
-Detailed tracker/bridge logs could not be retrieved after sign-in expired.
-Tracking loss, missing updates and timestamp rejection remain possible causes;
-none is established by this generic error. This PR preserves the checks and
-adds capture/arrival age and sample-validity diagnostics to future failures.
+The generic error alone did not distinguish source rejection from clock skew.
+Retained tracker/bridge logs were subsequently inspected; see the correction
+and evidence below. This PR preserves the checks and adds capture/arrival age
+and sample-validity diagnostics to future failures.
 The ROS_LOCALHOST_ONLY deprecation warnings did not produce that abort branch.
 Do not describe the yaw plan as a passing flight or as hardware-qualified.
 
 Software validation: the original three scripts passed 207 inert-ROS unit tests.
 This PR additionally tests diagnostics, passive-checker publication prevention,
-and gate-health rejection cases: **232 tests passed**. Python compilation and
+and gate-health rejection cases; the corrected full suite has **253 tests**. Python compilation and
 Git whitespace checks passed. No real flight or new simulator flight was
 performed while preparing the PR. Syntax/import checks of the original saved
 scripts passed in the FlyX companion before the user's subsequent yaw attempt.
@@ -204,3 +204,39 @@ Official interface/safety references:
 [PX4 external position estimation](https://docs.px4.io/main/en/ros/external_position_estimation).
 These explain the Offboard heartbeat, manual recovery requirement and frame
 conventions; use documentation matching the installed PX4 release.
+
+## Timing correction for the reported forward/yaw aborts
+
+The first monitor incorrectly gave `EstimatorStatusFlags` a 1.0 s lifetime,
+exactly its nominal publication period. PX4's `EKF2::PublishStatusFlags` publishes
+at about 1 Hz and immediately on status/fault changes. This made ordinary DDS
+scheduling jitter sufficient to abort an otherwise fresh flight. The monitor now
+uses a bounded **2.5 s** receipt/source-age budget for that slow status stream.
+The high-rate PX4 telemetry and 0.5 s SLAM/vision/bridge-health limits remain.
+Repeated status packets cannot renew freshness, and actual local-position
+`dead_reckoning` is now explicitly rejected as well as the existing fusion faults.
+
+Raw SLAM and vision-input capture checks now share the established FlyX bridge's
+**5 ms** future-clock tolerance (`onboard/vio/validation.py: CaptureGate`, default
+`future_tol_s=0.005`). This fixes a second mismatch: the bridge could accept a
+measurement that the mission rejected for tiny callback/clock ordering skew.
+Samples beyond 5 ms ahead and stale/frozen/invalid data still fail. This is a
+bounded timestamp-compatibility fix, not permission to ignore tracking loss.
+
+Regression evidence: nine added timing/skew cases fail against commit `6d63535`
+and pass after the correction; the full suite has **253 passing tests**. Source:
+[PX4 EKF2 implementation](https://github.com/PX4/PX4-Autopilot/blob/main/src/modules/ekf2/EKF2.cpp),
+`EKF2::PublishStatusFlags` (also checked in the installed simulator source).
+The user's original failures remain failures; this software correction alone
+does not establish a successful rerun or prove the yaw abort's exact cause.
+
+The retained FlyX logs subsequently became readable. A cuVSLAM warning at
+`1794097573.815511960` withheld a pose for unavailable/non-finite covariance,
+immediately before the reported yaw abort; the bridge health later became false.
+At `1794097884.271982676`, just before the reported forward abort, the bridge
+reported healthy=true with no stale/future captures. This supports correcting
+the forward monitor cadence without blaming the SLAM source. The yaw command
+rate is reduced from 30 to **10 degrees/s** (18 s for 180 degrees) as a conservative
+tracking-demand change. The covariance, health and freshness requirements are
+retained. Only a new recorded flight can establish whether this rate resolves
+the yaw maneuver; the old failure is not reclassified.

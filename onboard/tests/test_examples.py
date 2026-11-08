@@ -87,7 +87,7 @@ def vision_sample(stamp=100.0):
 def ready(module, phase='WAIT'):
     node = module.TestFlight()
     node.on_position(NS(x=4.0, y=-3.0, z=0.3, heading=math.pi / 2,
-                        xy_valid=True, z_valid=True, heading_good_for_control=True,
+                        xy_valid=True, z_valid=True, heading_good_for_control=True, dead_reckoning=False,
                         timestamp=100_000_000, xy_reset_counter=0, z_reset_counter=0,
                         heading_reset_counter=0))
     node.on_status(NS(arming_state=0 if phase in ('WAIT', 'PRIME') else 2, nav_state=14))
@@ -177,18 +177,20 @@ def test_yaw_wrap_and_measured_completion(example):
     n.yaw = n.pos.heading = n.initial_yaw
     n.pos.z = n.target_z
     previous = n.yaw
-    for i in range(1, 72):
+    ramp_ticks = math.ceil(math.pi / example.YAW_RATE * 10) + 2
+    for i in range(1, ramp_ticks):
         n.advance_maneuver(100.0 + i * .1)
         delta = math.atan2(math.sin(n.yaw - previous), math.cos(n.yaw - previous))
-        assert -1e-12 <= delta <= math.radians(3.0) + 1e-9
+        assert -1e-12 <= delta <= example.YAW_RATE * .1 + 1e-9
         previous = n.yaw
     assert n.yaw == pytest.approx(math.radians(-1.0))
     assert n.phase == 'YAW'  # A completed command ramp does not prove aircraft yaw.
     n.pos.heading = n.yaw
-    n.advance_maneuver(108.0)
-    n.advance_maneuver(108.0 + example.HOVER_TIME - .01)
+    settle_start = math.ceil(100.0 + ramp_ticks * .1)
+    n.advance_maneuver(settle_start)
+    n.advance_maneuver(settle_start + example.HOVER_TIME - .01)
     assert n.phase == 'YAW'
-    n.advance_maneuver(108.0 + example.HOVER_TIME)
+    n.advance_maneuver(settle_start + example.HOVER_TIME)
     assert n.phase == 'LAND'
 
 
@@ -279,10 +281,10 @@ def test_invalid_pose_rejected(example, which):
 
 def test_stale_flags_not_bypassed_by_good_heading(example):
     n = ready(example)
-    n.yaw_alignment_time = 98.0
+    n.yaw_alignment_time = 97.0
     n.tick()
     assert n.phase == 'WAIT' and not n.setpoint_pub.messages
-    n.on_estimator_flags(fusion_flags(timestamp=98_000_000))
+    n.on_estimator_flags(fusion_flags(timestamp=97_000_000))
     n.tick()
     assert n.phase == 'WAIT' and not n.setpoint_pub.messages
 
@@ -418,3 +420,67 @@ def test_passive_checker_has_no_control_publishers(example):
     assert node.problem() == 'PX4 telemetry missing'
     node.tick()
     assert node.phase == 'WAIT'
+
+
+def test_nominal_one_hz_flags_survive_delivery_jitter(example):
+    n = ready(example, 'CLIMB')
+    # Keep all high-rate sources fresh while the next 1 Hz flags packet is in transit.
+    n.now = 101.125
+    n.pos.timestamp = 101_125_000
+    n.on_position(n.pos)
+    n.on_status(n.status)
+    n.on_slam_odometry(slam_sample(n.now))
+    n.on_vision_odometry(vision_sample(n.now))
+    n.on_vision_health(NS(data=True))
+    assert n.vision_problem(n.now) is None
+    n.tick()
+    assert n.phase == 'CLIMB'
+    assert n.setpoint_pub.messages
+
+
+@pytest.mark.parametrize('which', ['slam', 'bridge'])
+def test_existing_bridge_five_ms_clock_skew_budget(example, which):
+    n = ready(example)
+    if which == 'slam':
+        n.on_slam_odometry(slam_sample(100.004))
+    else:
+        msg = vision_sample(100.004)
+        msg.timestamp = 100_000_000
+        n.on_vision_odometry(msg)
+    assert n.vision_problem(n.now) is None
+
+
+def test_flags_silence_still_expires_and_duplicate_does_not_renew(example):
+    n = ready(example)
+    n.now = 101.1
+    n.on_estimator_flags(fusion_flags())
+    assert n.yaw_alignment_time == 100.
+    n.now = 102.625
+    n.pos.timestamp = 102_625_000
+    n.on_position(n.pos)
+    n.on_status(n.status)
+    n.on_slam_odometry(slam_sample(n.now))
+    n.on_vision_odometry(vision_sample(n.now))
+    n.on_vision_health(NS(data=True))
+    assert 'fusion status' in n.vision_problem(n.now)
+    n.tick()
+    assert n.phase == 'WAIT'
+    assert not n.command_pub.messages
+
+
+def test_actual_position_dead_reckoning_remains_a_hard_failure(example):
+    n = ready(example, 'OUTBOUND')
+    n.pos.dead_reckoning = True
+    n.tick()
+    assert n.phase == 'ABORT'
+    assert not n.setpoint_pub.messages and not n.command_pub.messages
+
+
+@pytest.mark.parametrize('which', ['slam', 'bridge'])
+def test_skew_outside_bridge_budget_still_rejected(example, which):
+    n = ready(example)
+    if which == 'slam': n.on_slam_odometry(slam_sample(100.006))
+    else: n.on_vision_odometry(vision_sample(100.006))
+    assert n.vision_problem(n.now) is not None
+    n.tick()
+    assert not n.command_pub.messages

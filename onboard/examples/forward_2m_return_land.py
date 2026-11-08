@@ -50,13 +50,18 @@ HOVER_TIME = 2.0   # Seconds settled at takeoff height before the maneuver
 DISTANCE = 2.0     # Meters along the initial heading; return keeps that heading
 FORWARD_HOLD = 10.0  # Seconds continuously within tolerance after arrival
 MOVE_SPEED = 0.4   # Maximum horizontal setpoint slew, meters/second
-YAW_RATE = math.radians(30.0)  # Gradual positive NED yaw (clockwise from above)
+YAW_RATE = math.radians(10.0)  # Gradual positive NED yaw (clockwise from above)
 POSITION_TOLERANCE = 0.20
 HEIGHT_TOLERANCE = 0.15
 YAW_TOLERANCE = math.radians(6.0)
 SETTLE_TIME = 1.0
 MANEUVER_TIMEOUT = 30.0
 VISION_MAX_AGE = 0.5  # ROS seconds: capture, receipt and bridge health
+# Match the established bridge CaptureGate's bounded 5 ms clock skew budget.
+SOURCE_FUTURE_TOLERANCE = 0.005
+# PX4 publishes EstimatorStatusFlags at ~1 Hz, plus changes. Two periods
+# and 0.5 s transport/scheduling margin avoid treating ordinary cadence as loss.
+FUSION_STATUS_MAX_AGE = 2.5
 
 
 
@@ -177,9 +182,12 @@ class TestFlight(Node):
         self.landed_time = self.clock_seconds()
 
     def on_estimator_flags(self, msg):
+        previous_stamp = self.yaw_alignment_timestamp
         self.estimator_flags = msg
         self.yaw_aligned = bool(msg.cs_yaw_align)
-        self.yaw_alignment_time = self.clock_seconds()
+        # Replayed/duplicate packets never renew the freshness interval.
+        if int(msg.timestamp) > previous_stamp:
+            self.yaw_alignment_time = self.clock_seconds()
         self.yaw_alignment_timestamp = int(msg.timestamp)
 
     def on_slam_odometry(self, msg):
@@ -191,7 +199,7 @@ class TestFlight(Node):
         valid = (all(math.isfinite(v) for v in values)
                  and 0.9 <= sum(v * v for v in values[3:]) <= 1.1
                  and all(frames) and stamp > 0
-                 and 0 <= now - stamp <= VISION_MAX_AGE)
+                 and -SOURCE_FUTURE_TOLERANCE <= now - stamp <= VISION_MAX_AGE)
         self.last_slam_observation = dict(
             stamp=stamp, received=now, frame_id=frames[0], child_frame_id=frames[1],
             finite_pose=all(math.isfinite(v) for v in values),
@@ -216,9 +224,9 @@ class TestFlight(Node):
         valid = (msg.pose_frame in (VehicleOdometry.POSE_FRAME_NED, VehicleOdometry.POSE_FRAME_FRD)
                  and all(math.isfinite(v) for v in values)
                  and 0.9 <= sum(v * v for v in msg.q) <= 1.1
-                 and stamp > 0 and stamp <= published
-                 and 0 <= now - stamp <= VISION_MAX_AGE
-                 and 0 <= now - published <= VISION_MAX_AGE)
+                 and stamp > 0 and stamp-published <= SOURCE_FUTURE_TOLERANCE
+                 and -SOURCE_FUTURE_TOLERANCE <= now - stamp <= VISION_MAX_AGE
+                 and -SOURCE_FUTURE_TOLERANCE <= now - published <= VISION_MAX_AGE)
         self.vision_valid = valid
         if not valid or (self.vision_stamp is not None and stamp <= self.vision_stamp):
             return
@@ -239,21 +247,21 @@ class TestFlight(Node):
         # Monitor the established bridge. Never publish a second odometry stream
         # or feed raw SLAM coordinates into PX4 NED position commands.
         if (not self.slam_valid or self.slam_stamp is None or self.slam_time is None
-                or not 0 <= now - self.slam_stamp <= VISION_MAX_AGE
+                or not -SOURCE_FUTURE_TOLERANCE <= now - self.slam_stamp <= VISION_MAX_AGE
                 or not 0 <= now - self.slam_time <= VISION_MAX_AGE):
             return "SLAM odometry missing, invalid or stale"
         if (not self.vision_healthy or self.vision_health_time is None
                 or not 0 <= now - self.vision_health_time <= VISION_MAX_AGE):
             return "vision bridge health missing, false or stale"
         if (not self.vision_valid or self.vision_stamp is None or self.vision_time is None
-                or not 0 <= now - self.vision_stamp <= VISION_MAX_AGE
+                or not -SOURCE_FUTURE_TOLERANCE <= now - self.vision_stamp <= VISION_MAX_AGE
                 or not 0 <= now - self.vision_time <= VISION_MAX_AGE):
             return "PX4 external-vision input missing, invalid or stale"
         flags = self.estimator_flags
         if (flags is None or self.yaw_alignment_time is None or self.pos is None
-                or not 0 <= now - self.yaw_alignment_time <= 1.0
+                or not 0 <= now - self.yaw_alignment_time <= FUSION_STATUS_MAX_AGE
                 or int(flags.timestamp) <= 0
-                or abs(int(self.pos.timestamp) - int(flags.timestamp)) > 1_000_000):
+                or not -1_000_000 <= int(self.pos.timestamp)-int(flags.timestamp) <= FUSION_STATUS_MAX_AGE*1e6):
             return "PX4 fusion status missing, stale or incompatible with position time"
         if not (flags.cs_ev_pos and flags.cs_ev_yaw):
             return "PX4 external-vision position/yaw fusion is not active"
@@ -274,7 +282,10 @@ class TestFlight(Node):
                       vision_receipt_age_s=age(self.vision_time),
                       bridge_healthy=self.vision_healthy,
                       bridge_health_age_s=age(self.vision_health_time),
-                      fusion_status_age_s=age(self.yaw_alignment_time))
+                      fusion_status_age_s=age(self.yaw_alignment_time),
+                      fusion_status_source_age_s=(round((int(self.pos.timestamp)-self.yaw_alignment_timestamp)*1e-6,6)
+                                                  if self.pos is not None else None),
+                      fusion_status_max_age_s=FUSION_STATUS_MAX_AGE)
         if latest is not None:
             detail.update(latest_slam_capture_age_s=age(latest['stamp']),
                           latest_slam_receipt_age_s=age(latest['received']),
@@ -297,6 +308,7 @@ class TestFlight(Node):
                    and 0 <= flags_age_us <= 3_000_000)
         return bool(self.pos.xy_valid and self.pos.z_valid
                     and (self.pos.heading_good_for_control or aligned)
+                    and not self.pos.dead_reckoning
                     and all(math.isfinite(value) for value in
                             (self.pos.x, self.pos.y, self.pos.z, self.pos.heading)))
 
