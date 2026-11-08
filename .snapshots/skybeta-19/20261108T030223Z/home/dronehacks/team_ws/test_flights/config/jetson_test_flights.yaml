@@ -1,0 +1,9 @@
+/**:
+  ros__parameters:
+    use_sim_time: false
+    slam_odom_topic: /visual_slam/tracking/odometry
+    vision_input_topic: /fmu/in/vehicle_visual_odometry
+    vision_health_topic: /onboard/vision_health
+    validated_odom_topic: /mapping/validated_odometry
+    gate_status_topic: /mapping/gate_status
+    preflight_timeout_s: 45.0

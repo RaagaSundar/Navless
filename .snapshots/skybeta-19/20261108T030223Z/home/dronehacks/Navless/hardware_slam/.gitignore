@@ -1,0 +1,7 @@
+maps/
+evidence/
+remote/
+__pycache__/
+*.pyc
+.env
+.env.*

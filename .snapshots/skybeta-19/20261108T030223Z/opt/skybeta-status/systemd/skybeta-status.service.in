@@ -1,0 +1,23 @@
+# Installed by skybeta-dashboard drone/install.sh -- edit the template, not this file.
+[Unit]
+Description=skybeta status agent (read-only GET /status on the Tailscale IP)
+After=network-online.target tailscaled.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+EnvironmentFile=-/etc/skybeta/status-agent.env
+WorkingDirectory=/opt/skybeta-status
+ExecStart=/usr/bin/python3 -E -s /opt/skybeta-status/agent/main.py
+Restart=always
+RestartSec=5
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+# It must read ~/skybeta (or ~/Downloads/skybeta) and ~/team_ws, never write them.
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,2 @@
+# Sim-only packages (master_sim/ros_ws): keep them out of the drone's team_build.sh.
+# run_master.sh builds them by path, which this marker does not affect.

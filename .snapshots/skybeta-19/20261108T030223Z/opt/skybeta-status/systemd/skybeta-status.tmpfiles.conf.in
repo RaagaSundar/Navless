@@ -1,0 +1,2 @@
+# RAM-backed handoff dir for the ROS sidecar -> agent (created at boot; 1 Hz writes never touch the NVMe).
+d /run/skybeta-status 0755 __USER__ __USER__ -

@@ -1,0 +1,20 @@
+# Installed by skybeta-dashboard drone/install.sh -- edit the template, not this file.
+[Unit]
+Description=skybeta ROS status sidecar (summarises local DDS into /run/skybeta-status/ros_summary.json)
+After=docker.service skybeta-status.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=__USER__
+EnvironmentFile=-/etc/skybeta/status-agent.env
+ExecStart=/bin/bash /opt/skybeta-status/sidecar/run_sidecar.sh
+ExecStop=/usr/bin/docker stop -t 10 skybeta-ros-status
+# The image may not be pulled yet on a fresh drone: retry slowly, forever.
+Restart=always
+RestartSec=30
+TimeoutStopSec=20
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

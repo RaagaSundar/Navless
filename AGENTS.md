@@ -27,10 +27,10 @@ Don't narrate every step. One post at start, one at finish, plus questions and a
 
 ## Skybeta-19 hardware
 
-Before working on the aircraft, read the organisers' [Skybeta rules](https://github.com/Artash-N/skybeta/blob/3c42933f5adc7b22997614946f6719b2c2f89f20/README.md#rules)
-and [competitor guide](https://github.com/Artash-N/skybeta/blob/3c42933f5adc7b22997614946f6719b2c2f89f20/docs/competitor_guide.md).
-Use the [hardware checklist](https://github.com/Artash-N/skybeta/blob/3c42933f5adc7b22997614946f6719b2c2f89f20/docs/hardware_checklist.md)
-before each flight. The [stack guide](https://github.com/Artash-N/skybeta/blob/3c42933f5adc7b22997614946f6719b2c2f89f20/CLAUDE.md)
+Before working on the aircraft, read the organisers' [Skybeta rules](.snapshots/skybeta-19/20261108T030223Z/home/dronehacks/skybeta/README.md#rules)
+and [competitor guide](.snapshots/skybeta-19/20261108T030223Z/home/dronehacks/skybeta/docs/competitor_guide.md).
+Use the [hardware checklist](.snapshots/skybeta-19/20261108T030223Z/home/dronehacks/skybeta/docs/hardware_checklist.md)
+before each flight. The [stack guide](.snapshots/skybeta-19/20261108T030223Z/home/dronehacks/skybeta/CLAUDE.md)
 records version-specific findings from multiple airframes. Verify the current aircraft and stack before applying them.
 
 - Connect only to the team's assigned drone. Check `hostname` at login.

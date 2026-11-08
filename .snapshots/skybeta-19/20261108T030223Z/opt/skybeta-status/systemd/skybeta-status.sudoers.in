@@ -1,0 +1,6 @@
+# Installed by skybeta-dashboard drone/install.sh (omit with --no-sudoers).
+# Lets __USER__ start/stop/restart/status the two skybeta status units, and start/stop/
+# restart the stack's autostart service, without a password, so routine updates run
+# unattended. Nothing else. (Teams already have
+# root on their drone, so this grants nothing new.)
+__USER__ ALL=(root) NOPASSWD: __SYSTEMCTL__ start skybeta-status.service, __SYSTEMCTL__ stop skybeta-status.service, __SYSTEMCTL__ restart skybeta-status.service, __SYSTEMCTL__ status skybeta-status.service, __SYSTEMCTL__ start skybeta-ros-status.service, __SYSTEMCTL__ stop skybeta-ros-status.service, __SYSTEMCTL__ restart skybeta-ros-status.service, __SYSTEMCTL__ status skybeta-ros-status.service, __SYSTEMCTL__ start skybeta-stack.service, __SYSTEMCTL__ stop skybeta-stack.service, __SYSTEMCTL__ restart skybeta-stack.service
