@@ -273,5 +273,20 @@ independent grade reports failure, exit airborne, no confirmed AUTO_LAND before
 disarm, and one VIO processing deadline miss. It does not flag contact in the
 summary; that is not proof of a controlled landing. The Land button was requested
 and the UI subsequently reported disarmed. No successful yaw rerun is claimed.
-The new 1 m script has passed software tests but has not completed a recorded
-flight; testing was stopped at the user's request.
+Retained cuVSLAM logs also report a pose withheld for non-finite covariance at
+`1794099344.077532387`, before this yaw abort; bridge health subsequently became
+false. This supports an estimator-side rejection, not removing the mission gate.
+
+After testing resumed, managed flight **`run_006` passed** with the unchanged
+1 m script from commit `2afc135`, SHA-256
+`af39591d19c816b383fd5e24988fa25821b2db955dce00eadf572881addd5293`.
+Its log reached FORWARD_HOLD at `1794099571.520482884`, RETURN at
+`1794099586.156981377`, Landing at `1794099592.149531053`, and Landed and disarmed
+at `1794099600.541312017`. Durations use the ROS simulation clock; these log
+prefixes are wall timestamps. FlyX independently reports Program SUCCEEDED,
+Flight PASS and Recording Verified. Evidence is saved in
+`.onboard/test_flight_checks/run_006-forward-1m/` with program output, grade,
+source hash and run comparison against the 2 m attempt. Fresh initialization,
+sensor randomness and different paths confound that comparison. No numerical
+truth-drift metric was available in the visible summary; this passing
+simulation flight does not qualify hardware or establish zero drift.
