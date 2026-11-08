@@ -292,7 +292,11 @@ bash walk_session.sh stop         # stops exactly what start started, checks not
 ```
 
 - **Live:** `http://<drone>:8082` shows the localizer's best estimate on the course model with its trail and the live cloud (green points = matched the model); `http://<drone>:8081` is the camera and depth.
-- **Recording** (`~/team_ws/walk_sessions/<time>/`): `track.csv` at 10 Hz from `walk_recorder.py` (localizer pose, status, fit, matches, measured axes; `odom_correction`; cuVSLAM pose and `vo_state`; PX4's EKF2 estimate if linked; stereo cloud rate; ages of each), `frames/` (every 5th cloud as the localizer saw it, for replaying offline), and each node's log.
+- **Recording** (`~/team_ws/walk_sessions/<time>/`):
+  - `track.csv` at 10 Hz from `walk_recorder.py`: localizer pose, status, fit, matches, measured axes; `odom_correction`; cuVSLAM pose, velocity and `vo_state`; PX4's EKF2 position, velocity, acceleration, heading, reset counters, rangefinder, accuracy, dead reckoning, armed/mode, battery; how fresh the vision feed into PX4 and the camera IMU are; stereo cloud rate.
+  - `raw/`: **every message, every field, at full rate**: `px4_local_position`, `px4_status`, `px4_battery`, `px4_vision_in` (what the bridge feeds EKF2), `cuvslam_odometry` (with covariances), `oak_imu` (camera IMU, ~200 Hz).
+  - `frames/` (every 5th cloud as the localizer saw it, for replaying offline), and each node's log.
+  - **Not available:** the Pixhawk's own IMU, attitude and EKF2 odometry. 19's PX4 publishes only `vehicle_local_position`, `vehicle_status_v1` and `battery_status` over uXRCE-DDS, and adding topics is a PX4 config change.
 - **Summary** (`walk_summary.py`, also runs on a laptop: `python3 walk_summary.py <session> course_asbuilt.json`): `summary.txt` gives the share of time in each status, the longest stretch without `tracking`, estimate jumps, cuVSLAM stalls over 0.4 s, how far plain odometry drifted from the localizer, what `odom_correction` did, and checkpoint errors. `plan.svg` draws the walk on the course: localizer trail coloured by status, plain odometry from the launch mark (what navless_nav would believe uncorrected), odometry + correction, checkpoints (truth vs estimate).
 
 "Odometry vs localizer" compares two estimates. Only checkpoints measure against the truth, so do at least a few.

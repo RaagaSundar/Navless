@@ -76,7 +76,7 @@ def fresh(r, name, max_age=1.0):
     return a is not None and a <= max_age and r.get(f"{name}_x") is not None
 
 
-def analyse(rows, launch):
+def analyse(rows, launch, sess=None):
     t0 = rows[0]["t"]
     dur = rows[-1]["t"] - t0
     lines = [f"walk: {dur:.0f} s, {len(rows)} rows"]
@@ -136,6 +136,30 @@ def analyse(rows, launch):
     px4 = sum(1 for r in rows if fresh(r, "px4"))
     lines.append(f"PX4 estimate present in {100 * px4 / len(rows):.0f}% of rows"
                  + ("" if px4 else " (PX4 not linked, or not on this domain)"))
+
+    def resets(col):                 # how many times a PX4 reset counter went up during the walk
+        vals = [int(r[col]) for r in rows if r.get(col) is not None]
+        return sum((b - a) % 256 for a, b in zip(vals, vals[1:]) if b != a)
+    if px4:
+        lines.append(f"PX4 EKF2 resets during the walk: heading {resets('px4_heading_resets')}, "
+                     f"xy {resets('px4_xy_resets')}, z {resets('px4_z_resets')}  (a heading reset = vision lost "
+                     f">0.4 s, EKF2 fell back to the compass)")
+        dr = sum(1 for r in rows if r.get("px4_dead_reckoning") == 1)
+        eph = [r["px4_eph"] for r in rows if r.get("px4_eph") is not None]
+        lines.append(f"PX4 dead reckoning {100 * dr / len(rows):.0f}% of rows"
+                     + (f"; eph median {median(eph) * 100:.0f} cm, worst {max(eph) * 100:.0f} cm" if eph else ""))
+    vin = [r["vision_in_age"] for r in rows if r.get("vision_in_age") is not None]
+    if vin:
+        gaps = sum(1 for a, b in zip(vin, vin[1:]) if b > STALL_S >= a)
+        lines.append(f"vision feed into PX4: {gaps} gaps >{STALL_S} s, worst {max(vin):.2f} s")
+    imu = [r["imu_age"] for r in rows if r.get("imu_age") is not None]
+    if imu:
+        lines.append(f"camera IMU: worst gap {max(imu):.2f} s")
+    raw = os.path.join(sess or "", "raw")
+    if os.path.isdir(raw):
+        lines.append("raw full-rate logs: " + ", ".join(
+            f"{f[:-4]} {max(0, sum(1 for _ in open(os.path.join(raw, f))) - 1)} rows"
+            for f in sorted(os.listdir(raw)) if f.endswith(".csv")))
     # --- trails: localizer, plain odometry from the launch mark, odometry + correction ----------
     T_nom = (launch[0], launch[1], math.radians(LAUNCH_YAW_DEG))
     trail_loc, trail_nom, trail_cor = [], [], []
@@ -276,7 +300,7 @@ def main():
     cpath = find_course(sys.argv[2] if len(sys.argv) > 2 else None, sess)
     course = json.load(open(cpath)) if cpath else None
     launch = m(course["launch_mark_in"]) if course else (-2.5146, 0.9144)
-    lines, tl, tn, tc = analyse(rows, launch)
+    lines, tl, tn, tc = analyse(rows, launch, sess)
     cps = []
     rpath = os.path.join(sess, "checkpoints", "results.json")
     if os.path.isfile(rpath):
