@@ -46,10 +46,10 @@ ARGUMENTS = [
     # Planned >= 17.9 cm to every wall (Barrier 1 behind the launch mark; A1 19.6, window 21.0, C1 21.2,
     # MN 23.1, MD's tip 23.1). The floor tape is the old maze's and runs under MD: nothing follows it.
     # The via point keeps the downward rangefinder (PX4's height reference) 28 cm off boulder 3, which
-    # would read 0.4 m short. As-built Gazebo gate on the new maze (gate_asbuilt.sh, drone profile,
-    # course_mission's 0.5 / 0.6 / 0.25, 3 laps): all landed 6.2-6.9 cm from the pad centre, no contacts,
-    # 38.6-38.8 s from arming to touchdown (the old maze: ~47 s). Closest: MN 17.4 cm, window wall 19.9,
-    # MD 20.9, C1 21.7.
+    # would read 0.4 m short. As-built Gazebo gate on the new maze, with the heading hold (gate_asbuilt.sh,
+    # drone profile, course_mission's 0.5 / 0.6 / 0.25, 3 laps): all landed 6.2-6.8 cm from the pad centre,
+    # no contacts, 40.6-40.7 s from arming to touchdown including the 2 s settle (the old maze: ~49 s).
+    # Closest: MN 17.7 cm, window wall 20.3, C1 21.6, MD 21.7.
     ('route_file', 'gazebo_sim/course/route_centreline_window_asbuilt.json',
      'route to fly (repo-relative): the window route on the as-built course map'),
     # The route keeps >= 0.5 m from the net since the 2026-11-07 maze (it crossed M1's and M3's north
