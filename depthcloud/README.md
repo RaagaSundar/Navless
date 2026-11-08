@@ -140,9 +140,23 @@ Start it with `docker exec -d ...` or in its own shell: a background `&` inside 
 |---|---|---|
 | `/team/localize/pose` | `PoseStamped`, `frame_id: course` | the left camera's pose; orientation = camera forward/left/up |
 | `/team/localize/base_pose` | `PoseStamped`, `frame_id: course` | `base_link` (drone centre), via the static TF `base_link` → camera; use this one for planning |
-| `/team/localize/status` | `std_msgs/String` (JSON) | `status` (`tracking` / `weak` / `odometry` / `holding` / `lost` / ...), `measured` (fraction of x / y / height / heading the frame measured), `age` (s since the last course match), `odom_source`, `odom_rejects` |
+| `/team/localize/status` | `std_msgs/String` (JSON) | `status` (`tracking` / `weak` / `odometry` / `holding` / `lost` / ...), `measured` (fraction of x / y / height / heading the frame measured), `all_measured` (every direction measured), `age` (s since the last course match), `odom_source`, `odom_rejects` |
 
-The two pose topics are published only while status is `tracking`, `weak` or `odometry`. Check `status` and `measured` before trusting a pose: `odometry` means no course match right now.
+The two pose topics are published only while status is `tracking`, `weak` or `odometry`.
+
+**Which status to steer on** (changed 2026-11-07):
+
+| Status | Meaning | Steer on it? |
+|---|---|---|
+| `tracking` | The course match measured **x, y and heading** (not held at the odometry prediction), at least 300 points matched, and the frame is **settled**: the match moved the prediction by less than 3 cm and 1°. | **Yes, for x, y and heading.** |
+| `weak` | The match was accepted, but one of those didn't hold. | No |
+| `odometry` | No course match right now; the pose is moving on odometry alone. | No |
+
+- **Height may be held, even in `tracking`.** Take height from PX4's rangefinder, not from this pose's z. The old, stricter meaning (every direction measured, including height, roll and pitch) is `all_measured`. From flight height that almost never happened, so `tracking` was effectively never reported.
+- **Simulated on the as-built window route:**
+  - normal laps: 88–91 of 371 frames are `tracking`, with x/y error up to 1.2 cm;
+  - with 15% VSLAM dropouts and 2 reset jumps: 44 frames, of which 6 were about 10 cm off during the final descent onto the pad;
+  - self-test: no wrong `tracking` views.
 
 ICP uses Tukey weighting with an annealed cut-off (`max(6 cm, 0.5 × search radius)`), so coarse passes can still correct 10–15° heading errors.
 

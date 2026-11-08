@@ -376,8 +376,13 @@ def icp(src, T0, model, schedule=None, iters=5, huber=None, min_pts=150,
             if np.linalg.norm(delta) < 1e-5:
                 break
     p = transform(T, src)
-    _, d = nn.query(p, 0.08)
+    idx, d = nn.query(p, 0.08)
     inl = d < 0.08
+    # Matched points on VERTICAL surfaces (walls, boulders, tube sides): only these pin x/y. Count how
+    # many face east-west and how many face north-south; the smaller is how well both are pinned.
+    nm = mn[np.minimum(idx[inl], len(mn) - 1)]
+    walls = np.abs(nm[:, 2]) < 0.5
+    wall_xy = int(min((walls & (np.abs(nm[:, 0]) > 0.4)).sum(), (walls & (np.abs(nm[:, 1]) > 0.4)).sum()))
     # How much of each world quantity this frame actually measured: the length of its direction's
     # projection onto the subspace ICP was allowed to move in (1 = fully measured, 0 = held at the
     # previous value). Order of the 6 directions: [rot x, rot y, rot z, x, y, z].
@@ -385,11 +390,40 @@ def icp(src, T0, model, schedule=None, iters=5, huber=None, min_pts=150,
     proj = {k: float(np.linalg.norm(Vk[i])) for k, i in probe.items()}
     measured = {k: v > 0.9 for k, v in proj.items()}
     return T, {"ok": True, "fitness": float(inl.mean()), "rmse": float(np.sqrt(np.mean(d[inl] ** 2))) if inl.any() else 1.0,
-               "matches": int(inl.sum()), "free": free, "constraint": ratio, "measured": measured, "proj": proj}
+               "matches": int(inl.sum()), "free": free, "constraint": ratio, "measured": measured, "proj": proj,
+               "wall_matches": int(walls.sum()), "wall_xy": wall_xy}
+
+
+TRACK_DIRECTIONS = ("x", "y", "heading")   # what a consumer steers on; height comes from PX4's rangefinder
 
 
 class Localizer:
     """Frame-to-model tracking with sanity gates; keeps the last good pose when a frame is rejected."""
+
+    TRACK_SETTLE_M, TRACK_SETTLE_DEG = 0.03, 1.0
+
+    def accepted_status(self, info, settled):
+        """Status of a frame the course match accepted.
+
+        tracking  x, y and heading were all measured by the match (not held at the prediction), at least
+                  min_matches points matched, AND the frame is settled: the match moved the predicted pose
+                  by < TRACK_SETTLE_M horizontally and < TRACK_SETTLE_DEG in heading. A frame still making
+                  big corrections (catching up after drift under the per-frame cap, or right after a start
+                  or reset) isn't at the answer yet. Height and roll/pitch may be held: PX4 flies height on
+                  its rangefinder, and the course gives little vertical structure from flight height.
+        weak      accepted, but not all of that: don't steer on it.
+        all_measured keeps the stricter old meaning (every direction measured) for anyone who wants it."""
+        proj = info.get("proj", {})
+        self.all_measured = info.get("free", 6) == 0
+        horizontal = all(proj.get(k, 0.0) > 0.9 for k in TRACK_DIRECTIONS)
+        ok = horizontal and settled and info.get("matches", 0) >= self.min_matches
+        return "tracking" if ok else "weak"
+
+    def correction(self, T):
+        """How far the match moved the predicted pose self.T: (horizontal m, rotation deg)."""
+        dR = T[:3, :3] @ self.T[:3, :3].T
+        ang = math.degrees(math.acos(max(-1.0, min(1.0, (np.trace(dR) - 1) / 2))))
+        return float(np.linalg.norm(T[:2, 3] - self.T[:2, 3])), ang
 
     def __init__(self, model, T0, max_range=5.0, voxel=0.05, max_points=1500,
                  min_fitness=0.35, min_matches=300, max_rmse=0.06, max_jump=0.6, max_turn_deg=30.0,
@@ -405,6 +439,7 @@ class Localizer:
         self.rng = np.random.default_rng(1)
         self.status, self.info, self.rejects = "waiting", {}, 0
         self.last_good, self.measured = None, {}                   # monotonic time, what was measured
+        self.all_measured = False                                  # every direction measured (old "tracking")
         self.trail = deque(maxlen=600)
         self.searching, self.odom = False, False
         self.max_speed, self.max_turn_rate = max_speed, max_turn_rate      # m/s, deg/s: odometry sanity
@@ -544,7 +579,7 @@ class Localizer:
                 return False
             self.searching, self.T, self.rejects = False, T, 0
             self.last_good, self.measured = time.monotonic(), info.get("proj", {})
-            self.status = "tracking" if info["free"] == 0 else "weak"
+            self.status = self.accepted_status(info, settled=False)     # heading just found: not settled
             self.trail.append(self.T[:3, 3].round(3).tolist())
             return True
         T, info = icp(src, self.T, self.model)
@@ -558,12 +593,17 @@ class Localizer:
                 good, info["reason"] = False, "jump too large"
         elif info["ok"]:
             info["reason"] = "poor fit"
+        settled = False
+        if good:
+            corr_m, corr_deg = self.correction(T)                     # before any clamp: the match's own answer
+            info["correction_m"], info["correction_deg"] = round(corr_m, 4), round(corr_deg, 3)
+            settled = corr_m < self.TRACK_SETTLE_M and corr_deg < self.TRACK_SETTLE_DEG
         if good and self.odom and self.max_corr_m is not None:
             T = self.clamp_correction(T)
         if good:
             self.T, self.rejects = T, 0
             self.last_good, self.measured = time.monotonic(), info.get("proj", {})
-            self.status = "tracking" if info["free"] == 0 else "weak"
+            self.status = self.accepted_status(info, settled)
             self.trail.append(self.T[:3, 3].round(3).tolist())
         else:
             self.rejects += 1
@@ -916,7 +956,7 @@ class Tracker:
                     "odom_source": getattr(self, "odom_source", ""), "odom_note": loc.odom_note,
                     "odom_rejects": loc.odom_rejects, "cropped": round(loc.cropped, 3),
                     "sparse_removed": round(loc.sparse, 3),
-                    "matches": info.get("matches"),
+                    "matches": info.get("matches"), "all_measured": loc.all_measured,
                     "age": None if loc.last_good is None else time.monotonic() - loc.last_good,
                     "trail": list(loc.trail)}
 
@@ -1077,20 +1117,31 @@ def selftest(obj_path, up="z", scale=1.0, trials=20, max_range=5.0, perturb=0.4,
         else:
             grade = "BAD"
         counts[grade] += 1
+        if accepted and status == "tracking":                         # what a consumer would steer on
+            n_track = counts.get("_track", 0) + 1
+            counts["_track"] = n_track
+            xy = np.linalg.norm(loc.T[:2, 3] - T_true[:2, 3])
+            if xy > 0.10 or e1[1] > 3.0:
+                counts["_track_wrong"] = counts.get("_track_wrong", 0) + 1
         fit = f"{info['fitness']:.2f}  {100 * info['rmse']:4.1f}cm" if info.get("ok") else "  -     -   "
         print(f"{n:2d}  {x:5.2f} {y:5.2f} {zc:4.2f}  {yaw:5.0f}° | {100 * e0[0]:5.1f} cm {e0[1]:4.1f}° | "
               f"{100 * e1[0]:5.1f} cm {e1[1]:4.1f}°  {fit} {ms:4.0f}  {info.get('free', '-'):>3}  {status:8s}  {grade}")
     print(f"\nPASS {counts['PASS']}  CLOSE {counts['CLOSE']}  HELD {counts['HELD']}  BAD {counts['BAD']}  (of {trials})")
     print("HELD = the view didn't pin the pose down, so the tracker kept its previous estimate (safe).")
     print("BAD  = accepted but wrong. This should be 0." if counts["BAD"] else "BAD  = 0: no confidently wrong answers.")
-    return counts["BAD"] == 0
+    print(f"TRACKING (what consumers steer on): {counts.get('_track', 0)} of {trials}, "
+          f"wrong (x/y > 10 cm or heading > 3 deg): {counts.get('_track_wrong', 0)}. This should be 0.")
+    return counts["BAD"] == 0 and counts.get("_track_wrong", 0) == 0
 
 
 def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutter=0.3, max_range=5.0,
               points=1500, seed=11, every=10, odom=True, odom_scale=0.03, odom_yaw_dps=0.3, odom_only=False,
               view=0, odom_drop=0.0, odom_resets=(), max_speed=3.0, background=0.0, mount=DEFAULT_MOUNT,
-              base_z=0.07, max_corr_m=0.05, min_neighbors=5):
-    """Fly a route in simulation, frame by frame, the way the live node tracks: the localizer starts on
+              base_z=0.07, max_corr_m=0.05, min_neighbors=5, on_frame=None):
+    """on_frame(i, T_true, T_est, status, cloud_cam, err_m, hdg_err_deg), if given, is called after every
+    frame (sim_gif.py uses it to draw frames). Without view it gets one lap.
+
+    Fly a route in simulation, frame by frame, the way the live node tracks: the localizer starts on
     the launch mark facing 90 deg (north, along the guideline) and each frame starts from the previous
     estimate. The drone sits on the mark (camera ~0.2 m up), climbs to the route height, then follows
     the route's waypoints_enu at `speed` m/s, one frame every 1/rate s.
@@ -1152,7 +1203,7 @@ def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutte
             loc.reset(start())
             print(f"\n--- lap {lap} ---")
         print("   t(s)  true x,y,h        est x,y,h         pos err  hdg err  status    measured x/y/h/hdg")
-        perr, herr, stat = [], [], {}
+        perr, herr, stat, trk = [], [], {}, []
         T_prev, gap, odt = None, 1, 1.0 / rate
         for i, (p, yw) in enumerate(zip(P, yaws)):
             t_frame = time.monotonic()
@@ -1178,14 +1229,18 @@ def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutte
                 gap += 1
             tracker.truth = {"position": T_true[:3, 3].round(3).tolist(),
                              "forward": (T_true[:3, :3] @ R_OPT_TO_FLU.T)[:, 0].round(3).tolist()}
-            tracker.process(simulate_view(model, T_true, rng, max_range=max(5.0, max_range), outliers=clutter,
-                                          background=background),
-                            delta, odt if delta is not None else 1.0 / rate)
+            cloud = simulate_view(model, T_true, rng, max_range=max(5.0, max_range), outliers=clutter,
+                                  background=background)
+            tracker.process(cloud, delta, odt if delta is not None else 1.0 / rate)
             e = np.linalg.norm(loc.T[:3, 3] - T_true[:3, 3])
             h = abs((pose_angles(loc.T)[0] - yw + 180) % 360 - 180)
+            if on_frame is not None:
+                on_frame(i, T_true, loc.T.copy(), loc.status, cloud, e, h)
             perr.append(e)
             herr.append(h)
             stat[loc.status] = stat.get(loc.status, 0) + 1
+            if loc.status == "tracking":                              # what a consumer would steer on
+                trk.append((np.linalg.norm(loc.T[:2, 3] - T_true[:2, 3]), h))
             if i % every == 0 or i == len(P) - 1:
                 m = loc.measured
                 ms = "/".join(f"{100 * m.get(k, 0):.0f}" for k in ("x", "y", "height", "heading")) if m else "-"
@@ -1200,6 +1255,12 @@ def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutte
               f"max {100 * perr.max():.0f} cm, final {100 * perr[-1]:.0f} cm")
         print(f"heading error:  median {np.median(herr):.1f}°, 90% {np.percentile(herr, 90):.1f}°, max {herr.max():.1f}°",
               flush=True)
+        if trk:
+            tx, th = np.asarray(trk).T
+            print(f"tracking frames: {len(trk)} of {len(P)}; x/y error median {100 * np.median(tx):.0f} cm, "
+                  f"max {100 * tx.max():.0f} cm; heading max {th.max():.1f}°", flush=True)
+        else:
+            print("tracking frames: none", flush=True)
         if not view:
             return perr, herr
 
