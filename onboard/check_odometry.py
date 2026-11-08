@@ -8,7 +8,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'examples'))
-from hover_land import TestFlight, ros_arguments
+from hover_land import TestFlight, ros_arguments, LAND_STATUS_MAX_AGE
 import rclpy
 
 
@@ -30,6 +30,7 @@ class OdometryCheck(TestFlight):
         self.seconds = seconds
         self.started = time.monotonic()
         self.ready_since = None
+        self.last_problem = object()
         self.last_report = -math.inf
         self.passed = False
         self.last_ros_time = self.clock_seconds()
@@ -45,7 +46,7 @@ class OdometryCheck(TestFlight):
             return 'vehicle is not disarmed'
         if self.status.failsafe:
             return 'PX4 failsafe is active'
-        if self.landed is not True or not 0 <= now-self.landed_time <= 1.0:
+        if self.landed is not True or not 0 <= now-self.landed_time <= LAND_STATUS_MAX_AGE:
             return 'fresh landed state missing'
         if not self.position_ready(now):
             return 'position/heading invalid'
@@ -63,10 +64,11 @@ class OdometryCheck(TestFlight):
             self.ready_since = None
         elif self.ready_since is None:
             self.ready_since = wall
-        if wall-self.last_report >= 1.0:
+        if wall-self.last_report >= 1.0 or problem != self.last_problem:
             print(json.dumps({'elapsed_s': round(wall-self.started, 2), 'ready': problem is None,
-                              'reason': problem, 'kind': 'passive preflight; no flight commands'}), flush=True)
+                              'reason': problem, 'detail': self.vision_diagnostics(ros_now) if problem else None, 'ready_for_s': 0 if self.ready_since is None else wall-self.ready_since, 'kind': 'passive preflight; no flight commands'}), flush=True)
             self.last_report = wall
+            self.last_problem = problem
         if wall-self.started >= self.seconds:
             self.passed = self.ready_since is not None and wall-self.ready_since >= 5.0
             self.phase = 'DONE' if self.passed else 'ABORT'

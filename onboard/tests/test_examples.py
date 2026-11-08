@@ -499,3 +499,13 @@ def test_skew_outside_bridge_budget_still_rejected(example, which):
     assert n.vision_problem(n.now) is not None
     n.tick()
     assert not n.command_pub.messages
+
+
+def test_land_status_one_hz_jitter_and_expiry(example):
+    n = ready(example)
+    n.landed_time = n.now - 1.125
+    n.tick()
+    assert n.phase == 'PRIME'
+    n.landed_time = n.now - 2.625
+    n.tick()
+    assert n.phase == 'WAIT' and not n.command_pub.messages

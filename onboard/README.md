@@ -194,7 +194,7 @@ Do not describe the yaw plan as a passing flight or as hardware-qualified.
 
 Software validation: the original three scripts passed 207 inert-ROS unit tests.
 This PR additionally tests diagnostics, passive-checker publication prevention,
-and gate-health rejection cases; the corrected full suite has **253 tests**. Python compilation and
+and gate-health rejection cases; the corrected full suite has **256 tests**. Python compilation and
 Git whitespace checks passed. No real flight or new simulator flight was
 performed while preparing the PR. Syntax/import checks of the original saved
 scripts passed in the FlyX companion before the user's subsequent yaw attempt.
@@ -224,7 +224,7 @@ Samples beyond 5 ms ahead and stale/frozen/invalid data still fail. This is a
 bounded timestamp-compatibility fix, not permission to ignore tracking loss.
 
 Regression evidence: nine added timing/skew cases fail against commit `6d63535`
-and pass after the correction; the full suite has **253 passing tests**. Source:
+and pass after the correction; the full suite has **256 passing tests**. Source:
 [PX4 EKF2 implementation](https://github.com/PX4/PX4-Autopilot/blob/main/src/modules/ekf2/EKF2.cpp),
 `EKF2::PublishStatusFlags` (also checked in the installed simulator source).
 The user's original failures remain failures; this software correction alone
@@ -240,3 +240,11 @@ rate is reduced from 30 to **10 degrees/s** (18 s for 180 degrees) as a conserva
 tracking-demand change. The covariance, health and freshness requirements are
 retained. Only a new recorded flight can establish whether this rate resolves
 the yaw maneuver; the old failure is not reclassified.
+
+Live passive checks also exposed the same 1 Hz publication issue for PX4
+`VehicleLandDetected` (confirmed in `LandDetector.cpp`). It now has a 2.5 s
+receipt-age budget for preflight and ground confirmation. False landed reports
+still block startup; expired reports still block arming/confirmation. The passive
+checker records readiness transitions and finishes using wall time while
+rejecting a stopped ROS clock. It permits ROS parameter events and suppresses
+all `/fmu/in/` publishers. No airborne test result is implied by these bench fixes.

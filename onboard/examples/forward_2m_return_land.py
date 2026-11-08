@@ -62,6 +62,7 @@ SOURCE_FUTURE_TOLERANCE = 0.005
 # PX4 publishes EstimatorStatusFlags at ~1 Hz, plus changes. Two periods
 # and 0.5 s transport/scheduling margin avoid treating ordinary cadence as loss.
 FUSION_STATUS_MAX_AGE = 2.5
+LAND_STATUS_MAX_AGE = 2.5  # Also published at 1 Hz and on state changes.
 
 
 
@@ -470,7 +471,7 @@ class TestFlight(Node):
             if armed and self.status.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LAND:
                 self.auto_land_observed = True
             if not armed:
-                if self.landed is True and now - self.landed_time <= 1.0:
+                if self.landed is True and now - self.landed_time <= LAND_STATUS_MAX_AGE:
                     self.get_logger().info("Landed and disarmed")
                     self.phase = "DONE"
                 else:
@@ -480,7 +481,7 @@ class TestFlight(Node):
                         self.phase = "ABORT"
                         return
                     # Status and land detection arrive independently. Keep the
-                    # one-second freshness requirement; wait for a new ground
+                    # bounded land-status freshness requirement; wait for a new ground
                     # report without publishing anything to a disarmed vehicle.
                     if self.ground_confirmation_started is None:
                         self.ground_confirmation_started = now
@@ -537,7 +538,7 @@ class TestFlight(Node):
                 self.phase = "ABORT"
             return
 
-        ground_ready = self.landed is True and 0 <= now - self.landed_time <= 1.0
+        ground_ready = self.landed is True and 0 <= now - self.landed_time <= LAND_STATUS_MAX_AGE
         if self.phase == "WAIT":
             if armed or not ground_ready or not self.position_ready(now):
                 if now - self.last_wait_log >= 5.0:
