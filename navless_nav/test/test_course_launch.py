@@ -94,3 +94,33 @@ def test_gate_b_launch_flies_the_base_speeds_with_the_turn_cap():
         assert gate_b[name] == base[name], name
     assert float(gate_b['max_turn_sagitta_m']) == 0.08
     assert gate_b['route_file'] != _arguments(COURSE)['route_file']
+
+
+NODE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'navless_nav', 'course_mission.py')
+
+
+def _node_defaults():
+    """name -> default from course_mission.py's PARAMETERS (constants only)."""
+    return {e.elts[0].value: e.elts[1].value for e in _assigned(_tree(NODE), 'PARAMETERS').elts
+            if isinstance(e.elts[1], ast.Constant)}
+
+
+def _same(launch_value, node_value):
+    if isinstance(node_value, bool):
+        return launch_value.lower() == str(node_value).lower()
+    if isinstance(node_value, (int, float)):
+        return float(launch_value) == float(node_value)
+    return launch_value == node_value
+
+
+def test_base_launch_defaults_match_the_node():
+    # navless.launch.py passes every MISSION_PARAMS argument to course_mission, so its default wins
+    # over the node's. On 2026-11-07 the node's prearm_height_tol_m went to 0.30 (skybeta-19's
+    # PX4 height sits ~0.19 m above odom) while this file still passed 0.15, and the course mission
+    # on 19 would have refused every takeover. Change a default in both places, or not at all.
+    base, node = _arguments(BASE), _node_defaults()
+    forwarded = {e.value for e in _assigned(_tree(BASE), 'MISSION_PARAMS').elts}
+    shared = sorted(forwarded & set(base) & set(node))
+    assert 'prearm_height_tol_m' in shared and 'takeoff_timeout_s' in shared
+    differ = [(n, base[n], node[n]) for n in shared if not _same(base[n], node[n])]
+    assert differ == [], differ
