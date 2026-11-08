@@ -334,7 +334,7 @@ class OdomCorrection:
     13-22 cm. Double that drift: median 25 cm but it falls behind late (max 1.35 m). It does not handle VSLAM
     reset jumps (1.5 m): those are rejected."""
 
-    def __init__(self, T_nom_se2, tau_s=1.5, max_rate_mps=0.08, max_rate_dps=3.0, max_m=3.0, max_deg=40.0,
+    def __init__(self, T_nom_se2, tau_s=1.5, max_rate_mps=0.08, max_rate_dps=3.0, max_m=3.0, max_deg=20.0,
                  stale_s=3.0, jump_m=0.15, jump_deg=3.0, confirm_n=3):
         self.T_nom = se2(*T_nom_se2)
         self.tau, self.rate_m, self.rate_rad = tau_s, max_rate_mps, math.radians(max_rate_dps)
@@ -1593,7 +1593,9 @@ def main():
             self.odom_corr = OdomCorrection(
                 se2_of(self.T_base0), tau_s=p("corr_tau_s", 1.5), max_rate_mps=p("corr_max_rate_mps", 0.08),
                 max_rate_dps=p("corr_max_rate_dps", 3.0), max_m=p("corr_max_m", 3.0),
-                max_deg=p("corr_max_deg", 40.0), stale_s=p("corr_stale_s", 3.0),
+                # 20 deg (was 40): a real start-heading error is a few degrees plus cuVSLAM heading drift; a
+                # 2026-11-08 walk drifted the correction to 30 deg on poor matches. Bigger measurements are rejected.
+                max_deg=p("corr_max_deg", 20.0), stale_s=p("corr_stale_s", 3.0),
                 jump_m=p("corr_jump_m", 0.15), jump_deg=p("corr_jump_deg", 3.0), confirm_n=int(p("corr_confirm_n", 3)))
             self.corr_statuses = tuple(s.strip() for s in str(p("corr_statuses", ",".join(CORR_STATUSES))).split(",") if s.strip())
             self.create_subscription(PointCloud2, p("cloud_topic", "/team/stereo/points"), self.on_cloud, 2)

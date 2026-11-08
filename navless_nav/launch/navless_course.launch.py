@@ -45,11 +45,11 @@ ARGUMENTS = [
     ('drift_correction', 'true', 'learn and cancel a steady push while the target stands still (takeoff settle, hold)'),
     ('drift_apply_in_route', 'true', 'keep cancelling the learned (body-fixed) push along the route'),
     ('flight_log', 'true', 'write the flight recorder CSV to ~/team_ws/flight_logs'),
-    # skybeta-19 slid 25-40 cm to its LEFT at liftoff (2026-11-07/08 logs), partly while other
-    # commanders were also running; with those stopped the team expects less, so lean 15 cm right from
-    # the start of the climb (was 0.28); the drift correction refines it once above 0.4 m. 0 = off.
+    # skybeta-19 slid 25-40 cm to its LEFT at every liftoff (2026-11-07/08 logs; 24 cm even with a 15 cm
+    # lean on 2026-11-08 133310, 4 cm from the west net): lean 30 cm right from the start of the climb;
+    # the drift correction refines it once above 0.4 m. 0 = off.
     ('drift_seed_body_x_m', '0.0', 'takeoff slide pre-compensation, body forward, m'),
-    ('drift_seed_body_y_m', '-0.15', 'takeoff slide pre-compensation, body left, m (negative = lean right)'),
+    ('drift_seed_body_y_m', '-0.30', 'takeoff slide pre-compensation, body left, m (negative = lean right)'),
     ('route_source', 'planner', "'planner' (EGO planner) or 'file' (fly route_file as exported: the gated drone19 routes)"),
     # Team decision (Shining, 2026-11-08): Favour's planner WITH localization. `localizer` (below) starts
     # depthcloud/cloud_localize.py on the as-built course, fed by stereo_cloud's /team/stereo/points; its
@@ -112,7 +112,9 @@ ARGUMENTS = [
     # all rotation from cuVSLAM, walls fix position only; 'free' = the original 6-direction match.
     ('localizer_rot_mode', 'yaw', "cloud_localize rotation source: 'yaw' (default), 'none' or 'free'"),
     ('localizer_yaw_corr_deg', '0.3', 'cloud_localize: largest heading trim per frame in yaw mode, deg'),
-    ('replan_on_obstacles', 'true',
+    # Off for the scored runs (Shining, 2026-11-08): on 19 it re-planned around phantom obstacles while
+    # the drone sat on the ground (114307), and it was never gated. replan_on_obstacles:=true turns it on.
+    ('replan_on_obstacles', 'false',
      'replan around live stereo depth discrepancies on the as-built 3D occupancy map'),
 ]
 

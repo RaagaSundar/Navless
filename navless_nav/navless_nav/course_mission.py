@@ -381,7 +381,7 @@ PARAMETERS = (
     ('wall_correction_rate_mps', 0.12),
     ('wall_correction_rate_dps', 4.5),
     ('wall_correction_max_m', 3.0),       # messages beyond these are ignored
-    ('wall_correction_max_deg', 40.0),
+    ('wall_correction_max_deg', 20.0),   # matches cloud_localize's corr_max_deg
     # Camera pad landing, off by default. The course (and the pad's place on
     # it) can change, so the pad is found by camera, not taken from the map:
     # pad_observer.py publishes every pad fix it sees (/team/pad/center, raw
