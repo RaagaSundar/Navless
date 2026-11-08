@@ -94,3 +94,17 @@ def test_easing_reaches_a_pure_shift_at_the_linear_rate():
     node.position = (1.0, 2.0, 0.0)
     cur = node.ease_correction((0.0, 0.0, 0.0), (0.5, 0.0, 0.0), 1.0)
     assert math.isclose(cur[0], node.corr_rate_m) and cur[1] == 0.0 and cur[2] == 0.0
+
+
+def test_floor_points_below_the_limit_never_reach_the_obstacle_map():
+    import numpy as np
+    pts = np.array([[0.0, 0.0, 0.16], [0.0, 0.0, 0.29], [0.0, 0.0, 0.30], [1.0, 1.0, 0.53], [1.0, 1.0, 1.7]])
+    kept = cm.drop_floor_points(pts, 0.30)
+    assert kept[:, 2].tolist() == [0.30, 0.53, 1.7]
+    assert len(cm.drop_floor_points(pts, 0.0)) == len(pts)             # 0 = off
+    assert len(cm.drop_floor_points(np.zeros((0, 3)), 0.30)) == 0
+
+
+def test_floor_filter_default_keeps_boulders_and_walls():
+    node = node_with(route_file=WINDOW)
+    assert 0.15 < node.obstacle_min_height < 0.53                     # boulders are 0.53 m tall

@@ -29,6 +29,10 @@ States (10 Hz timer):
                        terrain estimate, and with EV_CTRL 9 nothing pulls it
                        back); flight_interface passes odom z to PX4 unchanged,
                        so every setpoint would then be flown that far off.
+                       A steady offset within prearm_height_tol_m (19: ~0.19
+                       m) is measured here and added to every height sent
+                       (match_px4_height). Both PX4's heading and the
+                       camera's must agree too (prearm_heading_tol_deg).
                        With no stream, flight_interface refuses the takeover
                        and the pilot keeps Position.
     REFUSED            Offboard came anyway while the heights disagreed (the
@@ -128,6 +132,19 @@ def wrap_pi(a):
     """Angle wrapped to [-pi, pi)."""
     return (a + math.pi) % (2.0 * math.pi) - math.pi
 
+
+def drop_floor_points(pts, min_height_m):
+    """Live stereo points (N x 3, course frame, z up from the floor) without
+    those below min_height_m, before they go into the planner's obstacle map.
+    The decoder already drops z < 0.15 m, but it places points with the
+    drone's yaw only: pitched forward in flight (~5 deg), the floor 2-3 m ahead
+    lands 0.15-0.25 m up and, inflated, blocks detours. Nothing that matters
+    to the drone at flight height is lower than this (boulders 0.53 m, walls
+    1.73 m)."""
+    if pts is None or len(pts) == 0 or min_height_m <= 0.0:
+        return pts
+    return pts[pts[:, 2] >= min_height_m]
+
 # The tube (course_v3.json `tunnel`: footprint x 182-240 in, y 108-168 in,
 # axis north-south, "Dark inside"), in course metres (in * 0.0254 - 3.048).
 TUBE_X = (1.5748, 3.048)
@@ -213,12 +230,12 @@ PARAMETERS = (
     # Bonus return leg after the pad landing. Off by default. When on, the
     # pilot's next arming climbs to home_altitude_m (above the floor; the
     # walls are 1.727 m), flies straight over the wall to the launch mark and
-    # lands there. At 2.2 m the feet clear the wall by ~0.38 m (~0.18 m if
-    # PX4 flies 0.20 m low, the most the pre-arm check holds a pass for:
-    # prearm_height_tol_m 0.15 + PREARM_HYSTERESIS_M 0.05). The ceiling is
+    # lands there. At 2.2 m the feet clear the wall by ~0.38 m; PX4's floor
+    # offset is flown out (match_px4_height), so that holds. The ceiling is
     # navless.launch.py's max_altitude_m 2.5 m above the odom origin (2.57 m
     # above the floor; flight_interface's own default is 3.0): the 2.13 m
-    # odom setpoint stays 0.37 m under it. Lower that clamp and this too.
+    # odom setpoint plus PX4's offset (~0.19 m on 19) stays under it. Lower
+    # that clamp and this too.
     ('fly_home', False),
     ('home_altitude_m', 2.2),
     # The hop's horizontal leg starts only once odom z, or PX4's own height,
@@ -232,11 +249,21 @@ PARAMETERS = (
     ('home_arrival_radius_m', 0.10),
     # Pre-arm height check (see WAIT_FOR_OFFBOARD). Largest |PX4 z - odom z|
     # we will take off with, m; 0 = off. Assumes flight_interface's
-    # anchor_setpoints is false (its default, and navless.launch.py's). The
-    # Gazebo stand-in reports PX4's height in world z, start_height_m above
-    # odom, hence the margin over the 0.07 m stand-in offset.
-    ('prearm_height_tol_m', 0.15),
+    # anchor_setpoints is false (its default, and navless.launch.py's): odom
+    # z goes to PX4 unchanged. It refuses the ~0.6 m boot error (EKF2 parking
+    # it in its terrain estimate). It was 0.15, but on skybeta-19 PX4 read
+    # 0.185-0.198 m above odom on the floor in all three 2026-11-07 test
+    # logs, so the course mission would never have taken over; with
+    # match_px4_height that steady offset is measured and flown out.
+    ('prearm_height_tol_m', 0.30),
     ('prearm_settle_s', 2.0),     # ...and for this long without a break
+    # Add PX4's height minus odom's, measured on the floor (median of the last
+    # 2 s of the pre-arm check, latched at takeoff), to every height sent.
+    # PX4 holds its own z at the setpoint, so without this the whole flight is
+    # flown that far off the route's heights (19: ~0.19 m low). 19 is only
+    # 0.116 m tall, so its PX4 z of ~0.19 m on the floor is an offset, not a
+    # height; odom (start_height_m above the floor) is the reference.
+    ('match_px4_height', True),
     # The tube is dark inside, so cuVSLAM may lose tracking there. Off: a VIO
     # loss freezes the carrot, which in the tube means hovering blind until
     # PX4's dead reckoning times out (EKF2_NOAID_TOUT, 5 s on the fleet) and
@@ -267,6 +294,9 @@ PARAMETERS = (
     ('tof_tube_rate_mps', 0.10),
     ('tof_tube_timeout_s', 0.3),
     ('replan_on_obstacles', True),
+    # Live stereo points lower than this (above the floor) never enter the
+    # obstacle map: tilted-camera floor returns otherwise block detours.
+    ('obstacle_min_height_m', 0.30),
     # 'planner' (Favour's EGO planner, default) or 'file' (fly route_file as
     # exported: Raaga's gated routes; no planning, no re-planning).
     ('route_source', 'planner'),
@@ -354,6 +384,10 @@ class CourseMission(Node):
         self.going_home = False
         self.prearm_tol = param('prearm_height_tol_m')
         self.prearm_settle = param('prearm_settle_s')
+        self.match_height = str(self.get_parameter('match_px4_height').value
+                                ).lower() in ('true', '1')
+        self.z_samples = []         # PX4 z - odom z on the floor, last 2 s
+        self.z_offset = 0.0         # added to every height sent (see send)
         self.px4_z = None           # PX4's last valid height (local_enu z)
         self.px4_z_at = None
         self.px4_pos = None         # PX4's position (local_enu), odom-comparable
@@ -419,6 +453,7 @@ class CourseMission(Node):
             source = 'planner'
         self.static_asbuilt_route = source == 'file'
         self.replan_on_obstacles = str(self.get_parameter('replan_on_obstacles').value).lower() in ('true', '1')
+        self.obstacle_min_height = param('obstacle_min_height_m')
         self.planner_cfg, self.planner_grid, self.planner_router = create_live_course_planner()
         self.live_grid_updated = False
         self.last_replan_at = 0.0
@@ -544,8 +579,8 @@ class CourseMission(Node):
         yaw_enu = 0.5 * math.pi - math.radians(self.frame[1])
         if self.yaw is not None:
             yaw_enu = wrap_pi(yaw_enu + self.yaw - self.corr[2])
-        pts_world = decode_ros_pointcloud2_optical(
-            msg, cur_course, yaw_enu, max_depth_m=2.80)
+        pts_world = drop_floor_points(decode_ros_pointcloud2_optical(
+            msg, cur_course, yaw_enu, max_depth_m=2.80), self.obstacle_min_height)
         if pts_world.size > 0:
             n_added = self.planner_grid.insert_point_cloud(
                 pts_world, sensor_origin_m=cur_course, min_live_hits=2)
@@ -819,6 +854,8 @@ class CourseMission(Node):
                 self.info_once(
                     'fenced', f'setpoint pulled inside the net (margin '
                     f'{self.net_margin:.2f} m); route or start bearing wrong?')
+        # PX4 holds its own z at the setpoint: send heights in PX4's frame.
+        z = z + self.z_offset
         self.last_pose = (x, y, z)
         self.publish_pose(x, y, z, self.heading_cmd())
 
@@ -962,10 +999,13 @@ class CourseMission(Node):
         if state in IDLE_STATES:
             self.release_heading()      # every takeoff latches its own
         if state == 'WAIT_FOR_OFFBOARD':
-            # Every arming (the fly_home re-arm on the pad too) re-checks.
+            # Every arming (the fly_home re-arm on the pad too) re-checks,
+            # and re-measures PX4's floor offset.
             self.heights_agree_since = None
             self.prearm_passed = False
             self.prearm_anchor_pos = None
+            self.z_samples = []
+            self.z_offset = 0.0
 
     def zero_launch_origin(self):
         """Anchor odom_zero_offset so where the drone is when armed counts as the launch mark (0, 0, 0)."""
@@ -1027,6 +1067,17 @@ class CourseMission(Node):
         fresh = (self.px4_z is not None
                  and now - self.px4_z_at <= PREARM_PX4_TIMEOUT_S)
         dz = abs(self.px4_z - raw_pos[2]) if fresh else None
+        # PX4's floor offset against RAW odom z (publish_pose adds
+        # odom_zero_offset back, so PX4 holds its z at raw odom + this): the
+        # median of the last 2 s (20 ticks), so one noisy sample does not set
+        # it. It stops updating at takeoff (this runs only while waiting),
+        # which latches it.
+        if fresh:
+            self.z_samples = (self.z_samples + [self.px4_z - raw_pos[2]])[-20:]
+            if self.match_height:
+                self.z_offset = sorted(self.z_samples)[len(self.z_samples) // 2]
+        else:
+            self.z_samples = []
         # Hysteresis: pass at prearm_height_tol_m held for prearm_settle_s;
         # once passed, only a clear disagreement (PREARM_HYSTERESIS_M more)
         # or no PX4 height for PREARM_PX4_TIMEOUT_S revokes it. Otherwise
@@ -1128,6 +1179,11 @@ class CourseMission(Node):
             self.zero_launch_origin()
         self.goto('TAKEOFF', self.takeoff_target())
         self.latch_heading()
+        if self.match_height:
+            self.get_logger().info(
+                f'PX4 reads {self.z_offset * 100:+.1f} cm from odom on the floor '
+                f'(median of {len(self.z_samples)} samples): added to every '
+                'height sent, so the route\'s heights are flown as planned.')
         self._state_takeoff()       # climb on this tick, not the next one
 
     def takeoff_target(self):
@@ -1202,7 +1258,7 @@ class CourseMission(Node):
         return (self.position[2] >= need
                 or (self.px4_z is not None
                     and self.now_s() - self.px4_z_at <= PREARM_PX4_TIMEOUT_S
-                    and (self.px4_z - self.odom_zero_offset[2]) >= need))
+                    and (self.px4_z - self.z_offset - self.odom_zero_offset[2]) >= need))
 
     def start_route(self):
         if not self.route:

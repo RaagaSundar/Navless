@@ -32,7 +32,9 @@ ARGUMENTS = [
      'climb target this far up the route\'s first leg (away from Barrier 1 '
      'behind the launch mark), m; 0 = straight up'),
     ('arrival_radius_m', '0.25', 'how close counts as arrived, metres'),
-    ('takeoff_timeout_s', '15.0', 'give up climbing and hold after this'),
+    ('takeoff_timeout_s', '30.0',
+     'give up waiting for the climb to settle after this: start the route if '
+     'within arrival_radius_m, else hold'),
     ('route_file', 'route_gate_b.json',
      'planner route: absolute, or relative to the Navless repo root'),
     ('start_bearing_deg', '0.0',
@@ -57,7 +59,7 @@ ARGUMENTS = [
      'fly-home: start the leg over the wall only this close to hop height, m'),
     ('home_arrival_radius_m', '0.10',
      'fly-home: land only this close to the launch mark (Barrier 1 is behind it), m'),
-    ('prearm_height_tol_m', '0.15',
+    ('prearm_height_tol_m', '0.30',
      'pre-arm check: no setpoint stream (so no takeover) until PX4 height '
      'and odom z agree to this, m; 0 = off'),
     ('prearm_settle_s', '2.0',

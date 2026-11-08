@@ -86,7 +86,7 @@ def test_no_local_position_from_px4_blocks_the_stream():
 def test_a_glitch_restarts_the_settle():
     node, px4, pos = make()
     assert ticks(node, px4, pos, 1.5) == []
-    h.Z_BIAS[0] = 0.3
+    h.Z_BIAS[0] = 0.4                           # past prearm_height_tol_m (0.30)
     assert tick(node, px4, pos) == []
     h.Z_BIAS[0] = 0.0
     assert ticks(node, px4, pos, 1.9) == []
@@ -95,20 +95,21 @@ def test_a_glitch_restarts_the_settle():
 
 def test_noise_at_the_threshold_after_passing_keeps_streaming():
     node, px4, pos = make()
-    h.Z_BIAS[0] = 0.14
-    ticks(node, px4, pos, 2.5)                  # passed
-    for i in range(30):                         # 0.14 / 0.17 / 0.19 m, alternating
-        h.Z_BIAS[0] = (0.14, 0.17, 0.19)[i % 3]
+    h.Z_BIAS[0] = 0.29
+    ticks(node, px4, pos, 2.5)                  # passed (limit 0.30)
+    for i in range(30):                         # 0.29 / 0.32 / 0.34 m, alternating
+        h.Z_BIAS[0] = (0.29, 0.32, 0.34)[i % 3]   # under the 0.35 revoke
         assert poses(tick(node, px4, pos))
 
 
 def test_takeover_right_after_a_threshold_blip_still_takes_off():
     # Gazebo, simulated pilot: it armed at a 0.15 m boot offset, one noisy
     # sample dropped the old check, and the takeover became a REFUSED descent.
+    # Same at today's limit (0.30): armed at it, one sample just over.
     node, px4, pos = make()
-    h.Z_BIAS[0] = 0.15
+    h.Z_BIAS[0] = 0.30
     ticks(node, px4, pos, 2.5)
-    h.Z_BIAS[0] = 0.16
+    h.Z_BIAS[0] = 0.31
     tick(node, px4, pos)
     h.arm(px4)
     tick(node, px4, pos)
@@ -118,7 +119,7 @@ def test_takeover_right_after_a_threshold_blip_still_takes_off():
 def test_a_clear_disagreement_after_passing_still_revokes():
     node, px4, pos = make()
     ticks(node, px4, pos, 2.5)
-    h.Z_BIAS[0] = 0.25
+    h.Z_BIAS[0] = 0.45                          # past 0.30 + the 0.05 hysteresis
     tick(node, px4, pos)
     assert ticks(node, px4, pos, 2.0) == []
 
