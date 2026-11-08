@@ -34,6 +34,8 @@ class Fake(Node):
     def __init__(self, start_yaw_deg, arm_after_s, fail, offset=(0.0, 0.0, 0.0)):
         super().__init__('fake_vehicle')
         self.off = (offset[0], offset[1], math.radians(offset[2]))
+        import os
+        self.push = tuple(float(v) for v in os.environ.get('FAKE_PUSH', '0,0').split(','))
         self.px4_pub = self.create_publisher(VehicleLocalPosition, '/fmu/out/vehicle_local_position', PX4_QOS)
         self.x, self.y, self.z, self.yaw = 0.0, 0.0, 0.07, math.radians(start_yaw_deg)
         self.vz = 0.0
@@ -86,6 +88,9 @@ class Fake(Node):
                 if pyaw is not None:
                     e = (pyaw - self.yaw + math.pi) % (2 * math.pi) - math.pi
                     self.yaw += max(-math.radians(60) * self.dt, min(math.radians(60) * self.dt, e))
+        if self.z > 0.15:                                  # a steady push while airborne (FAKE_PUSH="vx,vy" m/s):
+            vx += self.push[0]                             # with the P controller above it leaves a steady
+            vy += self.push[1]                             # offset of 0.5 s x push, like the real drone's 13 cm
         self.x += vx * self.dt
         self.y += vy * self.dt
         self.z = max(0.07, self.z + vz * self.dt)

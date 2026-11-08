@@ -92,7 +92,7 @@ LOG_COLUMNS = [
     'odom_x', 'odom_y', 'odom_z', 'odom_yaw_deg', 'odom_age_s', 'vo_state',
     'off_x', 'off_y', 'off_z', 'off_yaw_deg',
     'sp_kind', 'sp_x', 'sp_y', 'sp_z', 'sp_yaw_deg', 'sp_vx', 'sp_vy', 'sp_vz',
-    'carrot_err_xy', 'carrot_err_z',
+    'carrot_err_xy', 'carrot_err_z', 'corr_x', 'corr_y',
     'ekf_ev_pos', 'ekf_ev_yaw', 'ekf_ev_hgt', 'ekf_rng_hgt', 'ekf_mag_hdg', 'ekf_mag_3d', 'ekf_yaw_align',
 ]
 
@@ -145,7 +145,13 @@ class BasicFlight(Node):
              'yaw_rate_dps': 30.0, 'forward_m': 2.0, 'speed_mps': 0.4, 'climb_speed_mps': 0.4,
              'land_speed_mps': 0.3, 'land_xy_max_mps': 0.2, 'arrive_xy_m': 0.15, 'arrive_z_m': 0.10,
              'arrive_yaw_deg': 5.0, 'step_timeout_s': 20.0, 'odom_timeout_s': 0.5, 'rate_hz': 20.0,
-             'log_dir': '/root/team_ws/flight_logs'}
+             'log_dir': '/root/team_ws/flight_logs',
+             # Drift correction: PX4 leaves a steady horizontal offset when something keeps pushing the
+             # drone (13 cm in the 2026-11-07 yaw flight). Slowly move the commanded point the other way
+             # so the drone itself sits on the target. Integral action on our setpoint only: PX4's
+             # parameters are untouched.
+             'drift_correction': True, 'drift_ki': 0.3, 'drift_max_m': 0.20, 'drift_deadband_m': 0.02,
+             'drift_max_error_m': 0.40, 'drift_min_height_m': 0.40}
         for k, v in d.items():
             self.declare_parameter(k, v)
         self.p = {k: self.get_parameter(k).value for k in d}
@@ -171,6 +177,7 @@ class BasicFlight(Node):
         self.px4_resets = (None, None, None, None)
         self.px4_at = None
         self.sp = {}                       # last setpoint sent, for the log
+        self.corr = [0.0, 0.0]             # drift correction added to the carrot (x, y), metres
         self.note = ''
         self.log = FlightLog(str(self.p['log_dir']), self.test)
         self.odom_pos = self.odom_yaw = None   # cuVSLAM's, for the vision-health check and offset log
@@ -282,7 +289,7 @@ class BasicFlight(Node):
         v.update(self.sp)
         if self.carrot is not None and self.pos is not None:
             v.update(carrot_err_xy=math.hypot(self.pos[0] - self.carrot[0], self.pos[1] - self.carrot[1]),
-                     carrot_err_z=self.pos[2] - self.carrot[2])
+                     carrot_err_z=self.pos[2] - self.carrot[2], corr_x=self.corr[0], corr_y=self.corr[1])
         v.update({f'ekf_{k}': x for k, x in self.ekf.items()})
         self.log.row(v)
 
@@ -383,6 +390,39 @@ class BasicFlight(Node):
         kind, arg = self.steps[self.i]
         self.event(f'{why} -> {kind}' + ('' if arg is None else f' {arg:.2f}'))
 
+    def update_drift_correction(self, c, z0, dt, fresh):
+        """Integral action on the commanded point: if the drone keeps sitting off the target (the carrot) in
+        one direction, move the command the other way, slowly, so the drone itself ends up on the target.
+        Only once airborne (drift_min_height_m above the start), only while the error is believable
+        (< drift_max_error_m: a bigger one is a tracking problem or a pilot, not a steady push), only from
+        fresh data, never inside the deadband, and capped at drift_max_m. Arrival checks still compare the
+        drone with the TRUE target, so the correction can't fake an arrival."""
+        if not bool(self.p['drift_correction']) or not fresh:
+            return
+        if self.steps[self.i][0] not in ('hold', 'yaw'):
+            # Only learn while the target stands still. During climbs and moves the drone lags the moving
+            # target by design; integrating that lag winds the correction up and overshoots the move
+            # (13 cm at each end of `forward` in the fake-vehicle test). Keep the learned value meanwhile.
+            return
+        if self.pos[2] < z0 + float(self.p['drift_min_height_m']):
+            return
+        ex, ey = c[0] - self.pos[0], c[1] - self.pos[1]          # target minus drone
+        e = math.hypot(ex, ey)
+        if e > float(self.p['drift_max_error_m']):
+            self.once(f'driftbig{self.i}', f'drift correction paused: {e:.2f} m from target is too far to be a '
+                      'steady push', warn=True)
+            return
+        if e <= float(self.p['drift_deadband_m']):
+            return
+        k = float(self.p['drift_ki']) * dt
+        cx, cy = self.corr[0] + k * ex, self.corr[1] + k * ey
+        n, lim = math.hypot(cx, cy), float(self.p['drift_max_m'])
+        if n > lim:
+            cx, cy = cx * lim / n, cy * lim / n
+            self.once('driftcap', f'drift correction at its {lim:.2f} m cap: something keeps pushing the drone '
+                      '(check the battery / centre of gravity, props).', warn=True)
+        self.corr = [cx, cy]
+
     def run_step(self):
         kind, arg = self.steps[self.i]
         dt = 1.0 / float(self.p['rate_hz'])
@@ -412,7 +452,8 @@ class BasicFlight(Node):
                     c[0], c[1] = gx, gy
                 else:
                     c[0], c[1] = c[0] + ex / n * s, c[1] + ey / n * s
-        self.send_pose(c[0], c[1], c[2], c[3])
+        self.update_drift_correction(c, z0, dt, fresh)
+        self.send_pose(c[0] + self.corr[0], c[1] + self.corr[1], c[2], c[3])
         # arrival: the carrot has reached its goal AND the drone is at the carrot
         at_xy = math.hypot(self.pos[0] - c[0], self.pos[1] - c[1]) <= float(self.p['arrive_xy_m'])
         at_z = abs(self.pos[2] - c[2]) <= float(self.p['arrive_z_m'])

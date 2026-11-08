@@ -23,6 +23,14 @@ These are three simple tests to find out whether skybeta-19 flies. They follow t
 
 PX4 is only ever told to stay where it already thinks it is, or to move relative to that. The offset (PX4 minus cuVSLAM, position and heading) is logged while waiting and at takeoff. No setpoints are streamed until both PX4's position and cuVSLAM's odometry are fresh, so without healthy vision `flight_interface` can't take over.
 
+**Drift correction** (`drift_correction`, on by default). In the 2026-11-07 yaw flight, PX4 sat a steady 13 cm off its hold point: it leaves a fixed offset when something keeps pushing the drone. The node slowly moves its commanded point the opposite way, so the drone itself ends up on the target. That's integral action on our setpoint only; PX4's parameters are untouched.
+- It only builds while the target stands still (holds and the yaw turn), once the drone is at least 0.4 m up, from fresh data, outside a 2 cm deadband, and while the error is under 0.4 m. A bigger error is a tracking problem or the pilot, not a steady push.
+- It's capped at 0.2 m, with a warning if it hits the cap.
+- The "have I arrived" checks still use the true target.
+- It's logged as `corr_x` / `corr_y`.
+- Fake-vehicle test with a steady push: hold error 12.9 cm without it, 1.7 cm with it.
+- It doesn't fix the drift during the takeoff climb itself (25 cm back-left in both real flights). That points to the airframe: battery position or centre of gravity, props.
+
 **Flight log.** Every run writes `~/team_ws/flight_logs/<time>_<test>.csv`, flushed every second, so a crash keeps the data. It has one row per control tick (20 Hz) from the moment the test is loaded, including the wait before arming:
 - **PX4:** position, velocity, heading, age, reset counters and the size of the last position reset;
 - **cuVSLAM:** position, heading, age and tracking state;
