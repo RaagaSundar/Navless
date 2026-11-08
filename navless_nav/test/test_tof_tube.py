@@ -220,8 +220,7 @@ def test_closed_loop_on_the_course_model(off_centre):
 def test_launch_is_opt_in_and_forwarded():
     import test_course_launch as launch
     assert launch._arguments(launch.BASE)['tof_tube_centering'] == 'false'
-    # off in the course launch too since 2026-11-08: 19's two side sensors are still mounted on one side
-    assert launch._arguments(launch.COURSE)['tof_tube_centering'] == 'false'
+    assert launch._arguments(launch.COURSE)['tof_tube_centering'] == 'true'  # qualified skybeta-19 defaults
     assert 'tof_tube_centering' in launch._forwarded(launch.COURSE)
     params = {e.value for e in launch._assigned(launch._tree(launch.BASE), 'MISSION_PARAMS').elts}
     assert {'tof_tube_centering', 'tof_tube_max_shift_m', 'tof_tube_rate_mps',

@@ -83,15 +83,16 @@ ARGUMENTS = [
     # fusion left only 3.9 cm clearance; with EKF2_MAG_TYPE=5, 4/4 passed with >=40 cm. Frozen
     # odometry must first be stopped by the PX4 odometry gate; blind carry never carries a frozen feed.
     ('blind_carry', 'true', 'dark tube: keep moving on PX4 estimate through a VIO loss (tube only)'),
-    ('tof', 'false', 'run the side ToF driver'),
-    ('tube', 'false', 'run tube_node (needs tof)'),
+    # On (Shining, 2026-11-08): both side ToF sensors are now mounted on their correct sides.
+    ('tof', 'true', 'run the side ToF driver'),
+    ('tube', 'true', 'run tube_node (needs tof)'),
     # The prop tips reach 0.1625 m past each sensor face (0.475 m wide with props, sensors 0.075 m
     # out): anything closer is the drone's own prop, or a wall the props already touch.
     ('tof_min_range_m', '0.18', 'tube_node: reject closer readings (raise until a hand-spun prop never shows)'),
     ('relay', 'false', 'run the read-only dashboard relay (TCP 8775)'),
     ('relay_img_hz', '0.0', 'relay camera thumbnails per second; keep 0 in flight'),
     ('stereo_tube_centering', 'false', 'experimental stereo centering; simulation validation only'),
-    ('tof_tube_centering', 'false',
+    ('tof_tube_centering', 'true',
      'steer toward the side ToF tube centre (needs tof and tube; check the sensors first)'),
     ('stereo_tube_cloud_topic', '/team/stereo/points', 'qualified calibrated stereo cloud'),
     ('stereo_cloud', 'true',
