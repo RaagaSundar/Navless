@@ -37,7 +37,7 @@ def start(yaw0=0.0, drift=0.0, hook=None, offset=None, **overrides):
     h.PX4_HOOK[0] = hook
     h.ODOM_OFFSET[0] = offset
     h.OVERRIDES.clear()
-    h.OVERRIDES.update(route_file='route_gate_b.json', cruise_speed_mps=1.0, **overrides)
+    h.OVERRIDES.update(route_file='route_gate_b.json', cruise_speed_mps=1.0, heading_mode='hold', **overrides)
     node = cm.CourseMission()
     px4 = {'armed': False, 'offboard_active': False, 'landed': True}
     pos = [0.0, 0.0, 0.0]
@@ -200,7 +200,7 @@ def test_prearm_waits_while_px4_heading_disagrees():
         h.reset_heading()
         h.PX4_HOOK[0] = px4_heading
         h.OVERRIDES.clear()
-        h.OVERRIDES.update(route_file='route_gate_b.json', cruise_speed_mps=1.0)
+        h.OVERRIDES.update(route_file='route_gate_b.json', cruise_speed_mps=1.0, heading_mode='hold')
         node = cm.CourseMission()
         px4 = {'armed': False, 'offboard_active': False, 'landed': True}
         pos = [0.0, 0.0, 0.0]
@@ -231,7 +231,7 @@ def test_route_waits_for_the_liftoff_slide_to_die_out():
     # start() arms at t = 2.6 s; the takeoff target is set on that tick, and
     # the slide starts at liftoff, the tick after.
     try:
-        node, px4, pos = start(offset=slide(2.7))
+        node, px4, pos = start(offset=slide(2.7), drift_correction=False)
         t = h.T[0]
         h.fly(node, px4, pos, lambda: node.state == 'ROUTE')
         waited = h.T[0] - t
@@ -240,7 +240,7 @@ def test_route_waits_for_the_liftoff_slide_to_die_out():
         h.fly(node, px4, pos, lambda: not px4['armed'])
         assert node.state == 'DONE'
         # Before: the route started as soon as it was within 25 cm.
-        node, px4, pos = start(offset=slide(2.7), takeoff_settle_s=0.0)
+        node, px4, pos = start(offset=slide(2.7), takeoff_settle_s=0.0, drift_correction=False)
         t = h.T[0]
         h.fly(node, px4, pos, lambda: node.state == 'ROUTE')
         assert h.T[0] - t < 2.0
@@ -251,7 +251,7 @@ def test_route_waits_for_the_liftoff_slide_to_die_out():
 def test_never_settling_falls_back_to_the_old_start():
     try:
         node, px4, pos = start(offset=lambda t: (0.0, 0.08, 0.0) if t >= 2.7 else (0.0, 0.0, 0.0),
-                               takeoff_timeout_s=6.0)
+                               takeoff_timeout_s=6.0, drift_correction=False)
         t = h.T[0]
         h.fly(node, px4, pos, lambda: node.state not in ('WAIT_FOR_OFFBOARD', 'TAKEOFF'))
         assert node.state == 'ROUTE' and 6.0 <= h.T[0] - t <= 6.5, (node.state, h.T[0] - t)

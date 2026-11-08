@@ -76,6 +76,7 @@ net_margin_m: flight_interface clamps altitude only, never x/y.
 """
 import json
 import math
+import time
 
 import numpy as np
 
@@ -93,6 +94,7 @@ from navless_nav.route import (Carrot, clamp_to_net, course_to_odom,
                                odom_to_course, plan_dynamic_course_route,
                                resolve_route_path)
 from navless_nav.tube_guidance import TubeGuidance
+from navless_nav.flight_log import FlightLog, LoggingLogger, resolve_dir
 from navless_nav.pad_tracker import PadTracker
 
 try:
@@ -172,6 +174,30 @@ PARAMETERS = (
     ('takeoff_settle_radius_m', 0.05),
     ('takeoff_settle_s', 2.0),
     ('takeoff_timeout_s', 30.0),
+    # Hold drift correction (the stabilisation from navless_flight_tests,
+    # 2026-11-07: hover hold 6.7 cm mean on 19). While the target stands
+    # still (TAKEOFF once the climb is done, HOLD), a steady offset of the
+    # drone from it is integrated into a correction on the commanded point:
+    # drift_ki per second, ignored inside drift_deadband_m, not learned beyond
+    # drift_max_error_m (a tracking problem or the pilot, not a push), capped
+    # at drift_max_m, only above drift_min_height_m. Never learned while the
+    # target moves (that lag overshot the forward test). The push on 19 is
+    # body-fixed (the liftoff slide flipped with a 180 deg yaw), so the
+    # correction is kept in the body frame and turns with the nose; with
+    # drift_apply_in_route it keeps cancelling the push along the route.
+    # Arrival and settle checks use the true target, never the corrected one.
+    ('drift_correction', True),
+    ('drift_ki', 0.3),
+    ('drift_deadband_m', 0.02),
+    ('drift_max_error_m', 0.30),
+    ('drift_max_m', 0.20),
+    ('drift_min_height_m', 0.40),
+    ('drift_apply_in_route', True),
+    # Flight recorder (navless_nav/flight_log.py): a CSV row per tick and per
+    # log line in flight_log_dir ('' = $NAVLESS_FLIGHT_LOG_DIR, else
+    # ~/team_ws/flight_logs), and the parameters as JSON.
+    ('flight_log', True),
+    ('flight_log_dir', ''),
     # Hold the heading the drone took off with. A zero quaternion makes
     # flight_interface send yaw NaN, and PX4's PositionControl then sets its
     # yaw setpoint to the current heading every cycle ("TODO: better way to
@@ -182,6 +208,27 @@ PARAMETERS = (
     ('hold_heading', True),
     ('heading_rate_gain', 1.0),           # 1/s
     ('heading_rate_max_dps', 20.0),
+    # Which heading is held (needs hold_heading):
+    #   'travel' (team decision, 2026-11-07): the nose points along the
+    #   route, looking travel_heading_lookahead_m ahead of the carrot, turned
+    #   at most travel_heading_rate_dps; EXCEPT through the tube, flown facing
+    #   course north (the ToF sensors' side-on geometry and the tube's
+    #   north-south axis): from when the route tube_heading_lookahead_m ahead
+    #   of the carrot enters the tube zone (blind_zone_margin_m around the
+    #   tube) until the carrot has left it. The camera then looks where the
+    #   drone goes: the localizer sees walls ahead (sim: <= 13 cm vs 51 cm
+    #   nose-north) and the planner's live obstacle map covers the path.
+    #   'hold': the takeoff heading for the whole flight.
+    # The heading guards below apply to both.
+    ('heading_mode', 'travel'),
+    ('travel_heading_lookahead_m', 0.5),
+    ('travel_heading_rate_dps', 25.0),
+    ('tube_heading_lookahead_m', 0.8),
+    # The route enters the tube at its north mouth flying south, so facing
+    # north there is a turn of up to 180 deg: the carrot waits just outside
+    # the tube's footprint (the drone hovers at the mouth) until the nose is
+    # within this of north, then flies in. It never waits inside the tube.
+    ('tube_align_deg', 10.0),
     # A commanded heading is only safe while PX4's heading agrees with the
     # camera's. In a vision gap over 0.4 s, PX4 (EKF2_MAG_TYPE 0) resets its
     # heading to the magnetometer: ~100 deg off on 19's floor, 2026-11-07, four
@@ -384,6 +431,33 @@ class CourseMission(Node):
         self.heading_guard = math.radians(param('heading_guard_deg'))
         self.heading_guard_s = param('heading_guard_s')
         self.prearm_heading_tol = math.radians(param('prearm_heading_tol_deg'))
+        mode = str(self.get_parameter('heading_mode').value).strip().lower()
+        if mode not in ('travel', 'hold'):
+            self.get_logger().error(f"heading_mode {mode!r} is not 'travel' or 'hold'; using 'travel'.")
+            mode = 'travel'
+        self.heading_mode = mode
+        self.travel_look = max(0.05, param('travel_heading_lookahead_m'))
+        self.travel_rate = math.radians(param('travel_heading_rate_dps'))
+        self.tube_look = max(0.0, param('tube_heading_lookahead_m'))
+        self.tube_align = math.radians(param('tube_align_deg'))
+        self.tube_waiting = False
+        self.want_yaw = None        # the travel/tube heading aimed for (route frame)
+        self.tube_heading = False   # facing north for the tube right now
+        self.heading_at = None      # last travel-heading update (for its rate)
+        self.drift_on = str(self.get_parameter('drift_correction').value).lower() in ('true', '1')
+        self.drift_ki = param('drift_ki')
+        self.drift_deadband = param('drift_deadband_m')
+        self.drift_max_error = param('drift_max_error_m')
+        self.drift_max = param('drift_max_m')
+        self.drift_min_height = param('drift_min_height_m')
+        self.drift_in_route = str(self.get_parameter('drift_apply_in_route').value).lower() in ('true', '1')
+        self.drift_body = (0.0, 0.0)    # learned correction, body frame (x fwd, y left), m
+        self.drift_at = None            # last learning step
+        self.drift_learning = False
+        self.last_target = None         # the last setpoint before the drift correction
+        self.last_cmd_yaw = None        # the yaw in the last pose setpoint
+        self.replans = 0
+        self.takeoff_carrot = None
         self.hold_yaw = None        # the heading we hold (odom ENU yaw), or None
         self.px4_yaw_ref = None     # PX4 yaw minus odom yaw when it was latched
         self.heading_suspended = False
@@ -565,6 +639,14 @@ class CourseMission(Node):
         self.landed = False
         self.log_once = set()
 
+        self.flog = None
+        if str(self.get_parameter('flight_log').value).lower() in ('true', '1'):
+            params = {name: self.get_parameter(name).value for name, _ in PARAMETERS}
+            self.flog = FlightLog(resolve_dir(self.get_parameter('flight_log_dir').value), params,
+                                  warn=lambda m: self.get_logger().warn(m))
+            if self.flog.on:
+                self.get_logger().info(f'flight log: {self.flog.path}')
+
         self.create_timer(1.0 / rate_hz, self.tick)
         self.get_logger().info(
             f'navless_nav ready: take off to {self.takeoff_altitude:.2f} m, '
@@ -665,6 +747,7 @@ class CourseMission(Node):
                 self.route, self.cruise_speed, self.max_lead,
                 self.max_lat_accel, self.max_sagitta)
             self.last_replan_at = now
+            self.replans += 1
             self.get_logger().info(
                 f'Online 3D A* + B-spline replan ({kind}): {len(new_odom)} waypoints around obstacle.')
         except (ValueError, RuntimeError) as exc:
@@ -903,7 +986,13 @@ class CourseMission(Node):
         """One ENU pose setpoint in odom, with the held heading (heading_cmd);
         a zero quaternion (yaw NaN: PX4 does not steer the heading) when
         there is none to hold. `yaw` (ENU, odom) commands that heading instead:
-        PAD_FIND turning on purpose to look at the pad (no heading guard)."""
+        PAD_FIND turning on purpose to look at the pad (no heading guard).
+        With drift_correction, the learned hold correction is added first
+        (last_target keeps the true target for the settle check and the log)."""
+        self.last_target = (x, y, z)
+        if self.drift_applies():
+            wx, wy = self.drift_world()
+            x, y = x + wx, y + wy
         if fence and self.frame is not None:
             # The net is fixed to the walls: clamp in the route's frame
             # (odom through the wall correction; the same frame when it is off).
@@ -920,6 +1009,7 @@ class CourseMission(Node):
         self.publish_pose(x, y, z, self.heading_cmd() if yaw is None else yaw)
 
     def publish_pose(self, x, y, z, yaw):
+        self.last_cmd_yaw = yaw
         msg = PoseStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = 'odom'
@@ -973,6 +1063,9 @@ class CourseMission(Node):
                if self.px4_yaw_ref is not None else '; no PX4 heading to cross-check'))
 
     def release_heading(self):
+        self.want_yaw = None
+        self.tube_heading = False
+        self.heading_at = None
         self.hold_yaw = None
         self.px4_yaw_ref = None
         self.heading_suspended = False
@@ -1038,6 +1131,183 @@ class CourseMission(Node):
             f'{math.degrees(self.yaw):.1f} deg (odom), where the nose is.')
         return self.held_yaw()
 
+    # -- travel heading (heading_mode 'travel') ---------------------------
+    def route_point_ahead(self, carrot, distance):
+        """The route point `distance` metres along the path past the carrot
+        (the carrot itself is not moved)."""
+        path, cum = carrot.path, carrot.cum
+        i = carrot.index
+        s = cum[i] + math.dist(path[i], carrot.point) + max(0.0, distance)
+        while i < len(path) - 1 and cum[i + 1] < s:
+            i += 1
+        if i >= len(path) - 1:
+            return path[-1]
+        seg = cum[i + 1] - cum[i]
+        f = 0.0 if seg <= 0.0 else (s - cum[i]) / seg
+        return tuple(a + (b - a) * f for a, b in zip(path[i], path[i + 1]))
+
+    def travel_heading(self, carrot):
+        """(route-frame yaw to aim for, facing north for the tube?) or
+        (None, False) when there is nothing to aim along (route end)."""
+        if carrot is None or self.frame is None:
+            return None, False
+        if self.in_blind_zone(carrot.point) or self.in_blind_zone(
+                self.route_point_ahead(carrot, self.tube_look)):
+            # Course north in odom: odom +x points along the start bearing
+            # (degrees clockwise from north), so north is +bearing from it.
+            return wrap_pi(math.radians(self.frame[1])), True
+        a = carrot.point
+        b = self.route_point_ahead(carrot, self.travel_look)
+        if math.hypot(b[0] - a[0], b[1] - a[1]) < 0.05:
+            return None, False
+        return math.atan2(b[1] - a[1], b[0] - a[0]), False
+
+    def update_travel_heading(self, carrot):
+        """heading_mode 'travel': turn hold_yaw (route frame) toward the
+        travel / tube heading at most travel_heading_rate_dps. Leaves it alone
+        while the heading guard has suspended the heading (it resumes from
+        wherever the nose is, as before)."""
+        now = self.now_s()
+        dt = 0.0 if self.heading_at is None else min(max(now - self.heading_at, 0.0), 0.2)
+        self.heading_at = now
+        if self.heading_mode != 'travel' or self.hold_yaw is None or self.heading_suspended:
+            return
+        want, tube = self.travel_heading(carrot)
+        if tube != self.tube_heading:
+            self.tube_heading = tube
+            self.get_logger().info('tube ahead: turning to face north for the tube.' if tube
+                                   else 'out of the tube: facing the direction of travel again.')
+        if want is None:
+            return
+        self.want_yaw = want
+        step = max(-self.travel_rate * dt, min(self.travel_rate * dt, wrap_pi(want - self.hold_yaw)))
+        self.hold_yaw = wrap_pi(self.hold_yaw + step)
+
+    def wait_to_face_tube(self):
+        """Hold the carrot at the tube mouth until the nose faces north
+        (travel heading): true while the tube heading is wanted, the nose is
+        more than tube_align_deg off it, and the carrot is still outside the
+        footprint with the footprint 0.3 m ahead."""
+        wait = False
+        if (self.heading_mode == 'travel' and self.tube_heading and self.yaw is not None
+                and self.hold_yaw is not None and not self.heading_suspended
+                and not self.in_tube_footprint(self.carrot.point)
+                and self.in_tube_footprint(self.route_point_ahead(self.carrot, 0.3))):
+            north = wrap_pi(math.radians(self.frame[1]))
+            nose = wrap_pi(self.yaw - self.corr[2])
+            wait = abs(wrap_pi(nose - north)) > self.tube_align
+        if wait != self.tube_waiting:
+            self.tube_waiting = wait
+            self.get_logger().info('at the tube mouth: hovering while the nose turns north.' if wait
+                                   else 'facing north: into the tube.')
+        return wait
+
+    # -- hold drift correction (drift_correction) -------------------------
+    def drift_world(self):
+        """The learned correction in odom (it turns with the nose)."""
+        bx, by = self.drift_body
+        if bx == 0.0 and by == 0.0:
+            return 0.0, 0.0
+        yaw = self.yaw if self.yaw is not None else 0.0
+        c, s = math.cos(yaw), math.sin(yaw)
+        return c * bx - s * by, s * bx + c * by
+
+    def drift_applies(self):
+        """Only with live odometry: when VIO is lost the node holds at the
+        last pose (zero error against a frozen estimate) or paces PX4's own
+        estimate through the tube, and an offset added there would have PX4
+        push with no feedback (Gazebo 'freeze': into the south net)."""
+        if not self.drift_on or not self.vio_ok() or self.blind_carrying:
+            return False
+        return (self.state in ('TAKEOFF', 'HOLD')
+                or (self.state == 'ROUTE' and self.drift_in_route))
+
+    def learn_drift(self, target):
+        """One integral step toward putting the drone itself on `target`, a
+        target standing still (TAKEOFF after the climb, HOLD)."""
+        now = self.now_s()
+        dt = 0.0 if self.drift_at is None else min(max(now - self.drift_at, 0.0), 0.2)
+        self.drift_at = now
+        self.drift_learning = False
+        if not self.drift_on or target is None or not self.vio_ok() or dt <= 0.0:
+            return
+        if self.position[2] < self.drift_min_height or abs(self.position[2] - target[2]) > 0.15:
+            return                       # still climbing: the drone lags by design
+        ex, ey = target[0] - self.position[0], target[1] - self.position[1]
+        e = math.hypot(ex, ey)
+        if e > self.drift_max_error:
+            self.info_once(f'drift_big:{self.state}:{int(self.state_since)}',
+                           f'drift correction paused: {e:.2f} m from the target is too far '
+                           'to be a steady push.')
+            return
+        if e <= self.drift_deadband:
+            return
+        self.drift_learning = True
+        wx, wy = self.drift_world()
+        k = self.drift_ki * dt
+        wx, wy = wx + k * ex, wy + k * ey
+        n = math.hypot(wx, wy)
+        if n > self.drift_max:
+            wx, wy = wx * self.drift_max / n, wy * self.drift_max / n
+            self.info_once('drift_cap', f'drift correction at its {self.drift_max:.2f} m cap: '
+                           'something keeps pushing the drone (level calibration, centre of '
+                           'gravity, props).')
+        yaw = self.yaw if self.yaw is not None else 0.0
+        c, s = math.cos(yaw), math.sin(yaw)
+        self.drift_body = (c * wx + s * wy, -s * wx + c * wy)
+
+    # -- flight recorder ---------------------------------------------------
+    def get_logger(self):
+        """The ROS logger, with every line copied into the flight log."""
+        return LoggingLogger(super().get_logger(), self._record_event)
+
+    def _record_event(self, level, msg):
+        flog = getattr(self, 'flog', None)
+        if flog is not None and flog.on:
+            flog.row({'wall_time': round(time.time(), 3), 't': round(self.now_s(), 3),
+                      'kind': level, 'state': getattr(self, 'state', ''), 'event': str(msg)})
+
+    def log_tick(self):
+        flog = self.flog
+        if flog is None or not flog.on:
+            return
+        now = self.now_s()
+        deg = (lambda a: None if a is None else math.degrees(a))
+        p, raw = self.position, self.raw_position
+        tgt, sent, carrot = self.target, self.last_pose, self.carrot
+        ref = self.last_target or tgt
+        wx, wy = self.drift_world()
+        v = {'wall_time': round(time.time(), 3), 't': round(now, 3), 'kind': 'tick',
+             'state': self.state, 'yaw_deg': deg(self.yaw),
+             'odom_age': None if self.odom_at is None else now - self.odom_at,
+             'vio_ok': self.vio_ok(), 'vo_state': self.vo_state,
+             'route_n': len(self.route or []), 'heading_mode': self.heading_mode,
+             'cmd_yaw_deg': deg(self.last_cmd_yaw), 'hold_yaw_deg': deg(self.hold_yaw),
+             'want_yaw_deg': deg(self.want_yaw), 'heading_suspended': self.heading_suspended,
+             'tube_heading': self.tube_heading, 'px4_yaw_deg': deg(self.px4_yaw),
+             'px4_heading_resets': self.px4_heading_resets,
+             'drift_body_x': self.drift_body[0], 'drift_body_y': self.drift_body[1],
+             'drift_x': wx, 'drift_y': wy, 'drift_learning': self.drift_learning,
+             'corr_dx': self.corr[0], 'corr_dy': self.corr[1], 'corr_dyaw_deg': deg(self.corr[2]),
+             'corr_rx_age': None if self.corr_rx_at is None else now - self.corr_rx_at,
+             'armed': self.armed, 'offboard': self.offboard_active, 'landed': self.landed,
+             'z_offset': self.z_offset, 'prearm_passed': self.prearm_passed,
+             'blind_carrying': self.blind_carrying, 'replans': self.replans,
+             'tof_shift': getattr(self.tof_guidance, 'shift', None),
+             'stereo_shift': getattr(self.tube_guidance, 'shift', None)}
+        for name, q in (('', p), ('raw_', raw), ('target_', tgt), ('sent_', sent),
+                        ('px4_', self.px4_pos), ('zero_', self.odom_zero_offset)):
+            if q is not None:
+                v.update({f'{name}x': q[0], f'{name}y': q[1], f'{name}z': q[2]})
+        if carrot is not None:
+            v.update({'carrot_x': carrot.point[0], 'carrot_y': carrot.point[1],
+                      'carrot_z': carrot.point[2], 'carrot_i': carrot.index})
+            v['in_tube_zone'] = self.in_blind_zone(carrot.point)
+        if p is not None and ref is not None:
+            v['err_xy'] = math.hypot(ref[0] - p[0], ref[1] - p[1])
+            v['err_z'] = ref[2] - p[2]
+        flog.row(v)
+
     # -- helpers ---------------------------------------------------------
     def now_s(self):
         return self.get_clock().now().nanoseconds * 1e-9
@@ -1056,6 +1326,9 @@ class CourseMission(Node):
         self.state_since = self.now_s()
         self.target = target
         self.settle_since = None
+        self.takeoff_carrot = None
+        self.drift_at = None
+        self.drift_learning = False
         if state in IDLE_STATES:
             self.release_heading()      # every takeoff latches its own
         if state == 'WAIT_FOR_OFFBOARD':
@@ -1219,6 +1492,7 @@ class CourseMission(Node):
                 'Paused until the vehicle is disarmed.')
             self.goto('PAUSED')
         getattr(self, '_state_' + self.state.lower())()
+        self.log_tick()
 
     def _state_wait_for_offboard(self):
         ready = self.heights_agree()
@@ -1268,6 +1542,14 @@ class CourseMission(Node):
         return 0.0 if self.going_home else self.takeoff_lead
 
     def _state_takeoff(self):
+        self.learn_drift(self.target)
+        if (self.heading_mode == 'travel' and self.route and self.position[2] >= self.drift_min_height
+                and abs(self.position[2] - self.target[2]) <= 0.15):
+            # climb done: turn to the first leg (or north, if it starts at the tube) while settling
+            if self.takeoff_carrot is None:
+                self.takeoff_carrot = Carrot(self.route, 1.0, math.inf)
+                self.takeoff_carrot.advance(self.lead_m())
+            self.update_travel_heading(self.takeoff_carrot)
         self.send(*self.target)
         there = self.arrived(self.target) and self.climbed()
         if there and self.settled():
@@ -1298,7 +1580,9 @@ class CourseMission(Node):
         if self.settle_s <= 0.0:
             return True
         now = self.now_s()
-        aim = self.last_pose if self.last_pose is not None else self.target
+        # the true target (before the drift correction, after the fence would
+        # be the same unless fenced): the correction must not fake a settle
+        aim = self.last_target if self.last_target is not None else self.target
         if math.dist(self.position[:2], aim[:2]) > self.settle_radius:
             self.settle_since = None
             return False
@@ -1374,7 +1658,11 @@ class CourseMission(Node):
             self.blind_since = None
             self.set_carrying(False, 'VIO back')
             self.maybe_replan_for_discrepancies(now)
-            point = self.carrot.step(pos, dt)
+            self.update_travel_heading(self.carrot)
+            if self.wait_to_face_tube():
+                point = self.carrot.point       # hover at the mouth while the nose turns north
+            else:
+                point = self.carrot.step(pos, dt)
             ref = self.position     # where the drone is, in the flown (odom) frame
         else:
             # With no trustworthy position, do not move the target: PX4
@@ -1482,6 +1770,13 @@ class CourseMission(Node):
             self.tof_guidance.update(m[0], centre, axis, now)
         return self.tof_guidance.apply(point, ref, axis, now, enabled=True,
                                        max_lead=self.max_lead)
+
+    def in_tube_footprint(self, point):
+        """The (route-frame) point is inside the tube's footprint itself."""
+        if self.frame is None:
+            return False
+        x, y, _ = odom_to_course(point, self.frame[0], self.frame[1])
+        return TUBE_X[0] <= x <= TUBE_X[1] and TUBE_Y[0] <= y <= TUBE_Y[1]
 
     def in_blind_zone(self, point):
         """The odom point is in the tube, or within blind_zone_margin_m of a mouth."""
@@ -1755,6 +2050,7 @@ class CourseMission(Node):
         pass
 
     def _state_hold(self):
+        self.learn_drift(self.target)
         self.send(*self.target)
 
     def _state_paused(self):
@@ -1774,6 +2070,8 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        if node.flog is not None:
+            node.flog.close()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
