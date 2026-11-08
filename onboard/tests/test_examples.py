@@ -406,7 +406,7 @@ def test_diagnostic_distinguishes_future_sample_from_lost_stream(example):
     assert n.vision_problem(n.now) is not None
 
 
-def test_passive_checker_has_no_control_publishers(example):
+def test_passive_checker_has_no_control_publishers(example, monkeypatch):
     import importlib.util
     path = Path(__file__).parents[1] / 'check_odometry.py'
     spec = importlib.util.spec_from_file_location('passive_checker', path)
@@ -424,6 +424,17 @@ def test_passive_checker_has_no_control_publishers(example):
     assert node.problem() == 'PX4 telemetry missing'
     node.tick()
     assert node.phase == 'WAIT'
+    monkeypatch.setattr(checker.time, "monotonic", lambda: node.started + 30.1)
+    node.problem = lambda: None
+    node.ready_since = node.started
+    node.last_ros_time = node.clock_seconds() - .1
+    node.tick()
+    assert node.passed and node.phase == 'DONE'
+    node.phase = 'WAIT'
+    node.ready_since = node.started
+    monkeypatch.setattr(checker.time, "monotonic", lambda: node.started + 33.0)
+    node.tick()
+    assert not node.passed and node.phase == 'ABORT'
 
 
 def test_nominal_one_hz_flags_survive_delivery_jitter(example):

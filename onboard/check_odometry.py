@@ -32,6 +32,8 @@ class OdometryCheck(TestFlight):
         self.ready_since = None
         self.last_report = -math.inf
         self.passed = False
+        self.last_ros_time = self.clock_seconds()
+        self.last_clock_progress = self.started
 
     def problem(self):
         now = self.clock_seconds()
@@ -51,7 +53,12 @@ class OdometryCheck(TestFlight):
 
     def tick(self):
         wall = time.monotonic()
-        problem = self.problem()
+        ros_now = self.clock_seconds()
+        if ros_now > self.last_ros_time:
+            self.last_clock_progress = wall
+        self.last_ros_time = ros_now
+        problem = ('ROS clock stopped' if wall-self.last_clock_progress > 2.0
+                   else self.problem())
         if problem is not None:
             self.ready_since = None
         elif self.ready_since is None:
@@ -77,7 +84,8 @@ def main():
     try:
         while rclpy.ok() and node.phase not in ('DONE', 'ABORT'):
             rclpy.spin_once(node, timeout_sec=.1)
-            # The wall deadline also bounds a stopped /clock; no timer or control fallback.
+            node.tick()  # Passive checks finish on wall time even with slow simulation timers.
+            # The wall deadline also bounds a stopped /clock; no control fallback.
             if time.monotonic()-node.started > args.seconds+2:
                 node.phase = 'ABORT'
     except KeyboardInterrupt:
