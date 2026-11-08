@@ -122,3 +122,100 @@ def test_asbuilt_world_replanning_ignores_known_walls_and_detours_around_old_m3(
     for q in node.route:
         c_pt = odom_to_course(q, node.frame[0], node.frame[1], node.start_height)
         assert not node.planner_grid.is_discrepancy_occupied(c_pt, clearance_m=0.20)
+
+
+def test_multithreaded_background_planner_and_forward_travel_heading():
+    import time
+    import numpy as np
+    from navless_nav.route import odom_to_course
+
+    tb.h.OVERRIDES.clear()
+    tb.h.OVERRIDES.update(route_file=ROUTE, replan_on_obstacles=True, heading_mode='travel')
+    node = tb.cm.CourseMission()
+    node.start_background_planner()
+    try:
+        assert node._bg_worker_enabled
+        assert node._cloud_thread.is_alive() and node._bg_thread.is_alive()
+        node.position = (0.0, 0.0, 0.78)
+        node.start_route()
+        initial_route = list(node.route)
+
+        # Insert discrepancy obstacle and trigger non-blocking background replan
+        ys = np.linspace(1.95, 2.35, 6)
+        zs = np.linspace(0.30, 1.40, 6)
+        obs_pts = np.array([[0.55, y, z] for y in ys for z in zs], dtype=np.float64)
+        with node._planner_lock:
+            for _ in range(3):
+                node.planner_grid.insert_point_cloud(
+                    obs_pts, sensor_origin_m=(-0.20, 2.20, 0.85), min_live_hits=2
+                )
+            node.live_grid_updated = True
+
+        # First call dispatches to background thread without blocking
+        node.maybe_replan_for_discrepancies(10.0)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and node._bg_replan_result is None:
+            time.sleep(0.02)
+        assert node._bg_replan_result is not None
+        # Next tick swaps in the replanned route in O(1)
+        node.maybe_replan_for_discrepancies(10.2)
+        assert node.route != initial_route
+        assert node.replans == 1
+        for q in node.route:
+            c_pt = odom_to_course(q, node.frame[0], node.frame[1], node.start_height)
+            assert not node.planner_grid.is_discrepancy_occupied(c_pt, clearance_m=0.20)
+
+        # Verify travel_heading always faces the direction of movement along the planner route (never spins backwards in the tube when ToF is off)
+        while not node.carrot.at_end:
+            want_yaw, is_tube_north = node.travel_heading(node.carrot)
+            assert not is_tube_north
+            node.carrot.advance(0.25)
+    finally:
+        node.stop_background_planner()
+        assert not node._bg_worker_enabled
+
+
+def test_disarmed_smoke_test_and_live_map_visualizer():
+    import time
+    from navless_nav.live_map_viz import LiveMapVisualizer
+
+    tb.h.OVERRIDES.clear()
+    tb.h.OVERRIDES.update(route_file=ROUTE, replan_on_obstacles=True, heading_mode='travel')
+    node = tb.cm.CourseMission()
+    node.start_background_planner(start_http=False)
+    viz = LiveMapVisualizer(node, port=0)
+    try:
+        # Disarmed on launch mark in WAIT_FOR_OFFBOARD
+        node.position = (0.0, 0.0, 0.0)
+        snap0 = viz.snapshot()
+        assert snap0['state'] == 'WAIT_FOR_OFFBOARD'
+        assert not snap0['armed']
+        assert snap0['cloud_thread_alive'] and snap0['replan_thread_alive']
+        assert len(snap0['prior_xy']) > 100
+        assert len(snap0['route_enu']) > 20
+        assert snap0['discrepancy_xy'] == []
+
+        # Smoke test: inject obstacle 1.2 m ahead while disarmed
+        res = viz.inject_test_obstacle()
+        assert res['ok']
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and node._bg_replan_result is None:
+            time.sleep(0.02)
+        node.maybe_replan_for_discrepancies(node.now_s() + 2.0)
+
+        snap1 = viz.snapshot()
+        assert len(snap1['discrepancy_xy']) > 0
+        assert snap1['replans'] == 1
+        assert snap1['route_enu'] != snap0['initial_route_enu']
+        # Takeoff altitude of route[0] is preserved even when replanned while disarmed on floor
+        assert abs(node.route[0][2] - node.initial_route_odom[0][2]) < 1e-6
+
+        # Reset before arming restores clean map and initial route
+        rst = viz.reset_map()
+        assert rst['ok']
+        snap2 = viz.snapshot()
+        assert snap2['discrepancy_xy'] == []
+        assert snap2['route_enu'] == snap0['initial_route_enu']
+    finally:
+        node.stop_background_planner()
+
