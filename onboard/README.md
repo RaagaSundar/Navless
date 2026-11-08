@@ -194,9 +194,8 @@ Do not describe the yaw plan as a passing flight or as hardware-qualified.
 
 Software validation: the original three scripts passed 207 inert-ROS unit tests.
 This PR additionally tests diagnostics, passive-checker publication prevention,
-and gate-health rejection cases; the corrected full suite has **256 tests**. Python compilation and
-Git whitespace checks passed. No real flight or new simulator flight was
-performed while preparing the PR. Syntax/import checks of the original saved
+and gate-health rejection cases; the corrected full suite has **335 tests**. Python compilation and
+Git whitespace checks passed. No physical flight was performed. Subsequent simulator attempts are recorded below. Syntax/import checks of the original saved
 scripts passed in the FlyX companion before the user's subsequent yaw attempt.
 
 Official interface/safety references:
@@ -224,7 +223,7 @@ Samples beyond 5 ms ahead and stale/frozen/invalid data still fail. This is a
 bounded timestamp-compatibility fix, not permission to ignore tracking loss.
 
 Regression evidence: nine added timing/skew cases fail against commit `6d63535`
-and pass after the correction; the full suite has **256 passing tests**. Source:
+and pass after the correction; the full suite has **335 passing tests**. Source:
 [PX4 EKF2 implementation](https://github.com/PX4/PX4-Autopilot/blob/main/src/modules/ekf2/EKF2.cpp),
 `EKF2::PublishStatusFlags` (also checked in the installed simulator source).
 The user's original failures remain failures; this software correction alone
@@ -256,3 +255,14 @@ with a **1 m** outbound distance, 10 s measured hold and 1 m return, as requeste
 after the 2 m run. Prefer this plan when the available flight area is limited;
 there is no obstacle avoidance. The 2 m script remains available under its
 original name. Flight approval and fresh-world simulation startup still apply.
+
+Latest FlyX evidence: bench `20261108T004953876654Z-cadence-preflight` passed
+30 wall seconds with zero flight commands and over 29 s continuously ready at
+completion. Managed flight `run_004` (source commit `e913295`, 2 m plan) reached
+CLIMB, HOVER and OUTBOUND, then failed when bridge health became false at
+`1794099177.628410306`. Fusion status and raw SLAM capture were fresh in its
+abort diagnostic. Normal landing was not confirmed; the UI subsequently reported
+disarmed. The old cadence abort did not recur in this attempt, but the maneuver
+did not pass. The 1 m alternative is a requested distance reduction, not proof
+that insufficient clearance caused that failure. Run-local evidence and
+comparison metadata are under `.onboard/test_flight_checks/` on FlyX.
