@@ -16,6 +16,35 @@ OVERRIDES = {}      # parameter overrides for the next node
 SENT = []           # (topic, msg) the node published
 SUBS = []           # topics the node subscribed to
 Z_BIAS = [0.0]      # PX4's height error vs odom, m (pre-arm check tests)
+# Heading of the point-mass drone (odom ENU yaw, rad). In the air it turns
+# toward a commanded heading like PX4 (2/s, capped at 1.5 rad/s); with a
+# zero quaternion (yaw NaN) PX4 does not steer it, so only YAW_DRIFT (a
+# steady yaw disturbance, rad/s) and a twist's yaw rate move it.
+YAW = [0.0]
+YAW_DRIFT = [0.0]
+PX4_HOOK = [None]   # called as PX4_HOOK[0](node) each tick (PX4 heading tests)
+# Where the drone really is, off where it was flown to: ODOM_OFFSET[0](t)
+# -> (dx, dy, dz) added to the odometry (a liftoff slide PX4 is slow to undo).
+ODOM_OFFSET = [None]
+
+
+def reset_heading():
+    YAW[0] = 0.0
+    YAW_DRIFT[0] = 0.0
+    PX4_HOOK[0] = None
+    ODOM_OFFSET[0] = None
+
+
+def wrap(a):
+    return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def pose_yaw(m):
+    """Commanded yaw of a pose setpoint, or None for the zero quaternion."""
+    o = m.pose.orientation
+    if o.z == 0.0 and o.w == 0.0:
+        return None
+    return 2.0 * math.atan2(o.z, o.w)
 
 
 class Msg:
@@ -95,23 +124,35 @@ def fly(node, px4, pos, until, max_s=600.0, dt=0.1):
     while not done:
         done = until()
         assert T[0] < end, f'timed out in {node.state} at {pos}'
+        off = ODOM_OFFSET[0](T[0]) if ODOM_OFFSET[0] is not None else (0.0, 0.0, 0.0)
+        seen = [a + b for a, b in zip(pos, off)]
         node.odometry_cb(types.SimpleNamespace(pose=types.SimpleNamespace(
             pose=types.SimpleNamespace(position=types.SimpleNamespace(
-                x=pos[0], y=pos[1], z=pos[2])))))
+                x=seen[0], y=seen[1], z=seen[2]), orientation=types.SimpleNamespace(
+                    x=0.0, y=0.0, z=math.sin(YAW[0] / 2), w=math.cos(YAW[0] / 2))))))
+        if PX4_HOOK[0] is not None:
+            PX4_HOOK[0](node)
         px4['local_enu'] = [pos[0], pos[1], pos[2] + Z_BIAS[0]]
         node.state_cb(types.SimpleNamespace(data=json.dumps(px4)))
         SENT.clear()
         node.tick()
         if px4['armed'] and SENT:
             topic, m = SENT[-1]
+            rate = 0.0
             if topic == course_mission.POSE_TOPIC:
                 goal = (m.pose.position.x, m.pose.position.y, m.pose.position.z)
                 d = math.dist(pos, goal)
                 f = min(1.0, 1.5 * dt / d) if d > 0 else 0.0     # 1.5 m/s cap
                 pos[:] = [a + (b - a) * f for a, b in zip(pos, goal)]
+                cmd = pose_yaw(m)
+                if cmd is not None:
+                    rate = max(-1.5, min(1.5, 2.0 * wrap(cmd - YAW[0])))
             else:
                 v = m.twist.linear
                 pos[:] = [pos[0] + v.x * dt, pos[1] + v.y * dt, pos[2] + v.z * dt]
+                rate = m.twist.angular.z
+            if pos[2] > 0.0:            # PX4 does not turn it on the floor
+                YAW[0] = wrap(YAW[0] + (rate + YAW_DRIFT[0]) * dt)
             pos[2] = max(0.0, pos[2])
             px4['landed'] = pos[2] == 0.0
             if px4['landed'] and node.state in ('LAND', 'REFUSED'):   # COM_DISARM_LAND
@@ -128,6 +169,7 @@ def arm(px4):
 def run(**overrides):
     T[0] = 0.0
     Z_BIAS[0] = 0.0
+    reset_heading()
     OVERRIDES.clear()
     OVERRIDES.update(route_file='route_gate_b.json', cruise_speed_mps=1.0, **overrides)
     node = course_mission.CourseMission()
