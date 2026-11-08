@@ -46,8 +46,12 @@ ARGUMENTS = [
     ('drift_apply_in_route', 'true', 'keep cancelling the learned (body-fixed) push along the route'),
     ('flight_log', 'true', 'write the flight recorder CSV to ~/team_ws/flight_logs'),
     ('route_source', 'planner', "'planner' (EGO planner) or 'file' (fly route_file as exported: the gated drone19 routes)"),
-    # Off until it is gated: cloud_localize (depthcloud/) must be running with the as-built .obj.
-    ('wall_correction', 'false',
+    # Team decision (Shining, 2026-11-08): Favour's planner WITH localization. `localizer` (below) starts
+    # depthcloud/cloud_localize.py on the as-built course, fed by stereo_cloud's /team/stereo/points; its
+    # /team/localize/odom_correction keeps the route on the real walls (wall_correction). Not yet
+    # validated on the real course (walk test) or gated in a camera sim. wall_correction:=false keeps
+    # the localizer running (status, viewer) without it moving the route; localizer:=false stops it.
+    ('wall_correction', 'true',
      "fly the route in the frame cloud_localize's drift correction keeps on the walls"),
     ('start_bearing_deg', '0.0', 'nose bearing on the launch mark at power-up (0 = north)'),
     # Speed, tuned for the centreline window route above (Gazebo + PX4 SITL, drone profile, real pilot
@@ -93,6 +97,10 @@ ARGUMENTS = [
     ('stereo_cloud', 'true',
      'run depthcloud/stereo_cloud.py to publish /team/stereo/points for live stereo obstacle replanning'),
     ('stereo_cloud_rate_hz', '3.0', 'stereo_cloud rate_hz (keep <= 3 Hz in flight to preserve cuVSLAM CPU)'),
+    ('localizer', 'true',
+     'run depthcloud/cloud_localize.py (as-built course; needs stereo_cloud): the wall correction source'),
+    # course_mission's live map viewer (live_map_viz.py) owns 8082; cloud_localize's 3D viewer moves here.
+    ('localizer_http_port', '8083', "cloud_localize's 3D viewer port (8082 is the planner map)"),
     ('replan_on_obstacles', 'true',
      'replan around live stereo depth discrepancies on the as-built 3D occupancy map'),
 ]
@@ -137,8 +145,14 @@ def generate_launch_description():
              '-p', 'cloud_stride:=3',
              '-p', ['use_sim_time:=', LaunchConfiguration('use_sim_time')]],
         output='screen', name='stereo_cloud', condition=IfCondition(LaunchConfiguration('stereo_cloud')))
+    localize = ExecuteProcess(
+        cmd=['python3', '-u', os.path.join(REPO_ROOT, 'depthcloud', 'cloud_localize.py'), '--ros-args',
+             '-p', 'course:=asbuilt',
+             '-p', ['http_port:=', LaunchConfiguration('localizer_http_port')],
+             '-p', ['use_sim_time:=', LaunchConfiguration('use_sim_time')]],
+        output='screen', name='cloud_localize', condition=IfCondition(LaunchConfiguration('localizer')))
     relay = Node(
         package='navless_nav', executable='mirror_relay', name='navless_mirror_relay',
         output='screen', parameters=[{'img_hz': LaunchConfiguration('relay_img_hz')}],
         condition=IfCondition(LaunchConfiguration('relay')))
-    return LaunchDescription(declared + [navless, tof, tube, stereo_cloud, relay])
+    return LaunchDescription(declared + [navless, tof, tube, stereo_cloud, localize, relay])
