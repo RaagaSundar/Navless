@@ -40,20 +40,21 @@ TUBE_WIDTH_M = '1.45'
 ARGUMENTS = [
     # The window route on the as-built course with the organisers' 2026-11-07 maze: M1-M3 are gone, and
     # MN (along the north net), MD (the long diagonal) and MT (barrier line to the tube) replace them
-    # (tools/export_route.py --course course/course_asbuilt.json --tube-exit-drop-in 42
-    # --pad-from-south-in 26 --window-via-in 136 44). North up corridor 1, east through Gate A (between
-    # MD's tip and the net) at y 220.2 in, then the tube, the window and the pad as before; 14.9 m.
-    # Planned >= 17.9 cm to every wall (Barrier 1 behind the launch mark; A1 19.6, window 21.0, C1 21.2,
-    # MN 23.1, MD's tip 23.1). The floor tape is the old maze's and runs under MD: nothing follows it.
-    # The via point keeps the downward rangefinder (PX4's height reference) 28 cm off boulder 3, which
-    # would read 0.4 m short. As-built Gazebo gate on the new maze, with the heading hold (gate_asbuilt.sh,
-    # drone profile, course_mission's 0.5 / 0.6 / 0.25, 3 laps): all landed 6.2-6.8 cm from the pad centre,
-    # no contacts, 40.6-40.7 s from arming to touchdown including the 2 s settle (the old maze: ~49 s).
-    # Closest: MN 17.7 cm, window wall 20.3, C1 21.6, MD 21.7.
+    # (tools/export_route.py --course course/course_asbuilt.json --sdf <as-built model.sdf>
+    # --tube-exit-drop-in 42 --pad-from-south-in 26 --window-via-in 136 44). North-east up corridor 1
+    # beside MD, round MD's tip on a 0.585 m arc through Gate A (between MD's tip and the net), then south
+    # into the tube, and the window and the pad as before; 14.2 m. The first leg leaves the west net at
+    # once: course_mission leans the take-off 0.25 m along it, so the climb starts 19 cm further from that
+    # net than with a leg due north. On the launch mark the prop tips are 29.6 cm from it, and 19's
+    # liftoffs have slid 25-33 cm west. Planned with the props, nose north: >= 17.9 cm to every wall
+    # (Barrier 1 behind the launch mark; A1 19.6, window 21.0, C1 21.2, MD 25.3, north net 25.8). The floor
+    # tape is the old maze's and runs under MD: nothing follows it. The via point keeps the downward
+    # rangefinder (PX4's height reference) 28 cm off boulder 3, which would read 0.4 m short.
     ('route_file', 'gazebo_sim/course/route_centreline_window_asbuilt.json',
      'route to fly (repo-relative): the window route on the as-built course map'),
-    # The route keeps >= 0.5 m from the net since the 2026-11-07 maze (it crossed M1's and M3's north
-    # ends 0.256 m from it before, which is why this is not navless.launch.py's 0.4 m).
+    # The route peaks 2.633 m from the course centre (the arc over MD's tip), 0.165 m inside this margin's
+    # 2.798 m, so the clamp never moves a setpoint. Before the 2026-11-07 maze it crossed M1's and M3's
+    # north ends 0.256 m from the net, which is why this is not navless.launch.py's 0.4 m.
     ('net_margin_m', '0.25', 'keep setpoints this far inside the net, m'),
     ('tof_tube_centering', 'true',
      'in the tube, steer toward the centre the side ToF sensors measure (at most 0.15 m from the route)'),
