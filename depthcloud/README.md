@@ -173,7 +173,7 @@ D = (dx, dy, dyaw) from /team/localize/odom_correction
 - **Guards:**
   - a jump of more than 15 cm / 3° is only accepted once 3 frames in a row agree;
   - anything over 3 m / 40° in total is rejected;
-  - it's low-passed (1.5 s), and its output moves at most 8 cm/s and 3°/s, so setpoints never jump.
+  - it's low-passed (1.5 s), and its output moves the drone's corrected position at most 8 cm/s and its heading at most 3°/s, so setpoints never jump. (Translation and rotation ramp together, by one fraction: D rotates about the launch mark, so 3°/s on its own would move a point 5 m away by 26 cm/s.)
 - **Valid** while the last accepted update is under 3 s old. The status JSON's `odom_correction` has `valid`, `dx`, `dy`, `dyaw_deg`, `age`, `accepted` and `rejected`.
 - **Consumer rules:**
   - keep the last valid D while it's stale; the drift doesn't go away;

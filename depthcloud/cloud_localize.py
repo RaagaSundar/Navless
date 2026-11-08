@@ -356,6 +356,28 @@ class OdomCorrection:
         T_meas = se2(*base_course_se2) @ np.linalg.inv(se2(*base_odom_se2))
         return se2_params(np.linalg.inv(T_meas) @ self.T_nom)
 
+    @staticmethod
+    def ramp(d, step, at_se2, dt, rate_m, rate_rad):
+        """d + f * step, with ONE fraction f <= 1 for translation and rotation together, chosen so that the
+        corrected position of the drone (at_se2, odometry frame) moves at most rate_m * dt and the heading
+        at most rate_rad * dt. D rotates about the odometry origin (the launch mark), so limiting dx/dy and
+        dyaw separately is not enough: 3 deg/s alone moves a point 5 m out by 26 cm/s, and the translation
+        that compensates it would lag behind."""
+        px, py = at_se2[0], at_se2[1]
+
+        def apply(e):
+            c, s = math.cos(e[2]), math.sin(e[2])
+            return c * px - s * py + e[0], s * px + c * py + e[1]
+
+        a0, a1 = apply(d), apply((d[0] + step[0], d[1] + step[1], d[2] + step[2]))
+        f = 1.0
+        disp = math.hypot(a1[0] - a0[0], a1[1] - a0[1])
+        if disp > rate_m * dt:
+            f = rate_m * dt / disp
+        if abs(step[2]) * f > rate_rad * dt:
+            f = rate_rad * dt / abs(step[2])
+        return d[0] + f * step[0], d[1] + f * step[1], d[2] + f * step[2]
+
     def update(self, base_course_se2, base_odom_se2, t):
         """One `tracking` frame. Accepted if consistent with the running estimate; a sudden jump (e.g. a VSLAM
         reset, or one bad match) only counts once confirm_n frames in a row agree on it."""
@@ -385,13 +407,9 @@ class OdomCorrection:
                                self.target[1] + a * (m[1] - self.target[1]),
                                self.target[2] + a * ((m[2] - self.target[2] + math.pi) % (2 * math.pi) - math.pi))
         dt = max(1e-3, t - self.t_prev)
-        step = [self.target[0] - self.d[0], self.target[1] - self.d[1],
-                (self.target[2] - self.d[2] + math.pi) % (2 * math.pi) - math.pi]
-        n, lim = math.hypot(step[0], step[1]), self.rate_m * dt
-        if n > lim:
-            step[0], step[1] = step[0] * lim / n, step[1] * lim / n
-        step[2] = max(-self.rate_rad * dt, min(self.rate_rad * dt, step[2]))
-        self.d = (self.d[0] + step[0], self.d[1] + step[1], self.d[2] + step[2])
+        step = (self.target[0] - self.d[0], self.target[1] - self.d[1],
+                (self.target[2] - self.d[2] + math.pi) % (2 * math.pi) - math.pi)
+        self.d = self.ramp(self.d, step, base_odom_se2, dt, self.rate_m, self.rate_rad)
         self.t_prev = self.t_last = t
         self.accepted += 1
         return True
