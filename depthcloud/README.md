@@ -279,6 +279,24 @@ It writes `results.json`, `track.csv` and `plan.svg` (top view: walls, checkpoin
 
 `python3 walk_test.py --selftest` runs a synthetic walk with no ROS, to check the maths and the output files.
 
+## Walk session: live view + full recording (`walk_session.sh`)
+
+The same walk with the drone (**props OFF, disarmed, only if the organisers allow it**), but one script starts everything, records everything, and cleans up after itself. Run it on 19's Jetson host, from `~/team_ws/src/dronehacks`. Not while anyone is flying or prepping 19: it uses the Jetson.
+
+```bash
+docker rm -f skybeta-stack        # drone on the launch mark, nose north, still; wait ~60 s for the stack
+bash walk_session.sh start        # stereo_cloud (3 Hz) + cloud_localize (as-built) + walk_recorder
+bash walk_session.sh checkpoints  # optional, 2nd terminal: walk_test, Enter at known spots = ground truth
+bash walk_session.sh status
+bash walk_session.sh stop         # stops exactly what start started, checks nothing is left, writes the summary
+```
+
+- **Live:** `http://<drone>:8082` shows the localizer's best estimate on the course model with its trail and the live cloud (green points = matched the model); `http://<drone>:8081` is the camera and depth.
+- **Recording** (`~/team_ws/walk_sessions/<time>/`): `track.csv` at 10 Hz from `walk_recorder.py` (localizer pose, status, fit, matches, measured axes; `odom_correction`; cuVSLAM pose and `vo_state`; PX4's EKF2 estimate if linked; stereo cloud rate; ages of each), `frames/` (every 5th cloud as the localizer saw it, for replaying offline), and each node's log.
+- **Summary** (`walk_summary.py`, also runs on a laptop: `python3 walk_summary.py <session> course_asbuilt.json`): `summary.txt` gives the share of time in each status, the longest stretch without `tracking`, estimate jumps, cuVSLAM stalls over 0.4 s, how far plain odometry drifted from the localizer, what `odom_correction` did, and checkpoint errors. `plan.svg` draws the walk on the course: localizer trail coloured by status, plain odometry from the launch mark (what navless_nav would believe uncorrected), odometry + correction, checkpoints (truth vs estimate).
+
+"Odometry vs localizer" compares two estimates. Only checkpoints measure against the truth, so do at least a few.
+
 ## Stand-in course .obj for testing
 
 `scene_to_obj.js` turns tape measurements into an .obj, so localization can be tested before we have the real course. `test_room.json` is our 30 x 34 x 9 ft hackathon room with its 12 tables: 4 rows, each made of two tables joined end to end, an aisle, then one table, all running along the 30 ft wall. Positions are **scaled from a sketch** until someone measures them.
