@@ -32,7 +32,8 @@ def main():
         import rclpy
         from rclpy.executors import ExternalShutdownException
         from rclpy.qos import qos_profile_sensor_data
-        from px4_msgs.msg import VehicleStatus,VehicleLandDetected,VehicleOdometry
+        from px4_msgs.msg import (VehicleStatus,VehicleLandDetected,VehicleOdometry,
+                                  VehicleLocalPosition,EstimatorStatusFlags)
         from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
         from nav_msgs.msg import Odometry
         rclpy.init();n=rclpy.create_node('split_independent_telemetry_recorder');subscriptions=[]
@@ -40,11 +41,26 @@ def main():
             def cb(k,m):f.write(json.dumps(dict(kind=k,timestamp=int(m.timestamp),**({'armed':m.arming_state==2,'nav_state':int(m.nav_state),'failsafe':bool(m.failsafe)} if k=='status' else {'landed':bool(m.landed)})))+'\n')
             for k,typ,topics in [('status',VehicleStatus,['/fmu/out/vehicle_status_v1','/fmu/out/vehicle_status']),('land',VehicleLandDetected,['/fmu/out/vehicle_land_detected','/fmu/out/vehicle_land_detected_v1'])]:
                 for topic in topics:subscriptions.append(n.create_subscription(typ,topic,lambda m,k=k:cb(k,m),qos_profile_sensor_data))
+            def px4_observation(kind, fields, msg):
+                value = {name: getattr(msg,name) for name in fields}
+                f.write(json.dumps(dict(kind=kind,receipt_wall_unix_s=time.time(),receipt_monotonic_s=time.monotonic(),**value))+'\n')
+            pose_fields=('timestamp','timestamp_sample','x','y','z','vx','vy','vz','heading','heading_var','eph','epv','evh','evv','dead_reckoning',
+                         'xy_valid','z_valid','v_xy_valid','v_z_valid','xy_reset_counter',
+                         'z_reset_counter','heading_reset_counter')
+            fusion_fields=('timestamp','cs_ev_pos','cs_ev_yaw','cs_ev_hgt','cs_baro_hgt',
+                           'cs_rng_hgt','cs_rng_terrain','cs_rng_kin_consistent',
+                           'cs_rng_fault','cs_rng_stuck','cs_baro_fault','cs_fake_hgt',
+                           'fs_bad_acc_vertical')
+            for kind,typ,topic,fields in (
+                    ('local_position',VehicleLocalPosition,'/fmu/out/vehicle_local_position',pose_fields),
+                    ('fusion',EstimatorStatusFlags,'/fmu/out/estimator_status_flags',fusion_fields)):
+                subscriptions.append(n.create_subscription(typ,topic,
+                    lambda m,k=kind,fields=fields:px4_observation(k,fields,m),qos_profile_sensor_data))
             def odometry(kind,m):
                 h=m.header.stamp
                 p=m.pose.pose.position
                 q=m.pose.pose.orientation
-                f.write(json.dumps(dict(kind=kind,timestamp=h.sec*1000000+h.nanosec//1000,
+                f.write(json.dumps(dict(kind=kind,receipt_wall_unix_s=time.time(),receipt_monotonic_s=time.monotonic(),timestamp=h.sec*1000000+h.nanosec//1000,
                                         stamp_ns=h.sec*10**9+h.nanosec,
                                         position=[p.x,p.y,p.z],orientation_xyzw=[q.x,q.y,q.z,q.w],
                                         frame_id=m.header.frame_id,child_frame_id=m.child_frame_id,
