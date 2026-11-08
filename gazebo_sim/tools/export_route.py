@@ -21,7 +21,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 from dh.geom import COURSE_SDF, Obstacles, clearance           # noqa: E402
-from dh.route import COURSE_JSON, Waypoint, _fillet_path, gate_b_route, window_route  # noqa: E402
+from dh.route import COURSE_JSON, Waypoint, _fillet_path, gate_b_route, gate_b_turns_route, window_route  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("out", nargs="?", default=None,
@@ -57,6 +57,12 @@ ap.add_argument("--maze-top-north-m", type=float, default=0.0,
 ap.add_argument("--window-via-in", type=float, nargs=2, default=None, metavar=("X", "Y"),
                 help="window route: an extra point between the tube exit and the window approach, map inches "
                      "(as-built: keeps the downward rangefinder's beam off boulder 3)")
+# As-built course: C1 leans against C2b and A1's ends are recorded the other way, so gate_b_route's
+# parallel-chicane geometry does not hold. 59 151.5 118 86.5 keeps >= 19.6 cm to every wall after the tube
+# (A1 19.6 on the pad approach, C1 24.6, C2b 25.2, barrier 29.9) and the rangefinder beam off every boulder.
+ap.add_argument("--gate-b-turns-in", type=float, nargs=4, default=None, metavar=("Y_W", "X_CH", "Y_G", "X_S"),
+                help="gate_b route from explicit turns, map inches (dh/route.py gate_b_turns_route): leg west "
+                     "from the tube at Y_W, chicane leg north at X_CH, through Gate B at Y_G, leg south at X_S")
 a = ap.parse_args()
 course = os.path.basename(a.course)
 plan = os.path.samefile(a.course, COURSE_JSON)
@@ -68,7 +74,10 @@ a.out = a.out or os.path.join(HERE, "..", "course", f"route_centreline_{a.route}
 wps, _ = (window_route(a.course, window_shift_m=a.window_shift_m, tube_exit_drop_in=a.tube_exit_drop_in,
                        pad_from_south_in=a.pad_from_south_in, maze_top_north_m=a.maze_top_north_m,
                        window_via_in=a.window_via_in)
-          if a.route == "window" else gate_b_route(a.course))
+          if a.route == "window" else
+          gate_b_turns_route(a.course, a.gate_b_turns_in, maze_top_north_m=a.maze_top_north_m,
+                             pad_from_south_in=a.pad_from_south_in or 26.0)
+          if a.gate_b_turns_in else gate_b_route(a.course))
 launch = wps[0].p
 # navless_nav climbs vertically to its takeoff height first, so start the route there; stop above the pad.
 wps = [Waypoint("launch_air", (launch[0], launch[1], a.takeoff_z), 0.0)] + wps[2:-2] + [Waypoint("pad_above", (*wps[-2].p[:2], a.end_z), 0.0)]
@@ -87,7 +96,9 @@ out = {
     "route_type": "WINDOW_CENTRELINE" if a.route == "window" else "GATE_B_CENTRELINE",
     "frame_convention": "world_enu (x east, y north, z up above floor, origin floor centre)",
     "source": f"gazebo_sim/tools/export_route.py (corridor centrelines from {course}, filleted corners)"
-              + ("" if a.route == "window" else "; past the tube, arcs centred on the C1, C2b and A1 wall ends"),
+              + ("" if a.route == "window" else
+                 "; past the tube, explicit turns (gate_b_turns_route)" if a.gate_b_turns_in else
+                 "; past the tube, arcs centred on the C1, C2b and A1 wall ends"),
     "launch_origin_enu": [round(launch[0], 4), round(launch[1], 4), 0.0],
     "spacing_m": a.spacing,
     "length_m": round(float(s[-1]), 3),
@@ -101,6 +112,9 @@ if a.route == "window" and (a.tube_exit_drop_in != 26.0 or a.pad_from_south_in o
                 "maze_top_north_m": a.maze_top_north_m})
 if a.route == "window" and a.window_via_in:
     out["window_via_in"] = a.window_via_in
+if a.route == "gate_b" and a.gate_b_turns_in:
+    out.update({"gate_b_turns_in": a.gate_b_turns_in, "pad_from_south_in": a.pad_from_south_in or 26.0,
+                "maze_top_north_m": a.maze_top_north_m})
 if not plan:
     out["course_file"] = f"gazebo_sim/course/{course}"
 if a.route == "window":
