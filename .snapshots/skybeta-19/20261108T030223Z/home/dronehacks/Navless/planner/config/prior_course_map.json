@@ -1,0 +1,24 @@
+{
+  "shape": [
+    62,
+    62,
+    26
+  ],
+  "packed_raw_grid_b64": "eNrtWjtu4zAUHJmB40IQXboIdnMElSoMJUfREVK62IJHY7fX4BG0XQoDWn4sS1oksCTSCl9WjAFn/ABZ4xHfvEeyadYR5aix2GBNg6aRAa84YOI+4vp7FPAOHO/H5KWpeXMOeEH+jyRMWAqPQCItH0VVksKRyYEUyOxrleTLZ4lWgemvqK0+ZGfJt0pci4xVkkglufCZBOKUZA6fdZbQniXGG2tbcXHikpTOGN/uVkEuIknqimDzpssVYSnRlERYSRInyYmwJLhWkCX9WeL763j6Qiz27m3V38pLZhj/YJhIFPY+o5AZjDZyZDU3E56wvRtyODP5gpo7PmfSiWtvcu+QjwGU+xL9iPX4hEudX5i4DJ8PphnpVjEEn8i8ZL7PxWnvn+R4yhXX+OeNzILKSEnWBZX/c0Elc32WIr6gIm2rqMlwyt07bMNuuvcceLKtL2lJntyCitv/oSwJd1NkxBrXnHJlSS+RdgsrvVO5Qsne7Y0mpO19TPlFbEHlc3emu4VFfY3rUSLRV/0F/GzBUJ9+pAPxScJ+C/xROJ7Af0wB4STJ210Gz6FSFEzXO5KJfAIIJMnl0NDJVih+J1QKVBkOidiiSsQB1fYKij7oIspGQkniTqgYV6zty+PZ0n8Sco/8AWmiwWsLWB90kdRFQkki7JZPavn47ZfkOKTYMiRCohoPQklSu11F4X9oaAMIgedn7HbYTAABi2AR5tDQZAoOLOIlhWu6XHk8gqkwdMy9bSaB+3tJ17Ho/242kTFLUvabyJsdy9SJfgFLSXJyKW1EX59jn+JB35tOxK/jwVIVF78eIrxJWzCd+eQB+VY7hgZVC1gfdJHMReKruEoorv1aZboOERkUu4KyD7rIu414S7KOiMZfbUNJjA==",
+  "concentric_pad": {
+    "center_xy_m": [
+      -2.04216,
+      -0.79247935
+    ],
+    "ring_radii_m": [
+      0.229,
+      0.508,
+      0.762
+    ],
+    "outer_radius_m": 0.762
+  },
+  "launch_mark_xy": [
+    -2.5146,
+    0.9144
+  ]
+}

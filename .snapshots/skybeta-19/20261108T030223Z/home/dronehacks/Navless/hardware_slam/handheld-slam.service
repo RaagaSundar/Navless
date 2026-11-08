@@ -1,0 +1,16 @@
+[Unit]
+Description=Team (skybeta-19) hand-carried stereo SLAM and read-only map viewer
+After=skybeta-stack.service
+Requires=skybeta-stack.service
+
+[Service]
+Type=simple
+User=dronehacks
+ExecStart=/home/dronehacks/team_ws/handheld_slam/run_mapping.sh
+ExecStop=/home/dronehacks/team_ws/handheld_slam/stop_mapping.sh
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+# Hotfix image: a released image plus changed Python files, so drones pull a tiny layer instead of
+# a full rebuild. Python only (no colcon): the package is a symlink install, so the file in build/
+# is the one that runs. Build from the repo root on a drone that has the base image:
+#   docker build -f docker/Dockerfile.hotfix --build-arg BASE=skybeta:0.3.2 \
+#     --label io.skybeta.git-sha=$(git rev-parse --short=12 HEAD) -t skybeta:0.3.3 .
+ARG BASE
+FROM ${BASE}
+COPY src/skybeta_flight_interface/skybeta_flight_interface/flight_interface.py \
+     /root/skybeta_ws/build/skybeta_flight_interface/skybeta_flight_interface/flight_interface.py

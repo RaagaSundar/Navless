@@ -1,0 +1,19 @@
+{
+  "_note": [
+    "Layout from Shining's sketch: 4 rows; each row is two tables joined end to end, an aisle, then one table. Long sides run along the 30 ft wall.",
+    "Origin: floor corner at the bottom-left of the sketch, i.e. on the wall opposite the door, at the end farther from the door.",
+    "x runs along the 30 ft wall (toward the door's wall); y runs along the 34 ft wall (toward the door's end). The plan SVG is drawn the same way as the sketch.",
+    "Positions are scaled from the sketch, which isn't to scale: measure first_center and the spacings, then regenerate.",
+    "Columns: c1+c2 are the joined pair (6 ft apart = touching), c3 is the single table. Rows r1..r4 go from the origin end toward the door.",
+    "Chairs are left out on purpose: they move constantly."
+  ],
+  "units": "ft",
+  "room": { "x": 30, "y": 34, "height": 9 },
+  "defaults": {
+    "table": { "length": 6, "width": 2.5, "height": 2.5, "top": 0.1 }
+  },
+  "items": [
+    { "type": "table_grid", "name": "T", "rows": 4, "cols": 3,
+      "first_center": [6, 10], "pitch": [[6, 12], 6], "yaw_deg": 0 }
+  ]
+}
