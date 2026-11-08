@@ -39,13 +39,15 @@ def test_another_course_needs_its_own_collision_model(tmp_path):
 def test_asbuilt_route_records_how_it_was_made():
     r = json.load(open(os.path.join(COURSE, "route_centreline_window_asbuilt.json")))
     assert r["course_file"] == "gazebo_sim/course/course_asbuilt.json"
-    assert (r["tube_exit_drop_in"], r["pad_from_south_in"], r["maze_top_north_m"]) == (42.0, 26.0, 0.04)
+    assert (r["tube_exit_drop_in"], r["pad_from_south_in"]) == (42.0, 26.0)
     assert r["window_via_in"] == [136.0, 44.0]
-    assert r["min_clearance_m_nose_north"] >= 0.08
-    # The crossings over M1's / M3's north ends sit 0.256 m from the north net: course_mission's net clamp
-    # (net_margin_m) must be <= 0.25 to leave them alone. navless.launch.py's 0.4 pulls them into the walls.
+    # The organisers' 2026-11-07 maze (MN, MD, MT), planned from its walls: east through Gate A at maze_y_in.
+    assert r["maze"].startswith("2026-11-07") and r["maze_y_in"] == pytest.approx(220.22, abs=0.01)
+    assert r["min_clearance_m_nose_north"] >= 0.17
+    # The new maze leaves the route >= 0.5 m from the net, so no net clamp moves a setpoint (the course
+    # launch's 0.25 or navless.launch.py's 0.4).
     top = max(abs(c) for p in r["waypoints_enu"] for c in p[:2])
-    assert 3.048 - 0.4 < top <= 3.048 - 0.25
+    assert top <= 3.048 - 0.45
 
 
 def test_asbuilt_gate_b_route_records_how_it_was_made():
@@ -53,10 +55,24 @@ def test_asbuilt_gate_b_route_records_how_it_was_made():
     assert r["route_type"] == "GATE_B_CENTRELINE"
     assert r["course_file"] == "gazebo_sim/course/course_asbuilt.json"
     assert r["gate_b_turns_in"] == [59.0, 151.5, 118.0, 86.5]
-    assert (r["pad_from_south_in"], r["maze_top_north_m"]) == (26.0, 0.04)
-    assert r["min_clearance_m_nose_north"] >= 0.08
-    top = max(abs(c) for p in r["waypoints_enu"] for c in p[:2])          # same maze crossings as the window route
-    assert 3.048 - 0.4 < top <= 3.048 - 0.25
+    assert r["pad_from_south_in"] == 26.0
+    assert r["maze"].startswith("2026-11-07") and r["maze_y_in"] == pytest.approx(220.22, abs=0.01)
+    assert r["min_clearance_m_nose_north"] >= 0.17
+    top = max(abs(c) for p in r["waypoints_enu"] for c in p[:2])          # same maze leg as the window route
+    assert top <= 3.048 - 0.45
+
+
+@pytest.mark.parametrize("route", ["route_centreline_window_asbuilt.json", "route_centreline_gate_b_asbuilt.json"])
+def test_asbuilt_route_goes_through_the_middle_of_gate_a(route):
+    # Gate A since 2026-11-07: the 1 m gap between MD's tip and the north net. North of the barrier line the
+    # route crosses the gap's line (x = MD's tip) once, with >= 0.3 m to either end of the gap.
+    d = json.load(open(os.path.join(COURSE, "course_asbuilt.json")))
+    (gx, y_tip), (_, y_net) = (tuple(c * 0.0254 - 3.048 for c in q) for q in d["gates_in"]["gate_A"]["between"])
+    p = json.load(open(os.path.join(COURSE, route)))["waypoints_enu"]
+    ys = [a[1] + (b[1] - a[1]) * (gx - a[0]) / (b[0] - a[0]) for a, b in zip(p, p[1:]) if (a[0] - gx) * (b[0] - gx) < 0]
+    north = [y for y in ys if y > 0.5]
+    assert len(north) == 1, ys
+    assert y_tip + 0.3 <= north[0] <= y_net - 0.3, (north[0], y_tip, y_net)
 
 
 @pytest.mark.parametrize("route", ["route_centreline_window_asbuilt.json", "route_centreline_gate_b_asbuilt.json"])
