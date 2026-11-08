@@ -10,7 +10,7 @@ import { drainLogs, enqueueLogs, flight, queuedLogs, useDeck, type TermLine } fr
  * TelemetryHUD: the live terminal. It exists ONLY in OVERRIDE MODE, the interactive part of the deck: nothing streams across
  * the hero or the tour, so those stay clean. When the judge takes over, the panel slides in on the right and the REAL
  * planner's output lands in it (A* expansion counts, the EGO iterations, clearances), mixed with the simulated on-board stack
- * lines (cuVSLAM, odom_gate, PX4 height offset, ToF centring).
+ * lines (cuVSLAM, odom_gate, PX4 height offset, blind carry).
  *
  * Lines arrive one at a time, quickly enough to read as a live stream and slowly enough to actually read: a 5 ms re-plan that
  * logs 40 lines plays out over about a second and a half, not as a blur.

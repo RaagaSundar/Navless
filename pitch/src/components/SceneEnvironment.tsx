@@ -11,7 +11,7 @@ import StudioLights from './three/StudioLights';
  *   StudioLights      sharp directional lights, dim ambient, procedural strip-light environment for the chrome
  *   MazeEnvironment   the as-built course as a wireframe (EdgesGeometry over hologram glass), floor grid, net, checkpoints
  *   ScanCloud         the LiDAR-style point cloud the map resolves out of
- *   RouteLine         skybeta-19's real route as a MeshLine glow, with the stereo cone and the IR beams
+ *   RouteLine         skybeta-19's real route as a MeshLine glow, with the stereo cone and the blind-carry tag
  */
 export default function SceneEnvironment() {
   return (

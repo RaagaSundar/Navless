@@ -121,8 +121,8 @@ function Approach({ step }: SlideProps) {
       name: 'The tunnel',
       tried: 'Freeze when tracking drops',
       found: `Hit the tube ${N.freeze.value} times in simulation`,
-      now: `Ride PX4’s estimate for up to ${N.blindCarry.value.split(';')[0]}, centred by side ToF. Landed 4 of 4, 6 clean passes`,
-      dropped: 'Stereo centring: built, shelved. ToF carries its own light',
+      now: `The route runs down the middle of the tube. When the camera goes blind, ride PX4’s estimate for up to ${N.blindCarry.value.split(';')[0]}. Simulation: landed 4 of 4, 6 clean passes`,
+      dropped: `Built, not flown: side-ToF centring (bench ${N.tof.value}) and stereo centring${TODAY.tofReason ? ` · ${TODAY.tofReason}` : ''}`,
     },
     {
       n: '03',
@@ -165,7 +165,7 @@ const GENERAL: [string, string][] = [
   ['The odometry gate', 'tracking, and not stale'],
   ['The state machine and its guards', 'pre-arm checks, heading guard, freeze, hold'],
   ['The planner', 'grid, A*, B-spline: any map'],
-  ['Side ToF centring', 'any tube, any light'],
+  ['Blind carry', 'rides the autopilot through any short vision gap'],
   ['The flight recorder', 'every tick of every run'],
 ];
 const TUNED: [string, string][] = [
@@ -217,7 +217,7 @@ interface BreakRow {
 }
 const BREAKS: BreakRow[] = [
   { what: 'Camera loses tracking, or the light goes', notices: `Gate: not tracking, or pose older than ${N.stale.value}`, does: `Freeze the route target. Hold after ${N.noProgress.value} with no progress` },
-  { what: `Dark tunnel, about ${N.blind.value} blind`, notices: 'The map says we are inside the tube', does: `Ride PX4’s estimate up to ${N.blindCarry.value.split(';')[0]}, centred by the side ToF` },
+  { what: `Dark tunnel, about ${N.blind.value} blind`, notices: 'The map says we are inside the tube', does: `Ride PX4’s estimate up to ${N.blindCarry.value.split(';')[0]} along the planned centreline` },
   { what: 'Heading disagrees', notices: 'PX4 vs camera over 15°, or PX4 resets its heading', does: 'Stop steering the nose. Takeoff needs them within 10°' },
   { what: 'Bad start', notices: 'Height off by over 30 cm, or heading off by over 10°', does: 'Refuse: stream nothing, no takeoff. It did, overnight (run 3)' },
   { what: 'Drift, or stuck off the route', notices: 'A steady push while holding; no progress', does: `Learn the push. Keep setpoints ${N.netClamp.value} inside the net. HOLD at ${N.noProgress.value}` },

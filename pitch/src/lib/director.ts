@@ -12,7 +12,7 @@
  *   0:34  lift off the hero, LiDAR cloud resolves into the as-built maze
  *   0:46  top-down sweep of the whole course:  [01] A* + EGO B-spline
  *   0:58  chase cam on the real route:         [02] OAK-D-S2 stereo odometry
- *   1:16  tunnel cutaway:                      [03] IR wall centring
+ *   1:16  tunnel cutaway:                      [03] blind carry through the tunnel
  *   1:40  isometric top-down, scroll locks, OVERRIDE MODE
  *   1:44  scripted blocker drops, planner logs spam, control released to the judge at 1:58
  */

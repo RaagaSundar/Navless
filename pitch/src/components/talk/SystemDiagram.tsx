@@ -10,12 +10,12 @@ import { TODAY } from '@/data/today';
  *
  * The slide builds one stage per step; the whole drawing is visible, faint, from the start, so it reads as one picture.
  */
-const CW = 292;
-const GAP = 67;
-const CH = 490;
-const TOP = 100;
+const CW = 312;
+const GAP = 42;
+const CH = 520;
+const TOP = 84;
 const W = 5 * CW + 4 * GAP; // 1728
-const H = 690;
+const H = 700;
 
 type Where = 'jetson' | 'pixhawk' | 'both';
 interface Stage {
@@ -34,11 +34,11 @@ const STAGES: Stage[] = [
     n: '01',
     name: 'Sense',
     q: 'What it sees',
-    lines: ['Stereo camera, 1024×640', '2 side ToF sensors, for the tunnel', 'Down laser, for height'],
+    lines: ['Stereo camera, 1024×640', 'Down laser, for height', 'No GPS, no optical flow'],
     runs: 'Jetson · Pixhawk',
     where: 'both',
-    rate: `${N.camera.value.split(' at ')[1]} cam · ${N.tof.value} ToF`,
-    out: 'images, ranges',
+    rate: `${N.camera.value.split(' at ')[1]} camera`,
+    out: 'images, height',
   },
   {
     n: '02',
@@ -64,7 +64,7 @@ const STAGES: Stage[] = [
     n: '04',
     name: 'Decide',
     q: 'What do I do?',
-    lines: ['State machine: wait, take off, route, land', 'Hold, refuse, pause', 'Guards on heading, tracking, net'],
+    lines: ['State machine: take off, route, land', 'Hold, refuse, pause', 'Guards on heading, tracking, net'],
     runs: 'Jetson',
     where: 'jetson',
     rate: N.mission.value,
@@ -112,11 +112,11 @@ export default function SystemDiagram({ step }: { step: number }) {
             style={{ color: '#f1dcc0', opacity: step >= i + 1 ? 0.9 : 0.25, transition: 'opacity 0.7s ease' }}
           />
         ))}
-        {/* side ToF straight to the decision: the tunnel offset skips estimation */}
-        <g style={{ color: '#9cc6dd', opacity: step >= 3 ? 0.95 : 0.2, transition: 'opacity 0.7s ease' }}>
-          <path d={`M${cx(0)},${TOP + CH} v44 H${cx(3)} V${TOP + CH + 6}`} fill="none" stroke="#9cc6dd" strokeWidth={3} strokeDasharray="10 7" markerEnd="url(#arrow)" />
-          <text x={(cx(0) + cx(3)) / 2} y={TOP + CH + 76} textAnchor="middle" fill="#9cc6dd" fontFamily="var(--font-mono)" fontSize={22} letterSpacing={1.5}>
-            tunnel offset = (L − R) / 2
+        {/* dark tunnel: no vision, so PX4's own estimate (the Estimate stage) carries the drone straight to the decision */}
+        <g style={{ color: '#f2b24a', opacity: step >= 3 ? 0.95 : 0.2, transition: 'opacity 0.7s ease' }}>
+          <path d={`M${cx(1)},${TOP + CH} v44 H${cx(3)} V${TOP + CH + 6}`} fill="none" stroke="#f2b24a" strokeWidth={3} strokeDasharray="10 7" markerEnd="url(#arrow)" />
+          <text x={(cx(1) + cx(3)) / 2} y={TOP + CH + 76} textAnchor="middle" fill="#f2b24a" fontFamily="var(--font-mono)" fontSize={22} letterSpacing={1.5}>
+            dark tunnel: PX4&rsquo;s own estimate carries it, 4 s max
           </text>
         </g>
         {/* the loop closes: the drone moves, the camera sees it */}
@@ -151,14 +151,14 @@ export default function SystemDiagram({ step }: { step: number }) {
               <div className="t-label text-gold">
                 {s.n} · {s.name}
               </div>
-              <div className="mt-3 font-display text-[38px] leading-[0.98]">{s.q}</div>
-              <ul className="mt-5 space-y-[12px] font-mono text-[22px] leading-[1.22] text-ink/90">
+              <div className="mt-3 font-display text-[34px] leading-[0.98]">{s.q}</div>
+              <ul className="mt-4 space-y-[10px] font-mono text-[20px] leading-[1.22] text-ink/90">
                 {s.lines.map((l) => (
                   <li key={l}>{l}</li>
                 ))}
               </ul>
             </div>
-            <div className="absolute inset-x-[22px] bottom-[16px] space-y-[7px] border-t border-white/12 pt-[10px]">
+            <div className="absolute inset-x-[22px] bottom-[14px] space-y-[5px] border-t border-white/12 pt-[8px]">
               <Meta k="runs on" v={s.runs} tone={WHERE_TONE[s.where]} />
               <Meta k="rate" v={s.rate} />
               <Meta k="out" v={s.out} />
@@ -173,8 +173,8 @@ export default function SystemDiagram({ step }: { step: number }) {
 function Meta({ k, v, tone = 'text-ink' }: { k: string; v: string; tone?: string }) {
   return (
     <div>
-      <div className="font-mono text-[13px] uppercase tracking-[0.2em] text-ink/45">{k}</div>
-      <div className={`font-mono text-[20px] leading-[1.15] ${tone}`}>{v}</div>
+      <div className="font-mono text-[12px] uppercase tracking-[0.2em] text-ink/45">{k}</div>
+      <div className={`font-mono text-[19px] leading-[1.15] ${tone}`}>{v}</div>
     </div>
   );
 }

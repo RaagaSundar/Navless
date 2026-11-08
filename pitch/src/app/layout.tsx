@@ -6,10 +6,10 @@ import './globals.css';
 
 export const metadata: Metadata = {
   title: 'NAVLESS: Zero GPS. Pure Autonomy.',
-  description: 'skybeta-19, autonomous indoor UAV for DroneHacks. Jetson Orin Nano, ROS 2 Humble, cuVSLAM 31 Hz stereo odometry, phone-LiDAR map, VL53L1X ToF. No GPS.',
+  description: 'skybeta-19, autonomous indoor UAV for DroneHacks. Jetson Orin Nano, ROS 2 Humble, cuVSLAM 31 Hz stereo odometry, phone-LiDAR map. No GPS.',
   openGraph: {
     title: 'NAVLESS: Zero GPS. Pure Autonomy.',
-    description: 'Stereo cameras, a phone-LiDAR map and IR range sensors, with a live A* + EGO replanner you can break.',
+    description: 'Stereo cameras and a phone-LiDAR map, with a live A* + EGO replanner you can break.',
     type: 'website',
   },
 };

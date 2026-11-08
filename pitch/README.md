@@ -8,7 +8,7 @@ Three scenes on one timeline, plus a 2-minute auto-demo and a judge-interactive 
 | # | Scene | What happens |
 |---|-------|--------------|
 | 01 | **Hero reveal** | The Sky Beta CAD builds itself out of the dusk in dark liquid chrome (`MeshPhysicalMaterial`: metalness 1, roughness 0.1, clearcoat 1) lit by a low amber sun, brutalist type slides in *behind* it with real depth, one 360° turn on scroll, a sparse cuVSLAM feature cloud. |
-| 02 | **The environment** | The drone shrinks to the corner, a phone-LiDAR-style point cloud resolves into the as-built DroneHacks maze (glowing `EdgesGeometry` wireframe). skybeta-19's real 14.2 m route is drawn as a glowing gradient line. Three callouts: **A\* + EGO B-spline planning**, **OAK-D-S2 stereo odometry**, **IR wall centring** (tunnel cutaway with live L/R time-of-flight beams). |
+| 02 | **The environment** | The drone shrinks to the corner, a phone-LiDAR-style point cloud resolves into the as-built DroneHacks maze (glowing `EdgesGeometry` wireframe). skybeta-19's real 14.2 m route is drawn as a glowing gradient line. Three callouts: **A\* + EGO B-spline planning**, **OAK-D-S2 stereo odometry**, **blind carry through the tunnel** (tunnel cutaway: the camera cone goes dark and the head turns amber while it rides PX4's own estimate). |
 | 03 | **Override mode** | Scroll locks, camera lifts to an isometric top-down. **`[ INJECT DYNAMIC OBSTACLE ]`** arms the grid; click to drop a blocker (it falls in and settles with one soft ring). A real A\* + EGO planner re-plans in the browser (a few ms) and the new B-spline is drawn immediately while the invalidated one fades out in vermilion. Planner output scrolls through the live terminal. |
 
 The **live telemetry terminal** (on-board stack lines mixed with the real planner's output) and the live clock exist **only in override mode**, the interactive part. The hero and the tour stay clean: no FPS counter, no ticking clock, no streaming text.
@@ -23,6 +23,20 @@ The judging pitch is 3:20 PM in Sequoia, 13 minutes plus questions (the judging 
 - **The script: `SCRIPT.md`** (`npm run script`), generated from `src/data/script.ts`, `facts.ts` and `today.ts`, so it can never disagree with `/tech`. About 10 minutes of speech in the judges' seven-part order (problem, one diagram, why this approach, generalizes vs tuned, what breaks it, evidence, hardest problem / next day / team).
 - **Edit before 3:20 PM: `src/data/today.ts`.** The scored-run results (`scored`) and three flags (live re-planning, the localizer, the compass setting) change what the script and `/tech` say. The defaults are what was true at the 2026-11-08 midday handoff. Then `npm run script`, and rebuild (`npm run build`) if you serve the production build.
 - **Slide deck (opt-in): `/?mode=talk`.** The same content as a presenter deck (`→` next, `N` notes and timer, `Q` numbers, `L` live demo). Not the default: the main screen is for the eye.
+
+## Deploy (Vercel)
+
+Live: **https://navless-pitch.vercel.app** (Vercel project `navless-pitch`, the personal scope of sundar.raaga@gmail.com). `/` is the cinematic deck, `/tech` the technical companion. The production domain is public; the unique per-deployment URLs sit behind Vercel login (Vercel Authentication).
+
+It is deployed from a plain folder outside any git repo that is linked to the project: `C:/Users/sunda/Navless-vercel`. Do not link from inside this repo: the CLI can then connect the GitHub repository, and Vercel would build on every push to every branch. `vercel.json` pins the Next.js preset, because a project made with `vercel project add` starts on "Other" and then serves only `public/` (every page 404s).
+
+To redeploy after editing `src/data/today.ts` or anything else (about 40 s), from this folder:
+
+```bash
+tar cf - --exclude=./node_modules --exclude=./.next --exclude=./scratch --exclude=./tsconfig.tsbuildinfo --exclude=./next-env.d.ts --exclude=./.vercel --exclude=./.env.local . | tar xf - -C /c/Users/sunda/Navless-vercel && cd /c/Users/sunda/Navless-vercel && vercel deploy --prod --yes --scope raag-sundars-projects
+```
+
+Never leave `.env.local` in the folder you deploy: `vercel link` writes a short-lived token there.
 
 ## Look and feel: future Mars, golden hour
 
@@ -97,7 +111,7 @@ Needs a browser with WebGL and hardware acceleration on (current Chrome / Edge /
 | 0:34 | lift off, LiDAR cloud resolves into the as-built maze | `SCAN → MAP` |
 | 0:46 | top-down sweep of the whole course | **01 A\* + EGO B-spline planning** |
 | 0:58 | chase cam on the real route | **02 OAK-D-S2 stereo odometry** |
-| 1:16 | tunnel cutaway, IR beams to both walls | **03 IR wall centring** |
+| 1:16 | tunnel cutaway, the camera cone goes dark and the head turns amber | **03 Blind carry through the dark** |
 | 1:40 | isometric top-down, scroll locks | **OVERRIDE MODE** |
 | 1:44 · 1:52 | scripted blockers drop on the active path, live re-plans | planner log spam |
 | 1:58 | control released to you, grid armed | `[ INJECT DYNAMIC OBSTACLE ]` is yours |
@@ -173,10 +187,10 @@ Please read this before you put numbers from the deck in front of a judge.
 - **Course geometry and the route are real.** They are extracted from git (`drone19/flight`, commit `6c123b9`; `src/data/provenance.json` lists the commit each file came from). The maze is the 2026-11-07 layout (MN / MD / MT replaced M1-M3). The route is the one skybeta-19 is flown on, not a drawing.
 - **The planner is real, and it is a port.** `lib/planner.ts` runs in the browser and its log lines (`A* voxel expansion: …ms`, `EGO B-spline recalculating`, iteration costs, clearances) are measured on every re-plan. It is written for this deck, not the flight code: occupancy grid → ESDF → A\* guided by the real route → B-spline optimiser. Its keep-out is 0.25 m so the demo corridors stay passable; the flight stack's configured inflation is 0.28 m, which is the number the callout copy quotes. The blocker in the demo is a rectangular box, so a drop that narrows a corridor below the keep-out will correctly report **ROUTE SEALED**, and the planner falls back to the Gate B route when that is the only way through.
 - **The flight replay is real data.** Positions, heights and headings are the flight recorder's (one point per 0.1 s tick) for the first four course runs, plus the route we planned for comparison. What is derived: the impact moment, found by the rule in `scripts/extract-evidence.mjs`. The README of the flight-logs branch (Shining's notes) is the source of what each run touched; Run 5's notes say "the front wall", so the deck does not light a specific wall for it.
-- **The telemetry stream is simulated** (and only appears in override). Rates and values are anchored to numbers from the repo's logs and READMEs (cuVSLAM 31.2 Hz, odom_gate 28.43 Hz / 59.89 ms median age, ToF 9.6 Hz, height offset 19 cm, …) but the stream itself is generated. The panel header says **SIM**. Planner lines mixed into the same stream are not simulated.
+- **The telemetry stream is simulated** (and only appears in override). Rates and values are anchored to numbers from the repo's logs and READMEs (cuVSLAM 31.2 Hz, odom_gate 28.43 Hz / 59.89 ms median age, height offset 19 cm, …) but the stream itself is generated. The panel header says **SIM**. Planner lines mixed into the same stream are not simulated.
 - **The point cloud is a resample, not the scan.** The raw Scaniverse scan (596k points) is not in git, only the walls fitted to it. `course-scan.bin` is a LiDAR-style resample of the as-built mesh with 6 mm noise, and the slide says so.
 - **The drone is a modified CAD.** Decimated, re-materialled (the liquid chrome replaces the CAD colours), propellers added. The airframe dimensions in the caption are the CAD's.
-- **One headline to decide on.** Callout 03 is titled *SUB-CENTIMETER IR WALL CENTERING* (the wording from the brief). The proof line on the same slide says what the numbers are: ±0.3 cm steady on the ToF reading, and a 10-12 cm off-centre start ending within 2 cm in closed loop (sim). So "sub-centimetre" describes the sensor reading; the closed-loop centring result on that slide is about 2 cm. If a judge is likely to press on it, change the headline in `components/hud/Callouts.tsx`.
+- **The tunnel beat is blind carry, not ToF.** The side time-of-flight sensors are no longer used (Raaga, 2026-11-08), so callout 03 says what the flight code does in the tunnel: it rides PX4's own estimate for at most 4 s. The ToF sensors appear only as built and bench-tested. The repo's launch files still had the ToF chain on by default at the last fetch; the deck claims nothing about that.
 
 ## Development notes
 

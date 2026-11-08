@@ -8,7 +8,7 @@
  *   odom_gate 28.43 Hz out, 59.89 ms P50    hardware_slam/README.md (bench, PX4 powered)
  *   Height offset 19 cm                     PX4 height read 18.5-19.8 cm above cuVSLAM in all three 11-07 logs (fa7d2d3)
  *   mag heading reset ~100 deg              PX4 jumps to the magnetometer ~0.5 s into a vision gap (seen on 19, 11-07)
- *   blind_carry <= 4 s, tube ToF 9.6 Hz     navless_nav / tube/ (README)
+ *   blind_carry <= 4 s                      navless_nav (README)
  *   heading_guard 15 deg                    PX4-vs-camera disagreement limit (course_mission)
  *
  * The numbers wobble around those anchors. Planner lines (A* expansions, EGO iterations, clearances) are NOT from here:
@@ -54,8 +54,7 @@ const TOUR: Gen[] = [
 ];
 
 const TUBE: Gen[] = [
-  (t) => L('TUBE', `tof L ${f2(0.74 + w(t, 2.1, 0.012))} m R ${f2(0.72 + w(t, 1.7, 0.012))} m | sum ${f2(1.46)} m ok | 9.6 Hz | valid 99.4 %`),
-  (t) => L('TUBE', `offset ${(w(t, 1.2, 1.4)).toFixed(1)} cm | correction clamp 15 cm | route target on centre`, 'dim'),
+  (t) => L('NAV', `route continues on the px4 estimate | tube zone | carrot ${f2(0.5 + w(t, 0.6, 0.04))} m ahead`, 'dim'),
   (t) => L('BLIND', `blind_carry ${f1(1.2 + ((t * 0.2) % 2.8))} s of 4.0 s | px4 estimate`, 'warn'),
   (t) => L('GATE', `odom_gate hold | pose stale ${Math.round(180 + ((t * 40) % 120))} ms > 0.25 s limit`, 'warn'),
 ];
@@ -78,15 +77,14 @@ const SEQUENCES: Partial<Record<TelemetryCtx, [number, LogLine][]>> = {
     [440, L('VIO', 'cuvslam init: stereo only, imu off, odom_gate armed (pass while tracking, age < 0.25 s)')],
     [660, L('CAM', 'oak-d-s2 online: 2 x mono 75 mm baseline, stereo depth 30 Hz', 'ok')],
     [880, L('PX4', 'Height offset: 19cm | pre-arm limit 30 cm | PASS', 'ok')],
-    [1100, L('TUBE', '2 x VL53L1X on separate i2c buses | 9.6 Hz | valid 99+ %', 'ok')],
+    [1100, L('NAV', 'blind_carry on: the tube zone rides the px4 estimate for at most 4 s', 'ok')],
     [1320, L('MAP', 'as-built map: M1-M3 removed, MN MD MT added (2026-11-07)', 'dim')],
   ],
   tube: [
     [0, L('CAM', 'OAK-D-S2 depth dropped | tube is dark, nothing to track', 'err')],
     [380, L('VIO', 'cuvslam vo_state 0 | tracking lost | odom_gate holds output', 'err')],
     [760, L('BLIND', 'blind_carry start | px4 estimate | max 4.0 s', 'warn')],
-    [1150, L('TUBE', 'tof L 0.74 m R 0.72 m | sum 1.46 m = tube width | using it', 'ok')],
-    [1550, L('TUBE', 'offset +1.0 cm | route target shifted onto the tube centre', 'ok')],
+    [1550, L('NAV', 'route continues on the px4 estimate | tube zone | no vision', 'dim')],
     [4300, L('VIO', 'cuvslam tracking recovered | vo_state 1 | blind_carry 2.9 s', 'ok')],
     [4700, L('MAG', 'ekf2: no heading reset (mag_type default) | seen +102 deg on 19 under load, 11-07', 'dim')],
   ],

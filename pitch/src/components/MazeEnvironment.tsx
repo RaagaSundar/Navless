@@ -229,7 +229,7 @@ function MazeScene({ source, zUp }: { source: THREE.Object3D; zUp: boolean }) {
       for (const mat of r.mats) mat.uniforms.uRise.value = rise;
       // dim the glass a touch in override so the path and blockers own the frame
       if (r.kind === 'wall') r.mats[0].uniforms.uAlpha.value = lerp(1, 0.7, view.o);
-      // tunnel cutaway while the IR-centering beat plays: you should see the drone and the beams inside
+      // tunnel cutaway while the blind-carry beat plays: you should see the drone inside the dark tube
       if (r.kind === 'tube') {
         const cut = view.calloutMix[2];
         r.mats[0].uniforms.uAlpha.value = lerp(0.55, 0.05, cut);

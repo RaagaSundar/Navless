@@ -6,7 +6,7 @@ import { useWindow } from './hooks';
 
 /**
  * Scene 2 type. Each beat is a window of the scroll track: a headline that unmasks upward like a curtain, one plain sentence
- * about what it means, and one line of specs for anyone who wants the numbers (from hardware_slam/README.md, tube/ and
+ * about what it means, and one line of specs for anyone who wants the numbers (from hardware_slam/README.md, navless_nav and
  * planner/). No chips, no stacked labels: a judge should be able to read each beat in five seconds.
  */
 interface Beat {
@@ -38,9 +38,9 @@ const BEATS: Beat[] = [
   {
     n: '03',
     tag: 'THE DARK TUNNEL',
-    lines: ['SUB-CENTIMETER', 'IR WALL CENTERING'],
-    plain: 'Where the cameras go blind, an infrared sensor on each side measures the walls and keeps the drone centred.',
-    spec: '2 × VL53L1X · ±0.3 cm readings · centred to about 2 cm in simulation',
+    lines: ['BLIND CARRY', 'THROUGH THE DARK'],
+    plain: 'The tunnel is dark: the cameras see nothing for about three seconds. The drone keeps flying the route on the autopilot’s own estimate.',
+    spec: 'rides PX4’s own estimate for at most 4 s · the tunnel is about 3 s dark',
     range: T.callouts[2],
   },
 ];

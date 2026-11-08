@@ -24,6 +24,12 @@ export const TODAY = {
   /** Did the course-model localizer / wall_correction steer a real flight yet? (as of the handoff: never) */
   localizerSteering: false,
 
+  /**
+   * One plain sentence on WHY the side time-of-flight sensors are no longer flown (Raaga, 2026-11-08: "we are no longer using
+   * ToF"). Shown on /tech, in the Q&A and under the tunnel card. Empty until you add one; a judge may well ask.
+   */
+  tofReason: '',
+
   /** PX4 EKF2_MAG_TYPE = 5, compass off, heading from the camera only (Shining set it in QGC overnight; old value 0) */
   compassOff: true,
 };

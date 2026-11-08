@@ -36,7 +36,7 @@ export const N = {
   camera: n(2, 'camera', '1024×640 at 30 Hz', 'OAK-D-S2 stereo pair into cuVSLAM, IMU fusion off', 'README section 1'),
   vslam: n(2, 'vslam', '31.2 Hz', 'cuVSLAM output rate on skybeta-19 (worst gap 49 ms, Jetson quiet)', 'README section 1; hardware_slam/'),
   gate: n(2, 'gate', '28.4 Hz', 'Poses that pass the odometry gate (tracking and under 0.25 s old); median age 59.89 ms', 'README section 1; hardware_slam/odom_gate.py'),
-  tof: n(2, 'tof', '9.6 Hz', 'Side time-of-flight rate on 19; 99 to 99.6 % valid, steady to ±0.3 cm', 'README section 4 (bench on skybeta-19)'),
+  tof: n(3, 'tof', '9.6 Hz', 'Side time-of-flight sensors, bench-tested on 19 (99 to 99.6 % valid, steady to ±0.3 cm). Built, not flown: we no longer use them', 'README section 4 (bench on skybeta-19); Raaga, 2026-11-08: no longer used'),
   mission: n(2, 'mission', '10 Hz', 'course_mission tick rate; the flight recorder writes one row per tick', 'README "How we test"; flight_logs README'),
   heartbeat: n(2, 'heartbeat', '10 Hz', 'flight_interface heartbeat that keeps PX4 in Offboard (organisers’ code)', 'README "How it works"'),
   grid: n(2, 'grid', '0.1 m cells, walls +0.28 m', 'Planner grid and wall padding, then A* and a B-spline', 'README section 6; planner/config.py'),
@@ -45,8 +45,8 @@ export const N = {
 
   /* 3 · why this approach */
   m3: n(3, 'm3', '76 cm', 'How far wall M3 sat from where the official map put it; a route planned on the map passed 2.8 cm from it', 'README "Nov 6" caption'),
-  freeze: n(3, 'freeze', '3 of 3', 'Master sim: freezing when tracking drops hit the tube 3 of 3 times', 'README section 4'),
-  blindCarry: n(3, 'blindCarry', '4 s', 'Longest gap blind_carry rides through on PX4’s estimate, only inside the tube; landed 4/4, 6/6 clean passes at 0.5 m/s', 'README section 4'),
+  freeze: n(3, 'freeze', '3 of 3', 'Master sim: freezing when tracking drops hit the tube 3 of 3 times', 'README section 4 (master sim, the drone’s own launch, whose ToF chain was on by default then)'),
+  blindCarry: n(3, 'blindCarry', '4 s', 'Longest gap blind_carry rides through on PX4’s estimate, only inside the tube; landed 4/4, 6/6 clean passes at 0.5 m/s', 'README section 4 (master sim, the drone’s own launch, whose ToF chain was on by default then: it does not isolate blind carry)'),
   compass: n(3, 'compass', '45 to 155°', 'How far the compass read from the camera heading indoors on 19, varying by spot', 'Shining’s handoff, Slack 2026-11-08'),
   compassSnap: n(3, 'compassSnap', '76° sim, ~100° floor', 'PX4 heading snap to the magnetometer about 0.5 s into a vision gap', 'README section 1'),
 
@@ -96,7 +96,7 @@ export const RUN_NOTES: Record<string, RunNote> = {
 export const RUN_3 = 'Run 3 · refused takeoff: PX4 heading was on the compass, ~100° off the camera. The pre-arm check stopped it.';
 
 export const TEAM = [
-  { name: 'Raaga Sundar', does: 'Flight program (navless_nav): route, guards, tunnel ToF, the sim gate', say: 'the flight program, the guards and the sim gate' },
+  { name: 'Raaga Sundar', does: 'Flight program (navless_nav): route, guards, blind carry, the sim gate', say: 'the flight program, the guards and the sim gate' },
   { name: 'Koji Shukawa', does: 'Stereo odometry on the Jetson, the odometry gate, split sim, networking', say: 'stereo odometry on the Jetson and the odometry gate' },
   { name: 'Shining Wang', does: 'Phone-scan course, stereo depth, localizer, flight tests, recorder', say: 'the phone scan, the localizer, the flight tests and the recorder' },
   { name: 'Favour Adekola', does: 'Path planner and live re-planning', say: 'the path planner' },

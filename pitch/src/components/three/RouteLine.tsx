@@ -6,7 +6,7 @@ import { useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { view } from '@/lib/choreography';
 import { COURSE, ROUTE, enu, routeAt } from '@/lib/course';
-import { clamp } from '@/lib/math';
+import { clamp, damp, lerp } from '@/lib/math';
 import { PAL } from '@/lib/palette';
 import { GlowLine, type GlowLineHandle } from './GlowLine';
 
@@ -14,8 +14,9 @@ import { GlowLine, type GlowLineHandle } from './GlowLine';
  * RouteLine: skybeta-19's real as-built route (286 waypoints, 14.2 m, from git) as a glowing MeshLine gradient (rust to gold,
  * warm = the route) that extends with the timeline. The head carries
  *   - a stereo FOV cone (callout 02): the OAK-D-S2 looking down the corridor, in ice blue (cool = what the drone perceives)
- *   - two IR time-of-flight beams to the tunnel walls (callout 03): the 940 nm side sensors that centre it in the dark
- * Nothing here flickers: the beams are steady and the head marker breathes slowly.
+ *   - the blind-carry beat (callout 03): inside the dark tunnel the camera sees nothing, so the cone goes dark, the head's ring
+ *     turns from ice to amber and a tag says it is riding PX4's own estimate (blind_carry, at most 4 s)
+ * Nothing here flickers: the head marker breathes slowly and the hand-over to amber is a 0.4 s fade.
  */
 
 const RUST = PAL.rust;
@@ -25,10 +26,6 @@ const ICE = PAL.ice;
 const PTS = ROUTE.waypoints.map((w) => new THREE.Vector3(...enu(w[0], w[1], w[2])));
 
 const T = COURSE.tunnel;
-const WALL_L = T.xMin + 0.02;
-const WALL_R = T.xMax - 0.02;
-
-const beamMat = () => new THREE.MeshBasicMaterial({ color: new THREE.Color(2.6, 0.9, 0.5), toneMapped: false, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
 
 export default function RouteLine() {
   const root = useRef<THREE.Group>(null!);
@@ -37,15 +34,10 @@ export default function RouteLine() {
   const core = useRef<GlowLineHandle>(null);
   const head = useRef<THREE.Group>(null!);
   const ring = useRef<THREE.Mesh>(null!);
-  const beams = useRef<THREE.Group>(null!);
-  const beamL = useRef<THREE.Mesh>(null!);
-  const beamR = useRef<THREE.Mesh>(null!);
-  const hitL = useRef<THREE.Group>(null!);
-  const hitR = useRef<THREE.Group>(null!);
-  const labelL = useRef<HTMLSpanElement>(null);
-  const labelR = useRef<HTMLSpanElement>(null);
-  const boxL = useRef<HTMLDivElement>(null);
-  const boxR = useRef<HTMLDivElement>(null);
+  const ringMat = useRef<THREE.MeshBasicMaterial>(null!);
+  const tag = useRef<HTMLDivElement>(null);
+  /** 0 = the camera sees, 1 = blind and riding PX4's estimate */
+  const blind = useRef(0);
 
   const coneGeo = useMemo(() => {
     const L = 2.7;
@@ -70,15 +62,14 @@ export default function RouteLine() {
       }),
     [],
   );
-  const matL = useMemo(beamMat, []);
-  const matR = useMemo(beamMat, []);
 
-  useFrame((state) => {
+  useFrame((state, dtRaw) => {
     const g = root.current;
     if (!g) return;
     const show = view.ghostShow;
     g.visible = show > 0.002;
     if (!g.visible) return;
+    const dt = Math.min(dtRaw, 0.05);
 
     // progressive draw: the gradient core + its halo grow with the ghost flight, the faint full route is always there
     const vis = clamp(view.ghostU + 0.012);
@@ -98,30 +89,17 @@ export default function RouteLine() {
     head.current.scale.setScalar(0.92 + 0.08 * Math.sin(state.clock.elapsedTime * 1.6));
     if (ring.current) ring.current.rotation.z = state.clock.elapsedTime * 0.4;
 
-    // stereo cone: on for callout 02, a faint ghost of it elsewhere
-    coneMat.uniforms.uAlpha.value = show * (0.04 + 0.4 * view.calloutMix[1]);
-
-    // IR beams: callout 03, while the ghost is in (or just before) the tunnel
+    // blind carry (callout 03): while the ghost is inside the tunnel the camera tracks nothing. The cone goes dark and the ring
+    // turns amber: from here the drone rides PX4's own estimate along the route.
     const inTube = gp.y < T.yMax + 0.5 && gp.y > T.yMin - 0.5 && gp.x > T.xMin && gp.x < T.xMax;
-    const beamOn = show * view.calloutMix[2] * (inTube ? 1 : 0);
-    beams.current.visible = beamOn > 0.01;
-    const lo = beams.current.visible ? String(Math.min(1, beamOn * 1.5)) : '0';
-    if (boxL.current) boxL.current.style.opacity = lo;
-    if (boxR.current) boxR.current.style.opacity = lo;
-    if (beams.current.visible) {
-      matL.opacity = matR.opacity = beamOn * 0.85; // steady: no flicker
-      const lenL = hw[0] - WALL_L;
-      const lenR = WALL_R - hw[0];
-      // cylinders lie along x: scale.y is the length, rotated 90 deg about z
-      beamL.current.position.set(hw[0] - lenL / 2, hw[1], hw[2]);
-      beamL.current.scale.set(1, lenL, 1);
-      beamR.current.position.set(hw[0] + lenR / 2, hw[1], hw[2]);
-      beamR.current.scale.set(1, lenR, 1);
-      hitL.current.position.set(WALL_L, hw[1], hw[2]);
-      hitR.current.position.set(WALL_R, hw[1], hw[2]);
-      if (labelL.current) labelL.current.textContent = `L ${lenL.toFixed(2)} m`;
-      if (labelR.current) labelR.current.textContent = `R ${lenR.toFixed(2)} m`;
-    }
+    const target = show * view.calloutMix[2] * (inTube ? 1 : 0) > 0.3 ? 1 : 0;
+    blind.current = damp(blind.current, target, 5, dt);
+    const k = blind.current;
+
+    // stereo cone: on for callout 02, a faint ghost of it elsewhere, dark while blind
+    coneMat.uniforms.uAlpha.value = show * (0.04 + 0.4 * view.calloutMix[1]) * (1 - k);
+    if (ringMat.current) ringMat.current.color.setRGB(lerp(1.1, 2.4, k), lerp(1.7, 1.6, k), lerp(2.1, 0.6, k));
+    if (tag.current) tag.current.style.opacity = String(clamp(k * 1.2));
   });
 
   return (
@@ -139,7 +117,7 @@ export default function RouteLine() {
         </mesh>
         <mesh ref={ring} rotation-x={-Math.PI / 2}>
           <ringGeometry args={[0.15, 0.17, 48]} />
-          <meshBasicMaterial color={[1.1, 1.7, 2.1]} toneMapped={false} transparent opacity={0.85} side={THREE.DoubleSide} depthWrite={false} />
+          <meshBasicMaterial ref={ringMat} color={[1.1, 1.7, 2.1]} toneMapped={false} transparent opacity={0.85} side={THREE.DoubleSide} depthWrite={false} />
         </mesh>
         <lineSegments>
           <bufferGeometry>
@@ -155,29 +133,12 @@ export default function RouteLine() {
           <lineBasicMaterial color="#f3c98f" transparent opacity={0.35} toneMapped={false} />
         </lineSegments>
         <mesh geometry={coneGeo} material={coneMat} renderOrder={5} />
-      </group>
-
-      {/* IR time-of-flight beams to the tunnel walls */}
-      <group ref={beams} visible={false}>
-        <mesh ref={beamL} material={matL} rotation-z={Math.PI / 2}>
-          <cylinderGeometry args={[0.012, 0.012, 1, 8, 1, true]} />
-        </mesh>
-        <mesh ref={beamR} material={matR} rotation-z={Math.PI / 2}>
-          <cylinderGeometry args={[0.012, 0.012, 1, 8, 1, true]} />
-        </mesh>
-        {[hitL, hitR].map((r, i) => (
-          <group key={i} ref={r}>
-            <mesh rotation-y={Math.PI / 2}>
-              <ringGeometry args={[0.04, 0.08, 28]} />
-              <meshBasicMaterial color={[2.6, 0.9, 0.5]} toneMapped={false} transparent opacity={0.9} side={THREE.DoubleSide} depthWrite={false} />
-            </mesh>
-            <Html center zIndexRange={[18, 0]} style={{ pointerEvents: 'none' }}>
-              <div ref={i === 0 ? boxL : boxR} className="beam-label" style={{ opacity: 0, transform: `translate(${i === 0 ? -44 : 44}px, -18px)` }}>
-                <span ref={i === 0 ? labelL : labelR}>—</span>
-              </div>
-            </Html>
-          </group>
-        ))}
+        {/* blind carry: the tag that appears while the camera sees nothing */}
+        <Html center position={[0, 0.55, 0]} zIndexRange={[18, 0]} style={{ pointerEvents: 'none' }}>
+          <div ref={tag} className="blind-tag" style={{ opacity: 0 }}>
+            NO CAMERA · PX4 ESTIMATE · MAX 4 S
+          </div>
+        </Html>
       </group>
     </group>
   );

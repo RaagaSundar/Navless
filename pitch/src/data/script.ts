@@ -86,6 +86,7 @@ const compassStory = TODAY.compassOff
   ? `On the real floor the compass read ${v('compass')} off, and kept flipping PX4's heading. So overnight we turned it off in PX4, and heading comes from the camera alone.`
   : `On the real floor the compass read ${v('compass')} off, and kept flipping PX4's heading. We still guard against it in our own code, and the heading checks refuse to fly when they disagree.`;
 
+const tofWhy = TODAY.tofReason ? ` ${TODAY.tofReason}` : '';
 const scored = TODAY.scored.length ? `And our scored runs. ${TODAY.scored.map((r) => `${r.slot}: ${r.result}.`).join(' ')}` : '';
 
 const tunedList = [
@@ -152,7 +153,7 @@ export const SLIDES: Slide[] = [
       {
         step: 0,
         cue: 'The whole diagram. Sense lights up.',
-        say: `This is the whole system, left to right. Sense: one stereo camera, ${v('camera')}. Two side time-of-flight sensors for the tunnel, at ${v('tof')}. A downward laser for height. All of it is on the drone.`,
+        say: `This is the whole system, left to right. Sense: one stereo camera, ${v('camera')}, and a downward laser for height. No GPS, no optical flow. All of it is on the drone.`,
       },
       {
         step: 1,
@@ -167,7 +168,7 @@ export const SLIDES: Slide[] = [
       {
         step: 3,
         cue: 'Decide.',
-        say: `Decide. course_mission is a state machine at ${v('mission')}: wait, take off, route, land, plus hold and refuse. It walks the path with a speed-limited carrot at ${v('cruise')}. Every guard in it came from something we saw in a log, and I'll show those in a few minutes.`,
+        say: `Decide. course_mission is a state machine at ${v('mission')}: wait, take off, route, land, plus hold and refuse. It walks the path with a speed-limited carrot at ${v('cruise')}. Every guard in it came from something we saw in a log, and I'll show those in a few minutes. When the camera goes blind in the dark tunnel, it carries on PX4's own estimate for at most ${v('blindCarry')}.`,
       },
       {
         step: 4,
@@ -198,7 +199,8 @@ export const SLIDES: Slide[] = [
       {
         step: 1,
         cue: 'The tunnel.',
-        say: `Second, the tunnel. Our first answer to a dark tunnel was: when tracking drops, freeze. In simulation that hit the tube ${v('freeze')} times. Now the drone rides on PX4's own estimate for at most ${v('blindCarry')}, and two side sensors keep it centred. In simulation that landed 4 out of 4, with 6 clean passes. We also built stereo centring and shelved it: the time-of-flight sensors carry their own light, so the dark doesn't matter.`,
+        say: `Second, the tunnel. Our first answer to a dark tunnel was: when tracking drops, freeze. In simulation that hit the tube ${v('freeze')} times. Now the route runs down the middle of the tube, and when the camera goes blind the drone rides on PX4's own estimate for at most ${v('blindCarry')}. In simulation that landed 4 out of 4, with 6 clean passes. We also built centring for it, with side time-of-flight sensors and with stereo, and we don't fly with either.${tofWhy}`,
+        todo: TODAY.tofReason ? undefined : 'A judge may ask why the side ToF sensors are not flown. Add one plain sentence as tofReason in src/data/today.ts and it appears here, on /tech and in the Q&A.',
       },
       {
         step: 2,
@@ -219,7 +221,7 @@ export const SLIDES: Slide[] = [
       {
         step: 0,
         cue: 'Left column: generalizes.',
-        say: `These would work in another room: stereo visual odometry fused into PX4, the odometry gate, the state machine and its guards, the planner, side time-of-flight centring in any tube, and the flight recorder. They need a textured room and a camera. Nothing in them knows our course.`,
+        say: `These would work in another room: stereo visual odometry fused into PX4, the odometry gate, the state machine and its guards, the planner, blind carry through any short vision gap, and the flight recorder. They need a textured room and a camera. Nothing in them knows our course.`,
       },
       {
         step: 1,
@@ -245,7 +247,7 @@ export const SLIDES: Slide[] = [
       {
         step: 0,
         cue: 'Tracking and the tunnel.',
-        say: `Camera loses tracking, or the light goes: the gate drops stale poses, the route target freezes, and after ${v('noProgress')} of no progress it holds. Dark tunnel: it knows from the map that it's inside the tube, carries on PX4's estimate for at most ${v('blindCarry')}, centred by the side sensors.`,
+        say: `Camera loses tracking, or the light goes: the gate drops stale poses, the route target freezes, and after ${v('noProgress')} of no progress it holds. Dark tunnel: it knows from the map that it's inside the tube, carries on PX4's estimate along the route for at most ${v('blindCarry')}.`,
       },
       {
         step: 1,
@@ -342,7 +344,15 @@ export const QA_LIST: QA[] = [
   { q: 'What is that number, and where did it come from?', a: 'Press Q: every number on the slides is in the sheet with its file, log or person.' },
   {
     q: 'Why stereo odometry and not something else?',
-    a: 'We carry no GPS or optical-flow sensor. The stereo pair is the sensor we had, cuVSLAM runs on the Jetson at 31 Hz, and PX4 fuses vision natively. We looked at the floor tape and at stereo tunnel centring and shelved both.',
+    a: 'We carry no GPS or optical-flow sensor. The stereo pair is the sensor we had, cuVSLAM runs on the Jetson at 31 Hz, and PX4 fuses vision natively. We looked at the floor tape and at tunnel centring, with stereo and with side time-of-flight sensors, and none of them is in the flight.',
+  },
+  {
+    q: 'Why are the side ToF sensors not flying?',
+    a: `We built them and bench-tested them (9.6 Hz, 99 to 99.6 % valid, steady to ±0.3 cm), and a closed-loop sim brought a 10 to 12 cm offset to within 2 cm. We decided not to fly with them.${tofWhy}`,
+  },
+  {
+    q: 'Has the drone flown the tunnel for real?',
+    a: 'No. None of the five overnight attempts got that far, so every tunnel result is simulation. Those sim runs used the course launch, whose ToF chain was on by default at the time, so blind carry alone has not been shown separately.',
   },
   {
     q: 'Has the localizer steered a real flight?',
