@@ -58,6 +58,7 @@ SPAWN_ENU = (-2.515, 1.114, 0.067)  # FlyX lab spawn (body origin standing on th
 CONTACT_M = 0.20  # body centre closer than this to raw occupied voxels counts as contact (7" props)
 
 _BASE_GRID: OccupancyGrid3D | None = None
+_OLD_BASE_GRID: OccupancyGrid3D | None = None
 _BASE_OCC_M: np.ndarray | None = None
 
 
@@ -73,10 +74,28 @@ def _get_base_grid(cfg: PlannerConfig) -> OccupancyGrid3D:
         g.load_prior_from_obj(OBJ_PATH)
         g.build_soft_clearance_cost()
         g.build_soft_clearance_cost(0.55)
+        g.get_discovered_discrepancy_points()
         occ = np.argwhere(g.raw_grid)
         _BASE_OCC_M = (occ + 0.5) * g.resolution + g.bounds_min
         _BASE_GRID = g
     return _BASE_GRID
+
+
+def _get_old_base_grid(cfg: PlannerConfig) -> OccupancyGrid3D:
+    global _OLD_BASE_GRID
+    if _OLD_BASE_GRID is None:
+        g = OccupancyGrid3D(
+            bounds_min_m=cfg.global_map_bounds_min_m,
+            bounds_max_m=cfg.global_map_bounds_max_m,
+            resolution_m=cfg.voxel_resolution_m,
+            inflation_radius_m=cfg.obstacle_inflation_m,
+        )
+        g.load_old_asbuilt_prior_from_obj(OBJ_PATH)
+        g.build_soft_clearance_cost()
+        g.build_soft_clearance_cost(0.55)
+        g.get_discovered_discrepancy_points()
+        _OLD_BASE_GRID = g
+    return _OLD_BASE_GRID
 
 
 def _clone_grid(src: OccupancyGrid3D, cfg: PlannerConfig) -> OccupancyGrid3D:
@@ -94,12 +113,14 @@ def _clone_grid(src: OccupancyGrid3D, cfg: PlannerConfig) -> OccupancyGrid3D:
     g.detected_launch_mark_xy = src.detected_launch_mark_xy
     g._soft_cost_cache = {k: v.copy() for k, v in src._soft_cost_cache.items()}
     g._features_cache = dict(src._features_cache)
+    g._discrepancy_cache = dict(src._discrepancy_cache)
     return g
 
 
 def run_simulation_episode(
     *,
     fast_mode: bool = True,
+    use_old_mapping: bool = False,
     spawn_unmapped_boulder: bool = False,
     block_window: bool = False,
     kp_pos: float = 0.95,
@@ -107,11 +128,19 @@ def run_simulation_episode(
     """Execute a closed-loop PX4-Autopilot (`step_px4_mission`) + noisy VIO + OAK-D depth episode."""
     cfg = PlannerConfig(fast_mode=fast_mode)
     base_grid = _get_base_grid(cfg)
-    planner_grid = _clone_grid(base_grid, cfg)
+    prior_src = _get_old_base_grid(cfg) if use_old_mapping else base_grid
+    planner_grid = _clone_grid(prior_src, cfg)
     initial_raw = planner_grid.raw_grid.copy()
     truth_grid = _clone_grid(base_grid, cfg)
 
     unmapped_boxes: List[Dict] = []
+    old_ghost_walls: List[Dict] = []
+    if use_old_mapping:
+        old_ghost_walls = [
+            {"start": [-2.066, 0.508], "end": [-1.786, 2.456], "label": "Old M1 (Removed in New Map)"},
+            {"start": [-0.590, 1.539], "end": [-0.458, 3.048], "label": "Old M2 (Removed in New Map)"},
+            {"start": [1.019, 0.508], "end": [1.078, 2.431], "label": "Old M3 (Removed in New Map)"},
+        ]
     if spawn_unmapped_boulder:
         # Place an unmapped discrepancy boulder between the tunnel exit and window approach on the as-built course
         # (south-west of C1's south end at (1.52, -1.14)) so OAK-D depth discovers it and replans around it!
@@ -135,12 +164,20 @@ def run_simulation_episode(
     phys = QuadrotorPhysicsAndVIOSim(SPAWN_ENU, SPAWN_ENU, seed=7)
     phys.kp_pos = float(kp_pos)  # PX4 MPC_XY_P = 0.95 default
     depth_cam = RaycastOakDDepthCamera(seed=101)
-    has_discrepancy = bool(spawn_unmapped_boulder or block_window)
+    has_discrepancy = bool(use_old_mapping or spawn_unmapped_boulder or block_window)
 
     dt = 1.0 / 30.0
     max_steps = int(140.0 / dt)
     frames: List[Dict] = []
-    active_spline_pts: List[List[float]] = []
+    init_spline, _ = router.optimizer.plan_spline(
+        (SPAWN_ENU[0], SPAWN_ENU[1], 0.90),
+        router.current_goal_enu(),
+        router.profile_for_stage(),
+        goal_radius_m=router.landing_target_enu()[1],
+    )
+    active_spline_pts: List[List[float]] = (
+        np.round(init_spline.sample_points(110), 3).tolist() if init_spline is not None else []
+    )
     depth_hits_world: List[List[float]] = []
 
     armed = False
@@ -165,7 +202,7 @@ def run_simulation_episode(
         tracker.update_landed(t, on_ground)
         tracker.update_estimator_health(True)
 
-        # Live OAK-D 16UC1 depth raycasting when testing unmapped obstacle or blocked window discrepancies
+        # Live OAK-D 16UC1 depth raycasting when testing old->new mapping, unmapped obstacle, or blocked window
         new_vox_discovered = False
         if has_discrepancy and armed and z > 0.45 and step_i % 6 == 0:
             raw_bytes = depth_cam.render_16uc1_mm(truth_grid, phys.true_pos_enu, phys.true_yaw_enu)
@@ -183,12 +220,13 @@ def run_simulation_episode(
                 depth_cam.cy,
                 est_enu,
                 est_yaw_enu,
+                carve_free_space=use_old_mapping,
             )
             if added > 0:
                 diff_vox = np.argwhere(planner_grid.raw_grid & ~initial_raw)
                 if diff_vox.size > 0:
                     centers = planner_grid.bounds_min + (diff_vox.astype(np.float64) + 0.5) * planner_grid.resolution
-                    depth_hits_world = np.round(centers[:: max(1, len(centers) // 120)], 3).tolist()
+                    depth_hits_world = np.round(centers[:: max(1, len(centers) // 160)], 3).tolist()
                     new_vox_discovered = True
 
         cmd = tracker.step_px4_mission(t)
@@ -277,6 +315,7 @@ def run_simulation_episode(
 
     return {
         "fast_mode": fast_mode,
+        "use_old_mapping": use_old_mapping,
         "obj_file": OBJ_PATH.name,
         "spawn_unmapped_boulder": spawn_unmapped_boulder,
         "block_window": block_window,
@@ -285,6 +324,7 @@ def run_simulation_episode(
         "pass_mission": bool(tracker.px4_state == "DONE" and min_clear >= CONTACT_M),
         "selected_branch": router.selected_branch,
         "unmapped_boxes": unmapped_boxes,
+        "old_ghost_walls": old_ghost_walls,
         "frames": frames,
     }
 
@@ -299,7 +339,7 @@ HTML_PAGE = """<!DOCTYPE html>
     body { background: #0b0f19; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; overflow: hidden; }
     #canvas-container { width: 100vw; height: 100vh; }
     #hud {
-      position: absolute; top: 16px; left: 16px; width: 380px;
+      position: absolute; top: 16px; left: 16px; width: 396px;
       background: rgba(15, 23, 42, 0.90); border: 1px solid #334155;
       border-radius: 12px; padding: 16px; backdrop-filter: blur(8px);
       box-shadow: 0 10px 25px rgba(0,0,0,0.5);
@@ -362,11 +402,12 @@ HTML_PAGE = """<!DOCTYPE html>
         <button id="speed-fast" class="active">Fast Mode (1.35 m/s)</button>
         <button id="speed-norm">Standard FlyX (0.60 m/s)</button>
       </div>
-      <div style="font-size:12px; color:#94a3b8; margin-top:4px;">PX4-Autopilot Sim Scenario (As-Built Scan):</div>
+      <div style="font-size:12px; color:#94a3b8; margin-top:4px;">PX4-Autopilot Sim Scenario (2026-11-07 Course):</div>
       <div class="btn-group">
-        <button id="preset-asbuilt" class="active">As-Built Course (Window)</button>
+        <button id="preset-asbuilt" class="active">New Mapping -> Traverse New Map</button>
+        <button id="preset-oldmap">Old Mapping -> Traverse New Map</button>
         <button id="preset-gateb">Blocked Window -> Gate B</button>
-        <button id="preset-boulder">As-Built + Unmapped Obstacle</button>
+        <button id="preset-boulder">New Map + Unmapped Obstacle</button>
       </div>
     </div>
 
@@ -375,6 +416,7 @@ HTML_PAGE = """<!DOCTYPE html>
       <div><span class="dot" style="background:#f43f5e;"></span>Noisy/Drifted VIO Estimate (No GPS)</div>
       <div><span class="dot" style="background:#4ade80;"></span>Active EGO B-Spline Trajectory</div>
       <div><span class="dot" style="background:#fb923c;"></span>Live OAK-D Discovered Obstacle Voxels</div>
+      <div><span class="dot" style="background:#a855f7;"></span>Old Mapping Ghost Walls (M1, M2, M3 — Carved Live)</div>
     </div>
   </div>
 
@@ -492,9 +534,11 @@ HTML_PAGE = """<!DOCTYPE html>
     const splineLine = new THREE.Line(splineGeom, splineMat);
     scene.add(splineLine);
 
-    // Unmapped obstacle group & discovered OAK-D voxels group
+    // Unmapped obstacle group, old ghost walls group & discovered OAK-D voxels group
     const unmappedGroup = new THREE.Group();
     scene.add(unmappedGroup);
+    const oldGhostGroup = new THREE.Group();
+    scene.add(oldGhostGroup);
     const voxGroup = new THREE.Group();
     scene.add(voxGroup);
 
@@ -503,6 +547,7 @@ HTML_PAGE = """<!DOCTYPE html>
     let playing = true;
     let followCam = false;
     let currentFastMode = true;
+    let currentOldMap = false;
     let currentBoulder = false;
     let currentBlockWindow = false;
     let lastTick = performance.now();
@@ -514,26 +559,28 @@ HTML_PAGE = """<!DOCTYPE html>
     const speedFast = document.getElementById('speed-fast');
     const speedNorm = document.getElementById('speed-norm');
     const presetAsbuilt = document.getElementById('preset-asbuilt');
+    const presetOldMap = document.getElementById('preset-oldmap');
     const presetGateB = document.getElementById('preset-gateb');
     const presetBoulder = document.getElementById('preset-boulder');
 
-    async function loadScenario(fastMode = currentFastMode, boulder = currentBoulder, blockWindow = currentBlockWindow) {
+    async function loadScenario(fastMode = currentFastMode, oldMap = currentOldMap, boulder = currentBoulder, blockWindow = currentBlockWindow) {
       currentFastMode = fastMode;
+      currentOldMap = oldMap;
       currentBoulder = boulder;
       currentBlockWindow = blockWindow;
       document.getElementById('val-stage').textContent = 'SIMULATING...';
-      const res = await fetch(`/api/sim?fast_mode=${fastMode ? 1 : 0}&boulder=${boulder ? 1 : 0}&block_window=${blockWindow ? 1 : 0}`);
+      const res = await fetch(`/api/sim?fast_mode=${fastMode ? 1 : 0}&old_map=${oldMap ? 1 : 0}&boulder=${boulder ? 1 : 0}&block_window=${blockWindow ? 1 : 0}`);
       episode = await res.json();
       frameIdx = 0;
       timeline.max = Math.max(0, episode.frames.length - 1);
       timeline.value = 0;
       if (episode.obj_file) {
-        document.getElementById('val-obj').textContent = episode.obj_file;
+        document.getElementById('val-obj').textContent = oldMap ? `${episode.obj_file} (Old Prior -> New Map)` : episode.obj_file;
       }
 
       // Render unmapped ground-truth boxes
       unmappedGroup.clear();
-      for (const b of episode.unmapped_boxes) {
+      for (const b of (episode.unmapped_boxes || [])) {
         const sx = b.max[0] - b.min[0], sy = b.max[1] - b.min[1], sz = b.max[2] - b.min[2];
         const m = new THREE.Mesh(
           new THREE.BoxGeometry(sx, sy, sz),
@@ -541,6 +588,21 @@ HTML_PAGE = """<!DOCTYPE html>
         );
         m.position.set(0.5*(b.min[0]+b.max[0]), 0.5*(b.min[1]+b.max[1]), 0.5*(b.min[2]+b.max[2]));
         unmappedGroup.add(m);
+      }
+
+      // Render Old Mapping ghost walls (M1, M2, M3) when Old Mapping -> Traverse New Map is selected
+      oldGhostGroup.clear();
+      for (const w of (episode.old_ghost_walls || [])) {
+        const dx = w.end[0] - w.start[0], dy = w.end[1] - w.start[1];
+        const len = Math.hypot(dx, dy);
+        const geom = new THREE.BoxGeometry(len, 0.1016, 1.7272);
+        const mat = new THREE.MeshBasicMaterial({ color: 0xa855f7, transparent: true, opacity: 0.22, wireframe: false });
+        const mesh = new THREE.Mesh(geom, mat);
+        const wire = new THREE.LineSegments(new THREE.EdgesGeometry(geom), new THREE.LineBasicMaterial({ color: 0xc084fc, transparent: true, opacity: 0.75 }));
+        mesh.add(wire);
+        mesh.position.set(0.5 * (w.start[0] + w.end[0]), 0.5 * (w.start[1] + w.end[1]), 0.8636);
+        mesh.rotation.z = Math.atan2(dy, dx);
+        oldGhostGroup.add(mesh);
       }
       voxGroup.clear();
     }
@@ -602,6 +664,12 @@ HTML_PAGE = """<!DOCTYPE html>
       document.getElementById('val-vio').textContent = `${f.vio_err_cm.toFixed(2)} cm`;
     }
 
+    function setActivePreset(activeBtn) {
+      for (const b of [presetAsbuilt, presetOldMap, presetGateB, presetBoulder]) {
+        b.classList.toggle('active', b === activeBtn);
+      }
+    }
+
     btnPlay.onclick = () => {
       playing = !playing;
       btnPlay.textContent = playing ? 'Pause' : 'Play';
@@ -619,23 +687,27 @@ HTML_PAGE = """<!DOCTYPE html>
     };
     speedFast.onclick = () => {
       speedFast.classList.add('active'); speedNorm.classList.remove('active');
-      loadScenario(true, currentBoulder, currentBlockWindow);
+      loadScenario(true, currentOldMap, currentBoulder, currentBlockWindow);
     };
     speedNorm.onclick = () => {
       speedNorm.classList.add('active'); speedFast.classList.remove('active');
-      loadScenario(false, currentBoulder, currentBlockWindow);
+      loadScenario(false, currentOldMap, currentBoulder, currentBlockWindow);
     };
     presetAsbuilt.onclick = () => {
-      presetAsbuilt.classList.add('active'); presetGateB.classList.remove('active'); presetBoulder.classList.remove('active');
-      loadScenario(currentFastMode, false, false);
+      setActivePreset(presetAsbuilt);
+      loadScenario(currentFastMode, false, false, false);
+    };
+    presetOldMap.onclick = () => {
+      setActivePreset(presetOldMap);
+      loadScenario(currentFastMode, true, false, false);
     };
     presetGateB.onclick = () => {
-      presetGateB.classList.add('active'); presetAsbuilt.classList.remove('active'); presetBoulder.classList.remove('active');
-      loadScenario(currentFastMode, false, true);
+      setActivePreset(presetGateB);
+      loadScenario(currentFastMode, false, false, true);
     };
     presetBoulder.onclick = () => {
-      presetBoulder.classList.add('active'); presetAsbuilt.classList.remove('active'); presetGateB.classList.remove('active');
-      loadScenario(currentFastMode, true, false);
+      setActivePreset(presetBoulder);
+      loadScenario(currentFastMode, false, true, false);
     };
 
     window.addEventListener('resize', () => {
@@ -644,7 +716,7 @@ HTML_PAGE = """<!DOCTYPE html>
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    loadScenario(true, false, false);
+    loadScenario(true, false, false, false);
 
     function animate(now) {
       requestAnimationFrame(animate);
@@ -694,12 +766,14 @@ class SimViewerHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/sim":
             qs = parse_qs(parsed.query)
             fast = qs.get("fast_mode", ["1"])[0] == "1"
+            old_map = qs.get("old_map", ["0"])[0] == "1"
             boulder = qs.get("boulder", ["0"])[0] == "1"
             block_win = qs.get("block_window", ["0"])[0] == "1"
-            key = f"ego_{fast}_{boulder}_{block_win}"
+            key = f"ego_{fast}_{old_map}_{boulder}_{block_win}"
             if key not in self._cache:
                 ep = run_simulation_episode(
                     fast_mode=fast,
+                    use_old_mapping=old_map,
                     spawn_unmapped_boulder=boulder,
                     block_window=block_win,
                 )
@@ -720,14 +794,16 @@ def main(port: int = 8090) -> None:
 
     def _warm() -> None:
         for fm in (True, False):
-            key = f"ego_{fm}_False_False"
-            if key not in SimViewerHandler._cache:
-                ep = run_simulation_episode(
-                    fast_mode=fm,
-                    spawn_unmapped_boulder=False,
-                    block_window=False,
-                )
-                SimViewerHandler._cache[key] = json.dumps(ep).encode("utf-8")
+            for om in (False, True):
+                key = f"ego_{fm}_{om}_False_False"
+                if key not in SimViewerHandler._cache:
+                    ep = run_simulation_episode(
+                        fast_mode=fm,
+                        use_old_mapping=om,
+                        spawn_unmapped_boulder=False,
+                        block_window=False,
+                    )
+                    SimViewerHandler._cache[key] = json.dumps(ep).encode("utf-8")
 
     threading.Thread(target=_warm, daemon=True).start()
     server = HTTPServer(("0.0.0.0", port), SimViewerHandler)

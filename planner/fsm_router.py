@@ -319,7 +319,7 @@ class GlobalCourseRouter:
         spline_finished = False
         if self.active_spline is not None:
             t_rel = max(0.0, now_s - self.spline_start_time_s)
-            if (now_s - self.last_replan_time_s) >= 0.40 and self.stage != CourseStage.STAGE_6_FLY_HOME:
+            if (now_s - self.spline_start_time_s) >= 0.15 and self.stage != CourseStage.STAGE_6_FLY_HOME:
                 spline_blocked = not self.optimizer.is_spline_collision_free(self.active_spline, t_start=t_rel)
             end_pos = self.active_spline.evaluate_position(self.active_spline.duration)
             end_at_goal = (

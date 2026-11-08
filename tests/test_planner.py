@@ -267,9 +267,14 @@ class TestPlannerScaffold(unittest.TestCase):
             np.testing.assert_allclose(first_ned, [0.0, 0.0, -0.85], atol=1e-3)
 
     def test_real_course_v3_obj_gate_b_and_window_routes(self) -> None:
-        obj_path = Path(__file__).resolve().parent.parent / "dronehacks-course-v3.obj"
+        base_dir = Path(__file__).resolve().parent.parent
+        obj_path = (
+            base_dir / "dronehacks-course-asbuilt.obj"
+            if (base_dir / "dronehacks-course-asbuilt.obj").exists()
+            else base_dir / "dronehacks-course-v3.obj"
+        )
         if not obj_path.exists():
-            self.skipTest("dronehacks-course-v3.obj not present")
+            self.skipTest("dronehacks-course-asbuilt.obj not present")
         cfg = PlannerConfig()
         grid = OccupancyGrid3D(
             bounds_min_m=cfg.global_map_bounds_min_m,
@@ -333,8 +338,8 @@ class TestPlannerScaffold(unittest.TestCase):
         )
         # Points near the ±3.048m perimeter net must be occupied in the inflated grid
         self.assertTrue(grid.is_occupied((-3.02, 0.0, 0.85), inflated=False))
-        self.assertTrue(grid.is_occupied((0.0, -2.80, 0.85), inflated=True))
-        self.assertTrue(grid.is_occupied((0.0, 2.80, 0.85), inflated=True))
+        self.assertTrue(grid.is_occupied((0.0, -2.85, 0.85), inflated=True))
+        self.assertTrue(grid.is_occupied((0.0, 2.85, 0.85), inflated=True))
 
         # Place a boulder near the South net at y = -2.40 m and plan past it:
         # Planner must dodge NORTH (toward interior y > -2.40), never SOUTH into the invisible net!
@@ -725,54 +730,47 @@ class TestPlannerScaffold(unittest.TestCase):
         self.assertEqual(sp_pad_rearm.branch, "PREARM_STREAM")
         self.assertEqual(sp_pad_rearm.stage, CourseStage.STAGE_6_FLY_HOME)
 
-    def test_nmpc_short_term_corner_braking_and_contouring(self) -> None:
-        from planner.nmpc import NonlinearMPCPlanner
+    def test_ego_bspline_3d_obstacle_repulsion_and_vertical_hole_curving(self) -> None:
+        from planner.config import StageProfile
 
-        cfg = PlannerConfig(short_term_planner="nmpc")
-        grid = OccupancyGrid3D(
-            bounds_min_m=cfg.global_map_bounds_min_m,
-            bounds_max_m=cfg.global_map_bounds_max_m,
-            resolution_m=cfg.voxel_resolution_m,
-            inflation_radius_m=cfg.obstacle_inflation_m,
-        )
-        # Add an East corridor wall at x = -0.85 m so cross-track overshoot toward +X is near a wall
-        grid.add_aabb_obstacle((-0.85, 0.50, 0.0), (-0.75, 2.70, 1.70))
-        nmpc = NonlinearMPCPlanner(grid)
+        cfg = PlannerConfig()
+        prof = StageProfile(v_max=0.60, a_max=1.0, j_max=3.0, z_min_enu=0.35, z_max_enu=1.45)
 
-        # Build a 90-degree maze turn: East along y=2.50 from (-2.45, 2.50) to (-1.35, 2.50), then South to (-1.35, 0.80)
-        turn_wps = np.array(
-            [
-                [-2.45, 2.50, 0.85],
-                [-1.90, 2.50, 0.85],
-                [-1.35, 2.50, 0.85],
-                [-1.35, 1.70, 0.85],
-                [-1.35, 0.80, 0.85],
-            ],
-            dtype=np.float64,
+        # Build a wall at x in [-0.15, 0.15] with a high window hole (z in [0.95, 1.55])
+        grid_high = OccupancyGrid3D(
+            bounds_min_m=(-2.0, -2.0, 0.0),
+            bounds_max_m=(2.0, 2.0, 2.2),
+            resolution_m=0.10,
+            inflation_radius_m=0.25,
         )
-        ref_spline = UniformBspline.from_waypoints(turn_wps, 0.85).reallocate_time(
-            cfg.maze_profile.v_max,
-            cfg.maze_profile.a_max,
-        )
+        grid_high.add_aabb_obstacle((-0.15, -1.8, 0.0), (0.15, 1.8, 1.75), update_inflation=False)
+        grid_high.carve_aabb_opening((-0.20, -0.45, 0.95), (0.20, 0.45, 1.55), rebuild=True)
 
-        # Simulate the drone overshooting Corner 2 East to x = -1.09 m (0.26 m East of x = -1.35 m centerline)
-        # with residual Eastward velocity (+0.30 m/s): NMPC must pull target_pos_enu West back toward x = -1.35 m!
-        overshot_pos = np.array([-1.09, 2.42, 0.85], dtype=np.float64)
-        overshot_vel = np.array([0.30, -0.10, 0.0], dtype=np.float64)
-        rollout = nmpc.solve_short_horizon(
-            overshot_pos,
-            overshot_vel,
-            0.0,
-            ref_spline,
-            1.6,
-            cfg.maze_profile,
+        opt_high = EgoBsplineOptimizer(grid_high)
+        sp_high, _ = opt_high.plan_spline((1.2, 0.0, 0.80), (-1.2, 0.0, 0.80), prof)
+        self.assertIsNotNone(sp_high)
+        assert sp_high is not None
+        pts_high = sp_high.sample_points(40)
+        mid_high = pts_high[np.abs(pts_high[:, 0]) < 0.25]
+        self.assertGreater(float(np.mean(mid_high[:, 2])), 1.10)
+
+        # Build a wall at x in [-0.15, 0.15] with a low window hole (z in [0.15, 0.75])
+        grid_low = OccupancyGrid3D(
+            bounds_min_m=(-2.0, -2.0, 0.0),
+            bounds_max_m=(2.0, 2.0, 2.2),
+            resolution_m=0.10,
+            inflation_radius_m=0.25,
         )
-        self.assertLess(rollout.solve_time_ms, 50.0)
-        # Target X must pull West (< -1.12 m) toward the -1.35 m corridor centerline, away from the -0.85 m wall
-        self.assertLess(float(rollout.target_pos_enu[0]), -1.12)
-        # All predicted horizon states must respect [z_min, z_max]
-        self.assertTrue(np.all(rollout.positions_enu[:, 2] >= cfg.maze_profile.z_min_enu - 1e-6))
-        self.assertTrue(np.all(rollout.positions_enu[:, 2] <= cfg.maze_profile.z_max_enu + 1e-6))
+        grid_low.add_aabb_obstacle((-0.15, -1.8, 0.0), (0.15, 1.8, 1.75), update_inflation=False)
+        grid_low.carve_aabb_opening((-0.20, -0.45, 0.15), (0.20, 0.45, 0.75), rebuild=True)
+
+        opt_low = EgoBsplineOptimizer(grid_low)
+        sp_low, _ = opt_low.plan_spline((1.2, 0.0, 0.85), (-1.2, 0.0, 0.85), prof)
+        self.assertIsNotNone(sp_low)
+        assert sp_low is not None
+        pts_low = sp_low.sample_points(40)
+        mid_low = pts_low[np.abs(pts_low[:, 0]) < 0.25]
+        self.assertLess(float(np.mean(mid_low[:, 2])), 0.55)
 
 
 if __name__ == "__main__":

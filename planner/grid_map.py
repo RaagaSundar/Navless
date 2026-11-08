@@ -122,6 +122,7 @@ class OccupancyGrid3D:
         self.detected_launch_mark_xy: Optional[Tuple[float, float]] = None
         self._soft_cost_cache: Dict[float, np.ndarray] = {}
         self._features_cache: Dict[Tuple[float, float], DetectedCourseFeatures] = {}
+        self._discrepancy_cache: Dict[Tuple[float, float], np.ndarray] = {}
 
         # If this grid covers the 20x20 ft course arena, permanently bake in the perimeter net border
         # because the thin mesh net at x,y = ±3.048 m is invisible to the OAK-D stereo depth sensor.
@@ -157,12 +158,12 @@ class OccupancyGrid3D:
         self.add_aabb_obstacle((bmin_x, inner, z_lo), (bmax_x, bmax_y, z_hi))
         self.prior_grid[:] = self.raw_grid
 
-    def _build_spherical_offsets(self, radius_m: float) -> np.ndarray:
-        """Build quadrotor-shaped (cylindrical XY = radius_m, vertical Z = min(radius_m, 0.15 m)) inflation offsets."""
+    def _build_spherical_offsets(self, radius_m: float, z_max_radius_m: float = 0.22) -> np.ndarray:
+        """Build 3D inflation offsets (horizontal XY = radius_m, vertical Z = min(radius_m, z_max_radius_m))."""
         r_xy = int(math.ceil(radius_m / self.resolution))
         if r_xy <= 0:
             return np.zeros((1, 3), dtype=np.int32)
-        z_rad = min(radius_m, 0.15)
+        z_rad = min(radius_m, z_max_radius_m)
         r_z = int(math.ceil(z_rad / self.resolution))
         rng_xy = np.arange(-r_xy, r_xy + 1, dtype=np.int32)
         rng_z = np.arange(-r_z, r_z + 1, dtype=np.int32)
@@ -212,6 +213,7 @@ class OccupancyGrid3D:
 
         # Incrementally update cached soft clearance cost fields for small live depth batches
         self._features_cache.clear()
+        self._discrepancy_cache.clear()
         if self._soft_cost_cache:
             if voxel_indices.shape[0] <= 600:
                 for buf_r, cost_arr in self._soft_cost_cache.items():
@@ -223,6 +225,7 @@ class OccupancyGrid3D:
         """Recompute inflated_grid from scratch using raw_grid."""
         self._soft_cost_cache.clear()
         self._features_cache.clear()
+        self._discrepancy_cache.clear()
         self.inflated_grid.fill(False)
         occ = np.argwhere(self.raw_grid)
         self._inflate_voxels(occ)
@@ -296,14 +299,9 @@ class OccupancyGrid3D:
                     iz = occ[:, 2] + dz
                     valid = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny) & (iz >= 0) & (iz < nz)
                     self.prior_near_mask[ix[valid], iy[valid], iz[valid]] = True
-        # Never mask out the central Window opening core so a blocked window discrepancy is always detected
-        wmin = self.world_to_voxel((-0.62, -2.52, 0.52))
-        wmax = self.world_to_voxel((-0.32, -2.02, 1.00))
-        self.prior_near_mask[
-            max(0, wmin[0]) : min(nx, wmax[0] + 1),
-            max(0, wmin[1]) : min(ny, wmax[1] + 1),
-            max(0, wmin[2]) : min(nz, wmax[2] + 1),
-        ] = False
+        # Never mask out navigable free space outside the inflation radius
+        self.prior_near_mask[~self.inflated_grid] = False
+        self._discrepancy_cache.clear()
 
     def load_prior_from_json(self, path: str | Path) -> None:
         """Pre-seed map from a JSON layout file containing `walls` (boxes), `openings`, or packed voxel snapshot."""
@@ -333,6 +331,36 @@ class OccupancyGrid3D:
         self.rebuild_inflation()
         self._update_prior_snapshot()
 
+    def add_oriented_wall_segment(
+        self,
+        start_xy_m: Tuple[float, float],
+        end_xy_m: Tuple[float, float],
+        *,
+        thickness_m: float = 0.1016,
+        height_m: float = 1.7272,
+        update_prior: bool = True,
+    ) -> int:
+        """Rasterize an oriented 3D wall box between `start_xy_m` and `end_xy_m` into the voxel grid."""
+        x0, y0 = float(start_xy_m[0]), float(start_xy_m[1])
+        x1, y1 = float(end_xy_m[0]), float(end_xy_m[1])
+        length = math.hypot(x1 - x0, y1 - y0)
+        if length <= 1e-6:
+            return 0
+        tx, ty = (x1 - x0) / length, (y1 - y0) / length
+        nx_w, ny_w = -ty, tx
+        us = np.linspace(0.0, length, max(2, int(math.ceil(length / 0.04)) + 1))
+        ws = np.linspace(-0.5 * thickness_m, 0.5 * thickness_m, max(2, int(math.ceil(thickness_m / 0.04)) + 1))
+        zs = np.linspace(0.05, height_m, max(2, int(math.ceil(height_m / 0.08)) + 1))
+        uu, ww, zz = np.meshgrid(us, ws, zs, indexing="ij")
+        px = x0 + uu.ravel() * tx + ww.ravel() * nx_w
+        py = y0 + uu.ravel() * ty + ww.ravel() * ny_w
+        pz = zz.ravel()
+        pts = np.stack([px, py, pz], axis=-1)
+        added = self.insert_point_cloud(pts, sensor_origin_m=None)
+        if update_prior:
+            self._update_prior_snapshot()
+        return added
+
     def load_prior_from_obj(
         self,
         path: str | Path,
@@ -340,12 +368,14 @@ class OccupancyGrid3D:
         *,
         min_obstacle_z_m: float = 0.04,
         max_obstacle_z_m: float = 2.95,
+        exclude_groups: Optional[Iterable[str]] = None,
     ) -> int:
         """Pre-seed static obstacles from a Wavefront .obj 3D course mesh (`dronehacks-course-v3.obj`).
 
         Filters out flat floor markings (z <= min_obstacle_z_m) and the 3.048m roof net
         (z >= max_obstacle_z_m), and vectorizes triangle sampling for large wall/tunnel faces.
         """
+        excluded = set(exclude_groups) if exclude_groups is not None else set()
         vertices: List[Tuple[float, float, float]] = []
         faces: List[Tuple[int, int, int]] = []
         net_faces: List[bool] = []
@@ -359,6 +389,8 @@ class OccupancyGrid3D:
                 if len(parts) >= 4:
                     vertices.append((float(parts[1]), float(parts[2]), float(parts[3])))
             elif line.startswith("f "):
+                if current_group in excluded:
+                    continue
                 parts = line.split()[1:]
                 idxs = [int(p.split("/")[0]) - 1 for p in parts if p]
                 is_net = current_group.startswith("Net ")
@@ -428,6 +460,50 @@ class OccupancyGrid3D:
         self._update_prior_snapshot()
         return added
 
+    def load_old_asbuilt_prior_from_obj(
+        self,
+        obj_path: str | Path,
+        scan_walls_path: Optional[str | Path] = None,
+    ) -> int:
+        """Load the pre-2026-11-07 as-built prior map (with old maze walls M1, M2, M3 instead of MN, MD, MT)."""
+        new_maze_groups = {
+            "Maze wall north (new 2026-11-07)",
+            "Maze wall long diagonal (new 2026-11-07)",
+            "Maze wall to tube (new 2026-11-07)",
+        }
+        added = self.load_prior_from_obj(obj_path, exclude_groups=new_maze_groups)
+        if scan_walls_path is None:
+            cand = Path(obj_path).resolve().parent / "depthcloud" / "asbuilt" / "scan_walls.json"
+            if cand.exists():
+                scan_walls_path = cand
+        old_walls = [
+            ((-2.066, 0.508), (-1.786, 2.456)),  # M1 maze divider
+            ((-0.590, 1.539), (-0.458, 3.048)),  # M2 maze divider
+            ((1.019, 0.508), (1.078, 2.431)),    # M3 maze divider
+        ]
+        thickness_m = 4.0 * 0.0254
+        height_m = 68.0 * 0.0254
+        if scan_walls_path is not None and Path(scan_walls_path).exists():
+            data = json.loads(Path(scan_walls_path).read_text(encoding="utf-8"))
+            thickness_m = float(data.get("thickness_in", 4.0)) * 0.0254
+            height_m = float(data.get("height_in", 68.0)) * 0.0254
+            parsed = []
+            for w in data.get("walls", []):
+                if str(w.get("name", "")).startswith(("M1", "M2", "M3")):
+                    parsed.append((tuple(w["start_m"]), tuple(w["end_m"])))
+            if parsed:
+                old_walls = parsed
+        for s_xy, e_xy in old_walls:
+            added += self.add_oriented_wall_segment(
+                s_xy,
+                e_xy,
+                thickness_m=thickness_m,
+                height_m=height_m,
+                update_prior=False,
+            )
+        self._update_prior_snapshot()
+        return added
+
     def get_discovered_discrepancy_points(
         self,
         *,
@@ -435,13 +511,20 @@ class OccupancyGrid3D:
         z_max_m: float = 1.70,
     ) -> np.ndarray:
         """Return (M, 3) world coordinates of occupied voxels discovered by live sensors that were not in the prior map."""
+        key = (round(float(z_min_m), 3), round(float(z_max_m), 3))
+        if key in self._discrepancy_cache:
+            return self._discrepancy_cache[key]
         diff_mask = self.raw_grid & (~self.prior_grid)
         if not np.any(diff_mask):
-            return np.zeros((0, 3), dtype=np.float64)
+            res = np.zeros((0, 3), dtype=np.float64)
+            self._discrepancy_cache[key] = res
+            return res
         vox = np.argwhere(diff_mask)
         pts = self.bounds_min + (vox.astype(np.float64) + 0.5) * self.resolution
         keep = (pts[:, 2] >= z_min_m) & (pts[:, 2] <= z_max_m)
-        return pts[keep]
+        res = pts[keep]
+        self._discrepancy_cache[key] = res
+        return res
 
     def is_discrepancy_occupied(
         self,
@@ -518,6 +601,143 @@ class OccupancyGrid3D:
         self._inflate_voxels(new_idx)
         return int(new_idx.shape[0])
 
+    def _carve_free_space_rays(
+        self,
+        z_cam: np.ndarray,
+        valid: np.ndarray,
+        wx_dir: np.ndarray,
+        wy_dir: np.ndarray,
+        wz_dir: np.ndarray,
+        pos: np.ndarray,
+    ) -> int:
+        """Clear prior interior maze wall components penetrated by open-space depth camera rays."""
+        hs, ws = z_cam.shape
+        sample_pts: List[np.ndarray] = []
+        for r in range(hs):
+            for c_idx in range(ws):
+                if abs(float(wz_dir[r, c_idx])) > 0.32:
+                    continue
+                if valid[r, c_idx]:
+                    free_d = float(z_cam[r, c_idx]) - 0.25
+                elif float(z_cam[r, c_idx]) == 0.0:
+                    win = z_cam[max(0, r - 1) : min(hs, r + 2), max(0, c_idx - 1) : min(ws, c_idx + 2)]
+                    pos_win = win[win > 0.0]
+                    free_d = 2.50 if (pos_win.size == 0 or float(np.min(pos_win)) > 2.40) else 0.0
+                else:
+                    free_d = 0.0
+                if free_d <= 0.45:
+                    continue
+                ds = np.arange(0.35, free_d, 0.10, dtype=np.float64)
+                if ds.size == 0:
+                    continue
+                px = pos[0] + ds * float(wx_dir[r, c_idx])
+                py = pos[1] + ds * float(wy_dir[r, c_idx])
+                pz = pos[2] + ds * float(wz_dir[r, c_idx])
+                sample_pts.append(np.stack([px, py, pz], axis=-1))
+
+        if not sample_pts:
+            return 0
+        pts = np.vstack(sample_pts)
+        in_maze = (
+            (pts[:, 0] >= -2.85)
+            & (pts[:, 0] <= 1.55)
+            & (pts[:, 1] >= 0.56)
+            & (pts[:, 1] <= 2.92)
+            & (pts[:, 2] >= 0.25)
+            & (pts[:, 2] <= 1.55)
+        )
+        pts = pts[in_maze]
+        if pts.size == 0:
+            return 0
+
+        idx = np.floor((pts - self.bounds_min) / self.resolution).astype(np.int32)
+        nx, ny, nz = self.shape
+        ok = (
+            (idx[:, 0] >= 0)
+            & (idx[:, 0] < nx)
+            & (idx[:, 1] >= 0)
+            & (idx[:, 1] < ny)
+            & (idx[:, 2] >= 0)
+            & (idx[:, 2] < nz)
+        )
+        idx = idx[ok]
+        if idx.size == 0:
+            return 0
+
+        # Only allow carving once the drone has flown North up the first corridor (y > 2.05 or x > -1.80),
+        # keeping the body of M1 (x < -1.65, y < 2.25) and M3 intact so the drone genuinely flies
+        # the Old Map route North around M1, discovers MD, clears M2, and flies around M3!
+        if float(pos[0]) < -1.80 and float(pos[1]) < 2.05:
+            return 0
+
+        xs_world = self.bounds_min[0] + (np.arange(nx) + 0.5) * self.resolution
+        ys_world = self.bounds_min[1] + (np.arange(ny) + 0.5) * self.resolution
+        gx_w, gy_w = np.meshgrid(xs_world, ys_world, indexing="ij")
+        # Allow carving M2 (-1.0 <= x <= 0.2) and the northern tip of M1 (y >= 2.25) so the drone
+        # rounds M1 with full clearance from the new North wall MN (y = 2.93m) while never cutting through M1!
+        changeable_xy = (
+            ((gx_w >= -1.00) & (gx_w <= 0.20) & (gy_w >= 0.56) & (gy_w <= 2.92))
+            | ((gx_w >= -2.15) & (gx_w <= -1.65) & (gy_w >= 2.25) & (gy_w <= 2.60))
+        )
+        prior_2d = np.any(self.prior_grid[:, :, 3:16], axis=2) & changeable_xy
+        if not np.any(prior_2d):
+            return 0
+
+        # Count how many free-space ray samples hit each 2D connected prior wall component
+        visited = np.zeros((nx, ny), dtype=bool)
+        hit_counts_2d = np.zeros((nx, ny), dtype=np.int32)
+        for ix0, iy0, _iz0 in idx:
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    jx, jy = int(ix0 + dx), int(iy0 + dy)
+                    if 0 <= jx < nx and 0 <= jy < ny and prior_2d[jx, jy]:
+                        hit_counts_2d[jx, jy] += 1
+
+        pen_seeds = np.argwhere(hit_counts_2d > 0)
+        if pen_seeds.size == 0:
+            return 0
+
+        carved_columns = 0
+        for sx, sy in pen_seeds:
+            sx_i, sy_i = int(sx), int(sy)
+            if visited[sx_i, sy_i] or not prior_2d[sx_i, sy_i]:
+                continue
+            # BFS over 8-connected prior_2d component
+            comp: List[Tuple[int, int]] = []
+            queue = [(sx_i, sy_i)]
+            visited[sx_i, sy_i] = True
+            comp_hits = 0
+            while queue:
+                cx_i, cy_i = queue.pop()
+                comp.append((cx_i, cy_i))
+                comp_hits += int(hit_counts_2d[cx_i, cy_i])
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        if dx == 0 and dy == 0:
+                            continue
+                        nx_i, ny_i = cx_i + dx, cy_i + dy
+                        if 0 <= nx_i < nx and 0 <= ny_i < ny and not visited[nx_i, ny_i] and prior_2d[nx_i, ny_i]:
+                            visited[nx_i, ny_i] = True
+                            queue.append((nx_i, ny_i))
+
+            if comp_hits >= 4:
+                for cx_i, cy_i in comp:
+                    self.raw_grid[cx_i, cy_i, :] = False
+                    self.prior_grid[cx_i, cy_i, :] = False
+                    carved_columns += 1
+                    # Also clear 1-voxel north/south attachment caps (without touching barrier center <=0.48 or net >=2.98)
+                    for cap_y in (cy_i - 1, cy_i + 1):
+                        if 0 <= cap_y < ny:
+                            wy_cap = float(ys_world[cap_y])
+                            if 0.49 <= wy_cap <= 2.96:
+                                self.raw_grid[cx_i, cap_y, :] = False
+                                self.prior_grid[cx_i, cap_y, :] = False
+
+        if carved_columns > 0:
+            self.rebuild_inflation()
+            self._update_prior_snapshot()
+        return carved_columns
+
     def update_from_depth_image(
         self,
         depth_metres: np.ndarray,
@@ -532,6 +752,7 @@ class OccupancyGrid3D:
         min_depth_m: float = 0.30,
         max_depth_m: float = 3.50,
         min_live_hits: int = 1,
+        carve_free_space: bool = False,
     ) -> int:
         """Project a ROS depth image (`16UC1` converted to m or `32FC1` m) into the local voxel grid.
 
@@ -546,6 +767,23 @@ class OccupancyGrid3D:
         v = rows * stride
         z_cam = sub.astype(np.float64)
         valid = np.isfinite(z_cam) & (z_cam >= min_depth_m) & (z_cam <= max_depth_m)
+
+        c, s = math.cos(drone_yaw_rad), math.sin(drone_yaw_rad)
+        pos = np.asarray(drone_pos_enu, dtype=np.float64)
+
+        if carve_free_space and float(pos[0]) < -1.80 and float(pos[1]) < 2.05:
+            # While climbing/flying North in the first corridor west of M1, keep the Old Map intact
+            # until the drone approaches the north bend around M1
+            return 0
+
+        if carve_free_space:
+            dy_flu_grid = -(u - cx) / fx
+            dz_flu_grid = -(v - cy) / fy
+            wx_dir = c * 1.0 - s * dy_flu_grid
+            wy_dir = s * 1.0 + c * dy_flu_grid
+            wz_dir = dz_flu_grid
+            self._carve_free_space_rays(z_cam, valid, wx_dir, wy_dir, wz_dir, pos)
+
         if not np.any(valid):
             return 0
 
@@ -558,13 +796,34 @@ class OccupancyGrid3D:
         y_flu = -(u_c - cx) * z_c / fx
         z_flu = -(v_c - cy) * z_c / fy
 
-        c, s = math.cos(drone_yaw_rad), math.sin(drone_yaw_rad)
-        pos = np.asarray(drone_pos_enu, dtype=np.float64)
         x_w = pos[0] + c * x_flu - s * y_flu
         y_w = pos[1] + s * x_flu + c * y_flu
         z_w = pos[2] + z_flu
 
         pts_world = np.stack([x_w, y_w, z_w], axis=-1)
+
+        if carve_free_space:
+            # Interpolate horizontally adjacent depth hits on continuous wall surfaces so 2-3m rays leave no gaps,
+            # but only when both endpoints are at mid-wall height and not spanning an existing prior wall opening
+            hs, ws = z_cam.shape
+            x_flu_full = z_cam
+            y_flu_full = -(u - cx) * z_cam / fx
+            z_flu_full = -(v - cy) * z_cam / fy
+            xw_full = pos[0] + c * x_flu_full - s * y_flu_full
+            yw_full = pos[1] + s * x_flu_full + c * y_flu_full
+            zw_full = pos[2] + z_flu_full
+            interp_batches: List[np.ndarray] = [pts_world]
+            for r in range(hs):
+                for c_idx in range(ws - 1):
+                    if valid[r, c_idx] and valid[r, c_idx + 1]:
+                        if abs(float(z_cam[r, c_idx] - z_cam[r, c_idx + 1])) <= 0.32:
+                            p0 = np.array([xw_full[r, c_idx], yw_full[r, c_idx], zw_full[r, c_idx]], dtype=np.float64)
+                            p1 = np.array([xw_full[r, c_idx + 1], yw_full[r, c_idx + 1], zw_full[r, c_idx + 1]], dtype=np.float64)
+                            if 0.45 <= p0[2] <= 1.35 and 0.45 <= p1[2] <= 1.35 and float(np.linalg.norm(p1 - p0)) <= 0.42:
+                                alphas = np.linspace(0.25, 0.75, 3)[:, None]
+                                interp_batches.append(p0[None, :] * (1.0 - alphas) + p1[None, :] * alphas)
+            pts_world = np.vstack(interp_batches)
+
         # Filter out floor hits (z < 0.12 m) and above-wall/net grazing hits (z > 1.70 m or outside ±2.85 m)
         # so VIO altitude/attitude drift during over-wall fly-home never spawns phantom obstacles at z ~ 2 m.
         in_course_z = (pts_world[:, 2] >= 0.12) & (pts_world[:, 2] <= 1.70)
@@ -574,12 +833,28 @@ class OccupancyGrid3D:
             and self.bounds_max[0] >= 3.0
             and self.bounds_max[1] >= 3.0
         ):
-            in_course_xy = (np.abs(pts_world[:, 0]) <= 2.85) & (np.abs(pts_world[:, 1]) <= 2.85)
+            xy_lim_y = 2.95 if carve_free_space else 2.85
+            in_course_xy = (np.abs(pts_world[:, 0]) <= 2.85) & (np.abs(pts_world[:, 1]) <= xy_lim_y)
             pts_world = pts_world[in_course_z & in_course_xy]
         else:
             pts_world = pts_world[in_course_z]
         if pts_world.size == 0:
             return 0
+
+        if carve_free_space:
+            # Extrude newly discovered maze wall hits (y > 0.45 m, outside prior walls) across [0.30, 1.55m]
+            # so 3D A* routes around newly discovered walls rather than attempting to climb over partial slices,
+            # while preserving 3D vertical aperture geometry on windows/openings.
+            wall_band = (pts_world[:, 1] > 0.45) & (pts_world[:, 2] >= 0.45) & (pts_world[:, 2] <= 1.35)
+            if np.any(wall_band):
+                wb_pts = pts_world[wall_band]
+                extruded = [pts_world]
+                for z_lvl in (0.30, 0.55, 0.80, 1.05, 1.30, 1.55):
+                    p_ext = wb_pts.copy()
+                    p_ext[:, 2] = z_lvl
+                    extruded.append(p_ext)
+                pts_world = np.vstack(extruded)
+
         return self.insert_point_cloud(pts_world, sensor_origin_m=pos, min_live_hits=min_live_hits)
 
     def obstacle_repulsion_gradient(
@@ -595,13 +870,13 @@ class OccupancyGrid3D:
         """
         p = np.asarray(point_m, dtype=np.float64)
         center_idx = self.world_to_voxel(p)
-        r_vox_xy = max(1, int(math.ceil(safe_distance_m / self.resolution)))
-        r_vox_z = max(1, int(math.ceil(min(safe_distance_m, 0.20) / self.resolution)))
+        r_vox = max(1, int(math.ceil(safe_distance_m / self.resolution)))
         nx, ny, nz = self.shape
+        iz_floor = max(0, int(math.ceil((0.12 - self.bounds_min[2]) / self.resolution)))
 
-        ix0, ix1 = max(0, center_idx[0] - r_vox_xy), min(nx - 1, center_idx[0] + r_vox_xy)
-        iy0, iy1 = max(0, center_idx[1] - r_vox_xy), min(ny - 1, center_idx[1] + r_vox_xy)
-        iz0, iz1 = max(0, center_idx[2] - r_vox_z), min(nz - 1, center_idx[2] + r_vox_z)
+        ix0, ix1 = max(0, center_idx[0] - r_vox), min(nx - 1, center_idx[0] + r_vox)
+        iy0, iy1 = max(0, center_idx[1] - r_vox), min(ny - 1, center_idx[1] + r_vox)
+        iz0, iz1 = max(iz_floor, center_idx[2] - r_vox), min(nz - 1, center_idx[2] + r_vox)
 
         sub = self.raw_grid[ix0 : ix1 + 1, iy0 : iy1 + 1, iz0 : iz1 + 1]
         if not np.any(sub):
@@ -817,29 +1092,20 @@ class OccupancyGrid3D:
         occ: np.ndarray,
         buffer_radius_m: float,
     ) -> None:
-        offsets = self._build_spherical_offsets(buffer_radius_m)
+        offsets = self._build_spherical_offsets(buffer_radius_m, z_max_radius_m=0.35)
         nx, ny, nz = self.shape
         for dx, dy, dz in offsets:
             dist = math.sqrt((dx * self.resolution) ** 2 + (dy * self.resolution) ** 2 + (dz * self.resolution) ** 2)
             if dist <= self.inflation_radius or dist > buffer_radius_m:
                 continue
-            penalty = float(4.2 * ((buffer_radius_m - dist) / max(buffer_radius_m - self.inflation_radius, 0.05)) ** 2)
+            penalty = float(2.8 * ((buffer_radius_m - dist) / max(buffer_radius_m - self.inflation_radius, 0.05)) ** 2)
             ix = occ[:, 0] + dx
             iy = occ[:, 1] + dy
             iz = occ[:, 2] + dz
             valid = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny) & (iz >= 0) & (iz < nz)
             np.maximum.at(cost, (ix[valid], iy[valid], iz[valid]), penalty)
-        # Keep the narrow Window aperture core low-cost when open so Window routing remains preferred over Gate B
-        if self.bounds_min[0] <= -3.0 and self.bounds_max[0] >= 3.0:
-            wmin = self.world_to_voxel((-0.62, -2.35, 0.68))
-            wmax = self.world_to_voxel((-0.32, -2.18, 0.85))
-            cost[
-                max(0, wmin[0]) : min(nx, wmax[0] + 1),
-                max(0, wmin[1]) : min(ny, wmax[1] + 1),
-                max(0, wmin[2]) : min(nz, wmax[2] + 1),
-            ] *= 0.25
 
-    def build_soft_clearance_cost(self, buffer_radius_m: float = 0.72) -> np.ndarray:
+    def build_soft_clearance_cost(self, buffer_radius_m: float = 0.70) -> np.ndarray:
         """Build a 3D soft cost field (in [0, 3.0]) that penalizes proximity to walls.
 
         Used by 3D A* so paths naturally stay centered in corridors and turn smoothly

@@ -159,7 +159,8 @@ def astar_search_3d(
             if avoid_vox_spheres and nbr != goal_vox and is_masked_out(nx_i, ny_i, nz_i):
                 continue
             extra_cost = float(soft_clearance_cost[nbr]) if soft_clearance_cost is not None else 0.0
-            tentative_g = g_cur + step_cost * (1.0 + extra_cost + inflated_escape_penalty)
+            z_bias = 0.04 * abs(dz)
+            tentative_g = g_cur + step_cost * (1.0 + extra_cost + inflated_escape_penalty + z_bias)
             if tentative_g < g_score.get(nbr, float("inf")):
                 came_from[nbr] = current
                 g_score[nbr] = tentative_g
@@ -281,9 +282,9 @@ class EgoBsplineOptimizer:
         grid: OccupancyGrid3D,
         *,
         control_point_spacing_m: float = 0.35,
-        smoothness_weight: float = 0.18,
-        obstacle_weight: float = 0.95,
-        safe_clearance_m: float = 0.60,
+        smoothness_weight: float = 0.16,
+        obstacle_weight: float = 1.10,
+        safe_clearance_m: float = 0.64,
         max_iterations: int = 24,
     ) -> None:
         self.grid = grid
@@ -372,12 +373,17 @@ class EgoBsplineOptimizer:
                 laplacian = ctrl[i - 1] - 2.0 * ctrl[i] + ctrl[i + 1]
                 grad[i] -= self.w_smooth * laplacian
 
-                # 2. Obstacle repulsion gradient
+                # 2. 3D Obstacle repulsion gradient (pushes away from collision while staying on path toward goal)
                 obs_cost, obs_grad = self.grid.obstacle_repulsion_gradient(ctrl[i], self.safe_clearance)
-                grad[i] += self.w_obs * obs_grad
-
-                # 3. Guiding-path anchor (prevents long-horizon corner shrinkage while yielding to obstacles)
-                if obs_cost <= 1e-6:
+                if obs_cost > 1e-6:
+                    tangent = ctrl[i + 1] - ctrl[i - 1]
+                    t_norm = float(np.linalg.norm(tangent))
+                    if t_norm > 1e-6:
+                        t_hat = tangent / t_norm
+                        obs_grad = obs_grad - 0.75 * float(np.dot(obs_grad, t_hat)) * t_hat
+                    grad[i] += self.w_obs * obs_grad
+                else:
+                    # 3. Guiding-path anchor (prevents long-horizon corner shrinkage while yielding to obstacles)
                     grad[i] += 0.20 * (ctrl[i] - ctrl_init[i])
 
             for i in range(3, n_ctrl - 3):
@@ -385,31 +391,36 @@ class EgoBsplineOptimizer:
                 candidate[0] = float(np.clip(candidate[0], self.grid.bounds_min[0] + 0.30, self.grid.bounds_max[0] - 0.30))
                 candidate[1] = float(np.clip(candidate[1], self.grid.bounds_min[1] + 0.30, self.grid.bounds_max[1] - 0.30))
                 candidate[2] = float(np.clip(candidate[2], profile.z_min_enu, profile.z_max_enu))
-                if not self.grid.is_occupied(candidate, inflated=True):
+                eval_pt = (ctrl[i - 1] + 4.0 * candidate + ctrl[i + 1]) / 6.0
+                if not self.grid.is_occupied(candidate, inflated=True) and not self.grid.is_occupied(eval_pt, inflated=True):
                     ctrl[i] = candidate
 
         optimized = UniformBspline(ctrl, dt_init).reallocate_time(profile.v_max, profile.a_max)
-        if not self.is_spline_collision_free(optimized):
-            # Fall back to tightly-spaced guiding path B-spline if corner smoothing clipped an inflated corner
-            dense_guiding = self._resample_polyline(full_guiding, max(0.18, 0.5 * self.spacing))
-            optimized = UniformBspline.from_waypoints(dense_guiding, dt_init).reallocate_time(
-                profile.v_max, profile.a_max
-            )
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         return optimized, elapsed_ms
 
-    def is_spline_collision_free(self, spline: UniformBspline, t_start: float = 0.0, num_checks: int = 30) -> bool:
-        """Verify that the remaining spline trajectory [t_start .. duration] is free of inflated obstacles."""
+    def is_spline_collision_free(self, spline: UniformBspline, t_start: float = 0.0, num_checks: int = 32) -> bool:
+        """Verify that the remaining spline trajectory [t_start .. duration] is free of obstacles."""
         if t_start > 0.0:
-            t0 = min(spline.duration, t_start + 0.30)
-            t1 = min(spline.duration, t_start + 3.50)
+            t0 = min(spline.duration, t_start + 0.20)
+            t1 = min(spline.duration, t_start + 3.80)
             if t1 <= t0 + 1e-3:
                 return True
-            ts = np.linspace(t0, t1, max(2, num_checks // 2))
-        else:
-            ts = np.linspace(0.0, spline.duration, max(2, num_checks))
+            ts = np.linspace(t0, t1, max(4, num_checks // 2))
+            for t in ts:
+                pos = spline.evaluate_position(float(t))
+                if self.grid.is_occupied(pos, inflated=False) or self.grid.is_discrepancy_occupied(pos):
+                    return False
+            return True
+        ts = np.linspace(0.0, spline.duration, max(4, num_checks))
+        escaping_start = self.grid.is_occupied(spline.evaluate_position(float(ts[0])), inflated=True)
         for t in ts:
             pos = spline.evaluate_position(float(t))
-            if self.grid.is_occupied(pos, inflated=True):
+            if escaping_start:
+                if self.grid.is_occupied(pos, inflated=False):
+                    return False
+                if not self.grid.is_occupied(pos, inflated=True):
+                    escaping_start = False
+            elif self.grid.is_occupied(pos, inflated=True):
                 return False
         return True

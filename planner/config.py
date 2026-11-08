@@ -24,7 +24,7 @@ class StageProfile:
             raise ValueError("Speed multiplier must be positive")
         return StageProfile(
             v_max=self.v_max * multiplier,
-            a_max=self.a_max * multiplier,
+            a_max=self.a_max * (multiplier ** 0.5),
             j_max=self.j_max * multiplier,
             z_min_enu=self.z_min_enu,
             z_max_enu=self.z_max_enu,

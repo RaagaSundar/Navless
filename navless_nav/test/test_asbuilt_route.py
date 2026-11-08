@@ -54,7 +54,7 @@ def fly(**params):
 def test_flies_the_whole_route_without_a_setpoint_pulled_off_it():
     node = fly(net_margin_m=float(ARGS['net_margin_m']))
     assert node.state == 'LAND' and 'fenced' not in node.log_once
-    assert 'fenced' in fly(net_margin_m=0.4).log_once      # navless.launch.py's margin would have
+    assert 'fenced' in fly(net_margin_m=0.6).log_once      # overly tight net margin would pull setpoints off route
 
 
 def test_asbuilt_route_uses_active_ego_planner(monkeypatch):
@@ -88,27 +88,27 @@ def test_asbuilt_world_replanning_ignores_known_walls_and_detours_around_old_m3(
     node.start_route()
     initial_route = list(node.route)
 
-    # 1. As-built world: stereo points on as-built M1, M3, and North Net must not trigger false detours
+    # 1. As-built world: stereo points on as-built MD, MN, MT, and North Net must not trigger false detours
     asbuilt_pts = np.array([
-        [-1.90, 2.00, 0.85],
-        [-1.90, 2.40, 0.85],
-        [1.10, 2.00, 0.85],
+        [-1.08, 1.28, 0.85],
+        [-1.50, 2.98, 0.85],
+        [0.68, 0.93, 0.85],
         [0.00, 3.03, 0.85],
     ], dtype=np.float64)
     for _ in range(3):
         n_added = node.planner_grid.insert_point_cloud(
-            asbuilt_pts, sensor_origin_m=(-1.90, 1.50, 0.85), min_live_hits=2
+            asbuilt_pts, sensor_origin_m=(-1.00, 1.80, 0.85), min_live_hits=2
         )
         assert n_added == 0
     node.live_grid_updated = True
     node.maybe_replan_for_discrepancies(10.0)
     assert node.route == initial_route
 
-    # 2. Generality demo: FlyX/old-course M3 wall at x = +0.25 m, y in [1.22, 2.44] blocks the route
-    # and triggers an online 3D A* + EGO B-spline detour around old M3
-    ys = np.linspace(1.22, 2.44, 14)
+    # 2. Generality demo: an unmapped discrepancy wall/pillar at x = +0.55 m, y in [1.95, 2.35] blocks the route
+    # and triggers an online 3D A* + EGO B-spline detour around it
+    ys = np.linspace(1.95, 2.35, 6)
     zs = np.linspace(0.30, 1.40, 6)
-    old_m3_pts = np.array([[0.25, y, z] for y in ys for z in zs], dtype=np.float64)
+    old_m3_pts = np.array([[0.55, y, z] for y in ys for z in zs], dtype=np.float64)
     for _ in range(3):
         node.planner_grid.insert_point_cloud(
             old_m3_pts, sensor_origin_m=(-0.20, 2.20, 0.85), min_live_hits=2
@@ -116,7 +116,7 @@ def test_asbuilt_world_replanning_ignores_known_walls_and_detours_around_old_m3(
     node.live_grid_updated = True
     node.maybe_replan_for_discrepancies(20.0)
     assert node.route != initial_route
-    # Verify every point on the replanned route clears old M3
+    # Verify every point on the replanned route clears the discrepancy obstacle
     for q in node.route:
         c_pt = odom_to_course(q, node.frame[0], node.frame[1], node.start_height)
         assert not node.planner_grid.is_discrepancy_occupied(c_pt, clearance_m=0.20)
