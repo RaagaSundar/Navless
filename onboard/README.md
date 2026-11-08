@@ -157,7 +157,7 @@ container. The hover-only plan is the least complex starting point.
 python3 examples/hover_land.py --ros-args --params-file "$DRONE_PARAMS_FILE"
 # Or, separately approved after the first test:
 # python3 examples/hover_yaw_180_land.py --ros-args --params-file "$DRONE_PARAMS_FILE"
-# python3 examples/forward_2m_return_land.py --ros-args --params-file "$DRONE_PARAMS_FILE"
+# python3 examples/forward_1m_return_land.py --ros-args --params-file "$DRONE_PARAMS_FILE"
 ```
 
 Keep the health adapter and existing SLAM/gate/bridge/transport running. Preserve
@@ -266,3 +266,12 @@ disarmed. The old cadence abort did not recur in this attempt, but the maneuver
 did not pass. The 1 m alternative is a requested distance reduction, not proof
 that insufficient clearance caused that failure. Run-local evidence and
 comparison metadata are under `.onboard/test_flight_checks/` on FlyX.
+
+Managed yaw attempt `run_005` reached HOVER and YAW, then aborted at
+`1794099346.935698944` because PX4 position/heading became invalid. The visible
+independent grade reports failure, exit airborne, no confirmed AUTO_LAND before
+disarm, and one VIO processing deadline miss. It does not flag contact in the
+summary; that is not proof of a controlled landing. The Land button was requested
+and the UI subsequently reported disarmed. No successful yaw rerun is claimed.
+The new 1 m script has passed software tests but has not completed a recorded
+flight; testing was stopped at the user's request.
