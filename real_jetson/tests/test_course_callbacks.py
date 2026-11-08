@@ -63,7 +63,8 @@ def runtime(monkeypatch):
     c=importlib.import_module('course')
     monkeypatch.setattr(c,'time',NS(monotonic=lambda:clock[0]))
     m=c.InterfaceMonitor()
-    node=c.HardwareCourse(m)
+    # This fixture isolates RC and vision authority from the stereo producer.
+    node=c.HardwareCourse(m, cloud_factory=lambda *_: NS(record=lambda _:None, problem=lambda _:None))
     def step(armed=False,off=False,ground=True,health=True):
         clock[0]=round(clock[0]+.1,1)
         sec=int(clock[0]);stamp=NS(sec=sec,nanosec=round((clock[0]-sec)*1e9))

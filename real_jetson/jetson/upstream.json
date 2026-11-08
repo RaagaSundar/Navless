@@ -75,5 +75,15 @@
   "interface_monitor.py": {
     "adapted_from": "skybeta19_test_flights/examples/skybeta_test.py",
     "upstream_sha256": "b4e51f7bd57b5f42acb053e720a32505c963fa75404c8410d487d328418ce4f6"
+  },
+  "cloud_projection.py": {
+    "commit": "7a7883250c6e783c357a14d56ed9626d7300ba58",
+    "source": "navless_nav/navless_nav/cloud_projection.py",
+    "sha256": "ab5c793eeb16a5656ba61d734c1dcde0c0c9f88a69022a54564c60b27ebf14d8"
+  },
+  "stereo_cloud.py": {
+    "commit": "7a7883250c6e783c357a14d56ed9626d7300ba58",
+    "adapted_from": "depthcloud/stereo_cloud.py",
+    "component": "StereoDepth"
   }
 }

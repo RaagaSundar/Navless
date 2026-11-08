@@ -6,7 +6,27 @@ import math
 import time
 import rclpy
 from px4_msgs.msg import VehicleStatus
+from pathlib import Path
 from interface_monitor import InterfaceMonitor
+from obstacle_cloud import ObstacleCloud
+from cloud_projection import project_cloud
+
+
+class Preflight(InterfaceMonitor):
+    def __init__(self):
+        super().__init__()
+        seed = json.loads(Path(__file__).with_name('window-route.json').read_text())
+        self.launch_xy = seed['launch_origin_enu']
+        self.cloud = ObstacleCloud(self, self.project)
+
+    def project(self, msg, pose, tf, now):
+        project_cloud(msg, pose, tf, now=now, launch_xy=self.launch_xy,
+                      bearing_deg=0., start_height=.07)
+
+    def on_slam_odometry(self, msg):
+        super().on_slam_odometry(msg)
+        self.cloud.record(msg)
+
 
 
 def main():
@@ -16,14 +36,14 @@ def main():
     if not math.isfinite(options.seconds) or options.seconds < 30:
         parser.error('--seconds must be at least 30')
     rclpy.init(args=ros_args)
-    n = InterfaceMonitor()
+    n = Preflight()
     start = report = time.monotonic()
     since = None
     try:
         while rclpy.ok():
             rclpy.spin_once(n, timeout_sec=.1)
             t, now = time.monotonic(), n.clock_seconds()
-            problem = n.problem(now)
+            problem = n.problem(now) or n.cloud.problem(now)
             if not problem and (n.status.arming_state != VehicleStatus.ARMING_STATE_DISARMED
                     or n.fi['armed'] or n.fi['offboard_active'] or not n.fi['landed']
                     or not n.landed or not 0 <= now-n.landed_time <= 1):

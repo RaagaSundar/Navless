@@ -3,9 +3,10 @@
 set -eu
 case "${1:-}" in
   check) program=check.py ;;
+  cloud) program=stereo_cloud.py ;;
   course) program=course.py ;;
   health) program=jetson_slam_health.py ;;
-  *) echo 'Usage: bash run.sh {check|course|health}' >&2; exit 2 ;;
+  *) echo 'Usage: bash run.sh {check|cloud|course|health}' >&2; exit 2 ;;
 esac
 [[ "$(hostname -s)" == skybeta-19 ]] || { echo 'Requires assigned skybeta-19 host' >&2; exit 1; }
 exec docker exec -i skybeta-stack bash -c '

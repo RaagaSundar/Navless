@@ -11,6 +11,10 @@ from rclpy.parameter import Parameter
 from px4_msgs.msg import VehicleStatus
 from geometry_msgs.msg import TwistStamped
 from std_msgs.msg import String
+from adaptive import AdaptiveRoute, blocked_segments
+from cloud_projection import project_cloud
+from obstacle_cloud import ObstacleCloud
+from navless_nav.route import Carrot, course_to_odom, odom_to_course
 from handover import Handover
 from navless_nav.course_mission import CourseMission
 from interface_monitor import InterfaceMonitor
@@ -19,7 +23,7 @@ ROOT = Path(__file__).resolve().parent
 
 
 class HardwareCourse(CourseMission):
-    def __init__(self, monitor):
+    def __init__(self, monitor, cloud_factory=ObstacleCloud):
         self.monitor = monitor
         self.handover = Handover()
         self.pose_stamp = None
@@ -34,7 +38,39 @@ class HardwareCourse(CourseMission):
         ])
         if len(self.route or []) < 2 or self.get_parameter('use_sim_time').value:
             raise RuntimeError("missing route or hardware clock")
-        self.last_report = None
+        self.adaptive = AdaptiveRoute()
+        self.cloud = cloud_factory(self, self.accept_cloud)
+        self.last_report = self.planner_status = None
+
+    def accept_cloud(self, msg, pose, tf, now):
+        if self.tracking_stamp is None or self.vo_state != 1 or not 0 <= now-self.tracking_stamp <= .25:
+            raise ValueError('stereo projection needs fresh tracking')
+        points, origin = project_cloud(msg, pose, tf, now=now, launch_xy=self.frame[0],
+                                      bearing_deg=self.frame[1], start_height=self.start_height,
+                                      correction=self.corr)
+        self.adaptive.grid.insert_point_cloud(points, sensor_origin_m=origin, min_live_hits=2)
+
+    def course_point(self, position):
+        return odom_to_course(self.corr_to_route(position), *self.frame, self.start_height)
+
+    def _state_route(self):
+        path = [self.course_point(self.position)]
+        path.extend(odom_to_course(q, *self.frame, self.start_height)
+                    for q in [self.carrot.point, *self.route[self.carrot.index+1:]])
+        action, candidate = self.adaptive.choose(path, self.net_margin)
+        if action != self.planner_status:
+            self.get_logger().info('adaptive route: ' + action)
+            self.planner_status = action
+        if action == 'replace':
+            self.route = [course_to_odom(q, *self.frame, self.start_height) for q in candidate]
+            self.carrot = Carrot(self.route, self.cruise_speed, self.max_lead, self.max_lat_accel, self.max_sagitta)
+            self.progress_at = (self.now_s(), 0, self.carrot.point)
+            self.last_tick = self.now_s()
+        elif action != 'follow':
+            self.last_tick = self.now_s()
+            self.send_twist(0., 0., 0.)
+            return
+        super()._state_route()
 
     def odometry_cb(self, msg):
         header = msg.header
@@ -48,6 +84,7 @@ class HardwareCourse(CourseMission):
             self.position = None
             return
         self.pose_stamp = stamp
+        self.cloud.record(msg)
         super().odometry_cb(msg)
 
     def status_cb(self, msg):
@@ -60,7 +97,7 @@ class HardwareCourse(CourseMission):
 
     def tick(self):
         m, now, t = self.monitor, self.now_s(), time.monotonic()
-        fault = m.problem(now, expected_writers=1)
+        fault = m.problem(now, expected_writers=1) or self.cloud.problem(now)
         if m.phase == 'ABORT':
             fault = 'estimator reset or authority lost'
         if self.pose_stamp is None or self.position is None or not 0 <= now-self.pose_stamp <= .5:
@@ -124,14 +161,39 @@ class HardwareCourse(CourseMission):
             finally:
                 self.writing = False
 
-    def publish_pose(self, *args):
+    def publish_pose(self, x, y, z, yaw):
         # A PX4 heading-reset callback can also ask the base to republish.
         if self.writing:
-            super().publish_pose(*args)
+            chord = [self.course_point(self.position), self.course_point((x,y,z-self.z_offset))]
+            # Ground-level climb/hold can intersect prior floor voxels. Check
+            # newly observed occupancy there; the route uses the entire grid.
+            occupied = None if self.state == 'ROUTE' else self.live_obstacles()
+            if self.adaptive.failed or len(blocked_segments(self.adaptive.grid, chord, self.net_margin, occupied)):
+                if not self.adaptive.failed:
+                    self.get_logger().error('command path obstructed; stopping for pilot')
+                self.adaptive.failed = True
+                self.send_twist(0., 0., 0.)
+                return
+            super().publish_pose(x,y,z,yaw)
+
+    def live_obstacles(self):
+        return self.adaptive.grid.inflated_grid & ~self.adaptive.prior_inflated
+
+    def _state_land(self):
+        start = self.course_point(self.position)
+        pad = self.course_point(self.target)
+        if len(blocked_segments(self.adaptive.grid, [start, (*pad[:2], self.start_height)],
+                                self.net_margin, self.live_obstacles())):
+            self.adaptive.failed = True
+            self.info_once('blocked_landing', 'landing path obstructed; stopping for pilot')
+        super()._state_land()
 
     def send_twist(self, *args):
         if self.writing:
-            super().send_twist(*args)
+            if self.adaptive.failed:
+                super().send_twist(0., 0., 0.)
+            else:
+                super().send_twist(*args)
 
 
 def main():
@@ -147,6 +209,7 @@ def main():
         while rclpy.ok() and controller.handover.phase != 'STOP':
             executor.spin_once(timeout_sec=.2)
     finally:
+        controller.adaptive.close()
         executor.shutdown()
         controller.destroy_node()
         monitor.destroy_node()

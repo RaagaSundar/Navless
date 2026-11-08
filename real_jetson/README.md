@@ -4,7 +4,7 @@
 
 | Directory | Entry point |
 | --- | --- |
-| [Jetson payload](jetson/README.md) | `jetson/run.sh` selects the passive input check, health adapter, or course controller in the existing physical stack. |
+| [Jetson payload](jetson/README.md) | `jetson/run.sh` selects the passive input check, stereo producer, health adapter, or course controller in the existing physical stack. |
 | [Mac dashboard](mac/dashboard.py) | `python3 mac/dashboard.py` opens a loopback listener in offline mode. Visit <http://127.0.0.1:8093/>. |
 | [Local checks](tests/) | From this folder run `python3 -m pytest -q tests` with NumPy and pytest installed. |
 
@@ -12,7 +12,7 @@
 
 The original hover/yaw controller at `20aaee7913cc608ae524eeecdecb53af9e8d7055` matched the archived installed controller byte for byte. Its pose and twist topics, ENU frame and RC handover define the compatibility target. The recordings have no embedded Git hash. The course executor here comes from the separate aircraft course revision `865db6b995f20c16164786b57ff7dcb9c66eeaa9`. Its height-offset correction, route following, arrival checks and descent logic remain in the original source. The new wrapper adds current state checks and latches loss of authority.
 
-The window planner and packed course occupancy map are from the active split-simulation agent’s revision `7a7883250c6e783c357a14d56ed9626d7300ba58`. The staged hardware configuration uses its 97 precomputed course-frame waypoints. The active simulator also has an online stereo-cloud replanning path. This first physical profile uses a fixed route and preserves the aircraft controller’s heading policy. See [source identities](jetson/upstream.json) and the [hardware run instructions](jetson/README.md).
+The window planner and packed course occupancy map are from the active split-simulation agent’s revision `7a7883250c6e783c357a14d56ed9626d7300ba58`. The 97 course-frame waypoints seed the route. During flight, calibrated stereo observations update the inflated map. If an obstruction intersects the remaining route, the aircraft requests zero translation while the planner computes a local detour to rejoin it. A failed repair leaves translation stopped for the RC pilot. The physical controller retains its heading and handover policy. See [source identities](jetson/upstream.json) and the [hardware run instructions](jetson/README.md).
 
 ### Dashboard
 
