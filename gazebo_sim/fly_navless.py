@@ -11,7 +11,8 @@
 navless_nav is a ROS 2 node and this machine has no ROS, so the node runs UNMODIFIED on a small
 in-process rclpy stand-in. FlightInterface below stands in for the stack's flight_interface. It
 sends PX4 exactly what the drone's interface sends:
-  - position-only setpoints (no yaw), or velocity-only ones, at 10 Hz
+  - position setpoints, with yaw when the pose's quaternion is real (yaw_ned = pi/2 - yaw_enu) and
+    yaw NaN when it is all zero; or velocity ones with a yaw rate; at 10 Hz
   - altitude clamped to [min_alt, max_alt] above the odometry origin, twist norm capped
   - a twist expires after 1 s and falls back to the last pose
   - takeover (--pilot modes) by the drone interface's rules: every disarm makes the next arming
@@ -210,6 +211,7 @@ class FlightInterface:
 
     # SET_POSITION_TARGET_LOCAL_NED type_mask: a set bit means "ignore that field"
     MASK_POS = 0b110111111000    # x y z only: yaw and yaw rate ignored (yaw = NaN on the drone)
+    MASK_POS_YAW = 0b100111111000    # x y z + yaw: a pose with a real quaternion, as on the drone
     MASK_VEL = 0b010111000111    # vx vy vz + yaw rate
 
     def __init__(self, px4, p0, yaw0, pose_topic, twist_topic, min_alt=0.3, max_alt=2.5,
@@ -220,6 +222,7 @@ class FlightInterface:
         self.twist_timeout = twist_timeout
         self.mode = "hold"
         self.target = self.hold = self.vel = None     # world ENU
+        self.yaw_ned = self.hold_yaw_ned = None       # commanded PX4 heading, None = yaw NaN
         self.yawspeed_ned = 0.0
         self.last_setpoint = self.last_twist = None
         self.clamped = []
@@ -274,6 +277,18 @@ class FlightInterface:
         elif q[2] < self.min_alt:
             q[2], self.clamped = self.min_alt, ["min_altitude"]
         self.target = self.hold = self.p0 + self.rot(q)
+        # flight_interface: an all-zero quaternion is "no yaw" (NaN); otherwise yaw_ned = pi/2 - yaw_enu
+        # of the odom heading. In the 'world' frame the odom heading is turned by the power-up yaw first.
+        o = msg.pose.orientation
+        qo = [float(o.x), float(o.y), float(o.z), float(o.w)]
+        if any(v != 0.0 for v in qo):
+            yaw_enu = math.atan2(2.0 * (qo[3] * qo[2] + qo[0] * qo[1]), 1.0 - 2.0 * (qo[1] ** 2 + qo[2] ** 2))
+            if self.px4_frame == "world":
+                yaw_enu += self.yaw0
+            self.yaw_ned = (math.pi / 2.0 - yaw_enu + math.pi) % (2.0 * math.pi) - math.pi
+        else:
+            self.yaw_ned = None
+        self.hold_yaw_ned = self.yaw_ned
         self.mode, self.last_setpoint = "position", CLOCK.t
 
     def on_twist(self, msg):
@@ -314,9 +329,11 @@ class FlightInterface:
         m, px4 = self.px4.m, self.px4
         ned = self.world_to_px4(v, velocity=(kind == "velocity"))
         if kind == "position":
+            yaw = self.yaw_ned if self.mode == "position" else self.hold_yaw_ned
             m.mav.set_position_target_local_ned_send(
                 px4.boot_ms, m.target_system, m.target_component, mavutil.mavlink.MAV_FRAME_LOCAL_NED,
-                self.MASK_POS, *ned, 0, 0, 0, 0, 0, 0, 0, 0)
+                self.MASK_POS if yaw is None else self.MASK_POS_YAW, *ned, 0, 0, 0, 0, 0, 0,
+                0.0 if yaw is None else yaw, 0)
         else:
             m.mav.set_position_target_local_ned_send(
                 px4.boot_ms, m.target_system, m.target_component, mavutil.mavlink.MAV_FRAME_LOCAL_NED,
@@ -699,12 +716,18 @@ def main():
                 ov = np.array([c * d[0] - s * d[1], s * d[0] + c * d[1], d[2]])
                 if a.noise and tracking:
                     ov = ov + np.array([random.gauss(0, a.noise) for _ in range(3)])
-            odom_buf.append((st, ov))
+            # ...and its attitude, in the power-up frame like the position (cuVSLAM reports both)
+            qw, qx, qy, qz = q if q is not None else (1.0, 0.0, 0.0, 0.0)    # Gazebo body FLU -> world
+            hs, hc = math.sin(-yaw0 / 2), math.cos(-yaw0 / 2)
+            qo = (hc * qx - hs * qy, hc * qy + hs * qx, hc * qz + hs * qw, hc * qw - hs * qz)   # x y z w
+            odom_buf.append((st, ov, qo))
             while len(odom_buf) > 1 and odom_buf[1][0] <= st - a.odom_delay:
                 odom_buf.popleft()
             if odom_buf[0][0] <= st - a.odom_delay + 1e-9 and odom_buf[0][1] is not None:
                 msg = Odometry()
                 msg.pose.pose.position.x, msg.pose.pose.position.y, msg.pose.pose.position.z = map(float, odom_buf[0][1])
+                o = msg.pose.pose.orientation
+                o.x, o.y, o.z, o.w = map(float, odom_buf[0][2])
                 publish(ODOM_TOPIC, msg)
             since = st - (fi.armed_at or 1e18)
             lost = bool(dropout and dropout[0] <= since < dropout[1]) or not tracking

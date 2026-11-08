@@ -7,7 +7,10 @@ flight interface's topic namespace):
     subscribe  FI_NS/state                      what PX4 is doing (JSON)
     subscribe  /tube/offset                     tube centre from the side ToF
                                                 sensors (tof_tube_centering only)
-    publish    FI_NS/setpoint/{pose,twist}      where we want to be (ENU, odom)
+    subscribe  /fmu/out/vehicle_local_position  PX4's heading, read only (the
+                                                heading guard; never /fmu/in)
+    publish    FI_NS/setpoint/{pose,twist}      where we want to be (ENU, odom),
+                                                with the takeoff heading held
 
 Never publishes to /fmu/*, never arms, never changes mode: flight_interface
 owns that, and enters Offboard once when the pilot arms, then switches to
@@ -32,7 +35,11 @@ States (10 Hz timer):
                        with twist setpoints until PX4 disarms, never climb.
     TAKEOFF            climb straight up. PX4 disarms if we are not off the
                        ground 10 s after arming, so this starts on the first
-                       tick of Offboard.
+                       tick of Offboard. The heading the drone has now is
+                       held from here on (hold_heading, with the heading
+                       guard), and the route starts only once the target
+                       has been held within takeoff_settle_radius_m for
+                       takeoff_settle_s.
     ROUTE              walk route_file's waypoints with a speed-limited
                        carrot (navless_nav/route.py). The carrot freezes
                        while cuVSLAM reports lost tracking or odometry is
@@ -81,7 +88,15 @@ try:
 except ImportError:   # off the drone: fall back to odometry staleness only
     VisualSlamStatus = None
 
+try:
+    from px4_msgs.msg import VehicleLocalPosition
+except ImportError:   # off the drone: the heading guard uses the camera only
+    VehicleLocalPosition = None
+
 VO_LOST = 2           # VisualSlamStatus.vo_state: 0 unknown, 1 tracking, 2 lost
+# PX4's own heading and its reset counter, read only (the heading guard).
+PX4_LOCAL_TOPIC = '/fmu/out/vehicle_local_position'
+PX4_TIMEOUT_S = 0.5   # an older PX4 heading is not used
 
 # The flight interface's topics. Their names are fixed by the image.
 FI_NS = '/skybeta'
@@ -97,6 +112,11 @@ IDLE_STATES = ('WAIT_FOR_OFFBOARD', 'PAUSED', 'DONE')
 # height for PREARM_PX4_TIMEOUT_S.
 PREARM_HYSTERESIS_M = 0.05
 PREARM_PX4_TIMEOUT_S = 1.0
+
+
+def wrap_pi(a):
+    """Angle wrapped to [-pi, pi)."""
+    return (a + math.pi) % (2.0 * math.pi) - math.pi
 
 # The tube (course_v3.json `tunnel`: footprint x 182-240 in, y 108-168 in,
 # axis north-south, "Dark inside"), in course metres (in * 0.0254 - 3.048).
@@ -114,7 +134,37 @@ PARAMETERS = (
     # the fly_home take-off from the pad (see lead_m).
     ('takeoff_lead_m', 0.25),
     ('arrival_radius_m', 0.25),
-    ('takeoff_timeout_s', 15.0),
+    # Settle before the route: hold the takeoff target within this (odom,
+    # horizontal) for takeoff_settle_s first. On 19 (2026-11-07 test
+    # flights) both liftoffs slid 25-33 cm sideways and took 10-15 s to come
+    # back. If it never settles by takeoff_timeout_s, the route starts as it
+    # did before (within arrival_radius_m), with a warning. 0 s = off.
+    ('takeoff_settle_radius_m', 0.05),
+    ('takeoff_settle_s', 2.0),
+    ('takeoff_timeout_s', 30.0),
+    # Hold the heading the drone took off with. A zero quaternion makes
+    # flight_interface send yaw NaN, and PX4's PositionControl then sets its
+    # yaw setpoint to the current heading every cycle ("TODO: better way to
+    # disable yaw control"), so nothing turns the nose back after a nudge. On
+    # 19, 2026-11-07: commanded, the heading held within 1.4 deg; with yaw
+    # NaN (the twist descents) it wandered 6 deg in 10 s. Twist setpoints
+    # (LAND) carry yaw rate only: heading_rate_gain * error, capped.
+    ('hold_heading', True),
+    ('heading_rate_gain', 1.0),           # 1/s
+    ('heading_rate_max_dps', 20.0),
+    # A commanded heading is only safe while PX4's heading agrees with the
+    # camera's. In a vision gap over 0.4 s, PX4 (EKF2_MAG_TYPE 0) resets its
+    # heading to the magnetometer: ~100 deg off on 19's floor, 2026-11-07, four
+    # times after landing. PX4 would then spin the drone to "correct" it. So:
+    # if PX4 and the camera disagree by more than this, if PX4 resets its
+    # heading in flight, or if the camera sees the nose pushed this far off
+    # the held heading, command no heading until PX4 and the camera agree
+    # again for heading_guard_s, then hold wherever the nose is.
+    ('heading_guard_deg', 15.0),
+    ('heading_guard_s', 1.0),
+    # Pre-arm: also refuse to stream while PX4's heading and the camera's
+    # disagree by more than this (PX4 on the magnetometer), deg; 0 = off.
+    ('prearm_heading_tol_deg', 10.0),
     ('publish_rate_hz', 10.0),
     # Where we read our own position. Use the same odometry that feeds PX4's
     # vision fusion: cuVSLAM's raw topic through the stock px4_odom_bridge,
@@ -223,6 +273,25 @@ class CourseMission(Node):
         self.takeoff_lead = max(0.0, param('takeoff_lead_m'))
         self.arrival_radius = param('arrival_radius_m')
         self.takeoff_timeout = param('takeoff_timeout_s')
+        self.settle_radius = param('takeoff_settle_radius_m')
+        self.settle_s = param('takeoff_settle_s')
+        self.settle_since = None
+        self.hold_heading = str(self.get_parameter('hold_heading').value
+                                ).lower() in ('true', '1')
+        self.heading_gain = param('heading_rate_gain')
+        self.heading_rate_max = math.radians(param('heading_rate_max_dps'))
+        self.heading_guard = math.radians(param('heading_guard_deg'))
+        self.heading_guard_s = param('heading_guard_s')
+        self.prearm_heading_tol = math.radians(param('prearm_heading_tol_deg'))
+        self.hold_yaw = None        # the heading we hold (odom ENU yaw), or None
+        self.px4_yaw_ref = None     # PX4 yaw minus odom yaw when it was latched
+        self.heading_suspended = False
+        self.heading_agree_since = None
+        self.px4_yaw = None         # PX4's heading as an odom-comparable ENU yaw
+        self.px4_yaw_at = None
+        self.px4_heading_resets = None
+        self.heading_warned_at = None
+        self.last_pose = None       # the last pose setpoint, after the fence
         rate_hz = param('publish_rate_hz')
         self.cruise_speed = param('cruise_speed_mps')
         self.max_lead = param('max_lead_m')
@@ -290,6 +359,22 @@ class CourseMission(Node):
         if VisualSlamStatus is not None:
             self.create_subscription(
                 VisualSlamStatus, '/visual_slam/status', self.status_cb, 10)
+        if VehicleLocalPosition is not None:
+            # PX4's uXRCE-DDS publishers: best effort, transient local (the
+            # QoS navless_flight_tests reads this topic with on 19).
+            try:
+                from rclpy.qos import (DurabilityPolicy, HistoryPolicy,
+                                       QoSProfile, ReliabilityPolicy)
+                px4_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
+                                     durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                                     history=HistoryPolicy.KEEP_LAST, depth=1)
+            except ImportError:     # a ROS stand-in without QoS classes
+                px4_qos = None
+                self.get_logger().warn('no rclpy QoS classes: not reading '
+                                       f'{PX4_LOCAL_TOPIC}; heading guard on the camera only.')
+            if px4_qos is not None:
+                self.create_subscription(VehicleLocalPosition, PX4_LOCAL_TOPIC,
+                                         self.px4_local_cb, px4_qos)
 
         self.state = 'WAIT_FOR_OFFBOARD'
         self.state_since = self.now_s()
@@ -333,10 +418,27 @@ class CourseMission(Node):
         p = msg.pose.pose.position
         self.position = (float(p.x), float(p.y), float(p.z))
         self.odom_at = self.now_s()
-        if self.tof_tube:
-            q = msg.pose.pose.orientation
+        q = getattr(msg.pose.pose, 'orientation', None)
+        if q is not None:
             self.yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                                   1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+
+    def px4_local_cb(self, msg):
+        """PX4's heading (NED, clockwise from its x) as an ENU yaw, the same
+        convention as odom's (flight_interface: yaw_ned = pi/2 - yaw_enu)."""
+        heading = float(msg.heading)
+        if math.isfinite(heading):
+            self.px4_yaw = wrap_pi(math.pi / 2.0 - heading)
+            self.px4_yaw_at = self.now_s()
+        resets = int(msg.heading_reset_counter)
+        if (self.px4_heading_resets is not None
+                and resets != self.px4_heading_resets
+                and self.hold_yaw is not None and not self.heading_suspended):
+            self.suspend_heading(
+                f'PX4 reset its heading in flight (reset counter '
+                f'{self.px4_heading_resets} -> {resets}; a vision gap?)',
+                republish=True)
+        self.px4_heading_resets = resets
 
     def tof_offset_cb(self, msg):
         """tube_node's /tube/offset: point.y = how far the tube centreline is
@@ -383,7 +485,9 @@ class CourseMission(Node):
 
     # -- outputs ---------------------------------------------------------
     def send(self, x, y, z, fence=True):
-        """One ENU pose setpoint in odom. Zero quaternion = hold heading."""
+        """One ENU pose setpoint in odom, with the held heading (heading_cmd);
+        a zero quaternion (yaw NaN: PX4 does not steer the heading) when
+        there is none to hold."""
         if fence and self.frame is not None:
             (x, y, z), moved = clamp_to_net(
                 (x, y, z), self.frame[0], self.frame[1], self.net_margin)
@@ -391,25 +495,125 @@ class CourseMission(Node):
                 self.info_once(
                     'fenced', f'setpoint pulled inside the net (margin '
                     f'{self.net_margin:.2f} m); route or start bearing wrong?')
+        self.last_pose = (x, y, z)
+        self.publish_pose(x, y, z, self.heading_cmd())
+
+    def publish_pose(self, x, y, z, yaw):
         msg = PoseStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = 'odom'
         msg.pose.position.x = float(x)
         msg.pose.position.y = float(y)
         msg.pose.position.z = float(z)
-        msg.pose.orientation.w = 0.0
+        msg.pose.orientation.x = 0.0
+        msg.pose.orientation.y = 0.0
+        if yaw is None:
+            msg.pose.orientation.z = 0.0
+            msg.pose.orientation.w = 0.0
+        else:
+            msg.pose.orientation.z = math.sin(yaw / 2.0)
+            msg.pose.orientation.w = math.cos(yaw / 2.0)
         self.setpoint_pub.publish(msg)
 
     def send_twist(self, vx, vy, vz):
-        """ENU world velocity in odom; expires after 1 s unless refreshed."""
+        """ENU world velocity in odom; expires after 1 s unless refreshed.
+        Yaw rate steers the nose back to the held heading, if any."""
+        rate = 0.0
+        yaw = self.heading_cmd()
+        if yaw is not None and self.yaw is not None:
+            rate = max(-self.heading_rate_max, min(
+                self.heading_rate_max,
+                self.heading_gain * wrap_pi(yaw - self.yaw)))
         msg = TwistStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = 'odom'
         msg.twist.linear.x = float(vx)
         msg.twist.linear.y = float(vy)
         msg.twist.linear.z = float(vz)
-        msg.twist.angular.z = 0.0
+        msg.twist.angular.z = float(rate)
         self.twist_pub.publish(msg)
+
+    # -- heading ---------------------------------------------------------
+    def latch_heading(self):
+        """Hold the heading the drone has now (called as the takeoff starts)."""
+        self.heading_suspended = False
+        self.heading_agree_since = None
+        if not self.hold_heading or self.yaw is None:
+            self.hold_yaw = None
+            return
+        self.hold_yaw = self.yaw
+        px4 = self.px4_heading()
+        self.px4_yaw_ref = wrap_pi(px4 - self.yaw) if px4 is not None else None
+        self.get_logger().info(
+            f'holding heading {math.degrees(self.hold_yaw):.1f} deg (odom)'
+            + (f'; PX4 agrees to {math.degrees(self.px4_yaw_ref):+.1f} deg'
+               if self.px4_yaw_ref is not None else '; no PX4 heading to cross-check'))
+
+    def release_heading(self):
+        self.hold_yaw = None
+        self.px4_yaw_ref = None
+        self.heading_suspended = False
+        self.heading_agree_since = None
+
+    def px4_heading(self):
+        """PX4's latest heading (odom-comparable ENU yaw) if fresh, else None."""
+        if self.px4_yaw is None or self.now_s() - self.px4_yaw_at > PX4_TIMEOUT_S:
+            return None
+        return self.px4_yaw
+
+    def px4_heading_off(self):
+        """How far PX4's heading is from the camera's, beyond what it was when
+        the heading was latched (rad, >= 0), or None if not known."""
+        px4 = self.px4_heading()
+        if px4 is None or self.yaw is None or self.px4_yaw_ref is None:
+            return None
+        return abs(wrap_pi(px4 - self.yaw - self.px4_yaw_ref))
+
+    def suspend_heading(self, why, republish=False):
+        self.heading_suspended = True
+        self.heading_agree_since = None
+        self.get_logger().warn(
+            f'heading guard: {why}. Commanding no heading (PX4 will not turn '
+            'the nose) until PX4 and the camera agree again.')
+        if (republish and self.state in ('TAKEOFF', 'ROUTE', 'HOLD')
+                and self.last_pose is not None):
+            self.publish_pose(*self.last_pose, None)     # now, not next tick
+
+    def heading_cmd(self):
+        """The heading to command (odom ENU yaw), or None for no heading."""
+        if self.hold_yaw is None or self.state in IDLE_STATES:
+            return None
+        off_px4 = self.px4_heading_off()
+        if not self.heading_suspended:
+            pushed = (abs(wrap_pi(self.yaw - self.hold_yaw))
+                      if self.yaw is not None else 0.0)
+            if off_px4 is not None and off_px4 > self.heading_guard:
+                self.suspend_heading(
+                    f'PX4 heading {math.degrees(off_px4):.0f} deg off the camera')
+            elif pushed > self.heading_guard:
+                self.suspend_heading(
+                    f'nose {math.degrees(pushed):.0f} deg off the held heading')
+            else:
+                return self.hold_yaw
+        # Suspended: resume once PX4 and the camera have agreed (within a
+        # third of the guard) for heading_guard_s -- or, with no PX4 heading
+        # to compare, once heading_guard_s has passed -- holding the nose
+        # where it is now, never turning it back.
+        now = self.now_s()
+        agree = off_px4 is None or off_px4 <= self.heading_guard / 3.0
+        if not agree:
+            self.heading_agree_since = None
+            return None
+        if self.heading_agree_since is None:
+            self.heading_agree_since = now
+        if now - self.heading_agree_since < self.heading_guard_s or self.yaw is None:
+            return None
+        self.heading_suspended = False
+        self.hold_yaw = self.yaw
+        self.get_logger().info(
+            f'heading guard: PX4 and the camera agree again; holding heading '
+            f'{math.degrees(self.hold_yaw):.1f} deg (odom), where the nose is.')
+        return self.hold_yaw
 
     # -- helpers ---------------------------------------------------------
     def now_s(self):
@@ -428,10 +632,40 @@ class CourseMission(Node):
         self.state = state
         self.state_since = self.now_s()
         self.target = target
+        self.settle_since = None
+        if state in IDLE_STATES:
+            self.release_heading()      # every takeoff latches its own
         if state == 'WAIT_FOR_OFFBOARD':
             # Every arming (the fly_home re-arm on the pad too) re-checks.
             self.heights_agree_since = None
             self.prearm_passed = False
+
+    def headings_agree(self):
+        """Pre-arm check: PX4's heading matches the camera's (PX4 is not on
+        the magnetometer). Passes when there is no PX4 heading to compare."""
+        if self.prearm_heading_tol <= 0.0:
+            return True
+        px4 = self.px4_heading()
+        if px4 is None or self.yaw is None:
+            if VehicleLocalPosition is not None:
+                self.info_once('prearm_heading_none', 'pre-arm heading check: '
+                               f'no PX4 heading on {PX4_LOCAL_TOPIC}; not checked.')
+            return True
+        off = abs(wrap_pi(px4 - self.yaw))
+        if off <= self.prearm_heading_tol:
+            return True
+        now = self.now_s()
+        if self.heading_warned_at is None or now - self.heading_warned_at >= 5.0:
+            self.heading_warned_at = now
+            self.get_logger().warn(
+                f'pre-arm heading check: PX4 heading {math.degrees(px4):.1f} deg '
+                f'vs camera {math.degrees(self.yaw):.1f} deg: '
+                f'{math.degrees(off):.1f} deg apart (limit '
+                f'{math.degrees(self.prearm_heading_tol):.0f}). PX4 is not '
+                'using the camera\'s heading (magnetometer?). Not streaming '
+                'setpoints, so flight_interface will not take over. Keep the '
+                'drone still; if it stays off, power-cycle the Pixhawk.')
+        return False
 
     def heights_agree(self):
         """Pre-arm check: PX4's height has matched odom z for prearm_settle_s."""
@@ -516,18 +750,21 @@ class CourseMission(Node):
 
     def _state_wait_for_offboard(self):
         ready = self.heights_agree()
+        ready = self.headings_agree() and ready
         if not self.offboard_active:
             if ready:
                 self.send(*self.position, fence=False)
             return
         if not ready:
             self.get_logger().error(
-                'Offboard came while PX4 height and odom disagree: not taking '
-                'off. Descending in place until PX4 disarms.')
+                'Offboard came while PX4 and odom disagree (height or '
+                'heading): not taking off. Descending in place until PX4 '
+                'disarms.')
             self.goto('REFUSED', self.position)
             self._state_refused()       # no tick without a setpoint
             return
         self.goto('TAKEOFF', self.takeoff_target())
+        self.latch_heading()
         self._state_takeoff()       # climb on this tick, not the next one
 
     def takeoff_target(self):
@@ -553,14 +790,42 @@ class CourseMission(Node):
 
     def _state_takeoff(self):
         self.send(*self.target)
-        if self.arrived(self.target) and self.climbed():
+        there = self.arrived(self.target) and self.climbed()
+        if there and self.settled():
+            self.get_logger().info(
+                f'takeoff settled: within {self.settle_radius * 100:.0f} cm of '
+                f'the target for {self.settle_s:.1f} s, '
+                f'{self.now_s() - self.state_since:.1f} s after the climb began.')
             self.start_route()
         elif self.now_s() - self.state_since > self.takeoff_timeout:
+            if there:
+                self.get_logger().warn(
+                    f'takeoff never settled within {self.settle_radius * 100:.0f} cm '
+                    f'in {self.takeoff_timeout:.0f} s '
+                    f'({math.dist(self.position[:2], self.target[:2]) * 100:.0f} cm '
+                    'off now); starting the route anyway.')
+                self.start_route()
+                return
             self.get_logger().error(
                 f'takeoff target not reached in {self.takeoff_timeout:.0f} s '
                 f'({math.dist(self.position, self.target):.2f} m off); '
                 f'holding here. Check `clamped` in {STATE_TOPIC} and VIO.')
             self.goto('HOLD', self.position)
+
+    def settled(self):
+        """Within takeoff_settle_radius_m of the setpoint actually sent (the
+        target after the net fence; horizontally, by odom) without a break
+        for takeoff_settle_s."""
+        if self.settle_s <= 0.0:
+            return True
+        now = self.now_s()
+        aim = self.last_pose if self.last_pose is not None else self.target
+        if math.dist(self.position[:2], aim[:2]) > self.settle_radius:
+            self.settle_since = None
+            return False
+        if self.settle_since is None:
+            self.settle_since = now
+        return now - self.settle_since >= self.settle_s
 
     def climbed(self):
         """On the fly_home hop, the climb must be (nearly) complete before
