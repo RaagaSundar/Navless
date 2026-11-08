@@ -7,7 +7,7 @@
 <p align="center">
   <b>A drone that flies the DroneHacks indoor course on its own: no GPS, no optical flow, one stereo camera.</b><br>
   Stereo SLAM to know where it is, a phone-LiDAR scan of the real course to plan on,<br>
-  two infrared side sensors for the dark tunnel, and a flight program built around checks that refuse to fly on bad data.
+  PX4's own estimate to carry it through the dark tunnel, and a flight program built around checks that refuse to fly on bad data.
 </p>
 
 <p align="center">
@@ -19,6 +19,11 @@
   <br>
   <img alt="Gazebo gate: 3 of 3 laps on the new maze" src="https://img.shields.io/badge/Gazebo_gate-3%2F3_laps,_new_maze-3ddc97">
   <img alt="Real flights: hover, yaw, first course runs" src="https://img.shields.io/badge/real_flights-hover,_yaw,_course_runs-38bdf8">
+</p>
+
+<p align="center">
+  <b>Live pitch site:</b> <a href="https://navless-pitch.vercel.app">navless-pitch.vercel.app</a> ·
+  <a href="pitch/">source</a>
 </p>
 
 <p align="center">
@@ -34,7 +39,7 @@
 
 <p align="center"><sub>
 A recorded lap in Gazebo + PX4 SITL on the organisers' new maze, flying skybeta-19's flight code (<code>drone19/flight</code> <code>865db6b</code>) with PX4 reading 19 cm high, as on the real drone. Sped up 4×.
-Position, height, speed, wall clearance and checkpoint times come from the log. The camera cone, the side-sensor beams and the dark tunnel are drawn on top.
+Position, height, speed, wall clearance and checkpoint times come from the log. The camera cone, the side-sensor beams and the dark tunnel are drawn on top. The beams are from when we still planned to fly the side ToF sensors; we no longer use them.
 </sub></p>
 
 ---
@@ -51,7 +56,7 @@ Position, height, speed, wall clearance and checkpoint times come from the log. 
 <tr>
 <td align="center"><h3>39.6 s</h3>lap, landing 6.4–7.6 cm from the pad centre</td>
 <td align="center"><h3>≥ 17.9 cm</h3>planned prop room to every wall</td>
-<td align="center"><h3>2</h3>infrared side sensors for the dark tunnel</td>
+<td align="center"><h3>≤ 4 s</h3>blind carry through the dark tunnel, on PX4's own estimate</td>
 <td align="center"><h3>1</h3>Slack channel shared by 5 people and their AI agents</td>
 </tr>
 </table>
@@ -64,7 +69,7 @@ A 20 × 20 ft netted room with five checkpoints worth 35 points. Our drone, **sk
 |:-:|---|:-:|---|---|
 | 1 | First corridor | 4 | The camera only knows the heading it started with. 1° off at the start is 5 cm off 3 m later. | Start square on the launch mark. Hold the takeoff heading, guarded against PX4's compass resets. |
 | 2 | Maze | 7 | Rebuilt the night before: one 1 m gap between the long diagonal wall (MD) and the north net | Fly north-east beside MD and round its tip through the gap, on a route planned from the walls themselves |
-| 3 | Tunnel | 10 | It's dark, so the camera tracks nothing for about 3 s | Ride through on PX4's own estimate (`blind_carry`), centred by two side time-of-flight sensors |
+| 3 | Tunnel | 10 | It's dark, so the camera tracks nothing for about 3 s | Ride through on PX4's own estimate (`blind_carry`) along a route planned down the middle of the tube. We built side time-of-flight centring for it and no longer use it |
 | 4 | Chicane | 7 | The window is 36 in, leaving 8.6 in on each side | Cross at the window's centre, 0.85 m up (backup: a Gate B route) |
 | 5 | Landing | 7 | Land on a bullseye scored by ring | Descend onto the pad until PX4 detects touchdown and disarms. Optionally, steer onto the rings by camera. |
 
@@ -100,13 +105,11 @@ The course lives in one file, [`gazebo_sim/course/course_asbuilt.json`](gazebo_s
 flowchart LR
   subgraph SENSORS["Sensors"]
     CAM["OAK-D-S2<br/>stereo camera"]
-    TOF["2 × VL53L1X<br/>side ToF"]
     RNG["VL53L1X<br/>downward range"]
   end
   subgraph JETSON["Jetson Orin Nano · ROS 2 Humble"]
     VS["cuVSLAM<br/>stereo odometry"]
     BR["vision bridge<br/>ENU → NED, FRD"]
-    TN["tube_node<br/>offset = (L − R) / 2"]
     NAV["navless_nav<br/>course_mission"]
     FI["flight_interface<br/>(organisers)"]
     LOC["cloud_localize<br/>walls vs depth"]
@@ -119,10 +122,9 @@ flowchart LR
   CAM --> VS --> BR -->|external vision| EKF
   RNG --> EKF
   VS -->|pose| NAV
-  TOF --> TN -->|tube offset| NAV
   CAM -.-> LOC -.->|drift correction, off| NAV
   CAM -.-> PAD -.->|pad centre, off| NAV
-  EKF -->|height, heading| NAV
+  EKF -->|"height, heading, blind-carry estimate"| NAV
   NAV -->|"/skybeta/setpoint/*"| FI -->|Offboard| CTRL
   EKF --> CTRL
 ```
@@ -182,16 +184,17 @@ It walks the route with a speed-limited carrot: 0.5 m/s on straights, 0.6 m lead
 
 ### 4. The dark tunnel
 
+The tunnel is the 10-point checkpoint, and it's dark: for about 3 s the camera has nothing to track. The route runs down the middle of the tube, and `blind_carry` takes the drone through it:
+
+- **`blind_carry`** (on in the course launch): if odometry stops inside the tube, the drone keeps moving along the route on PX4's own estimate, for at most 4 s. In the master sim, freezing in place hit the tube 3/3 times. `blind_carry` landed 4/4 and made 6/6 clean passes at 0.5 m/s. Those sim runs used the course launch, whose side-ToF chain is on by default, so they do not isolate `blind_carry`. None of the overnight course attempts on 8 Nov (logged on the `flight-logs/2026-11-08` branch) reached the tunnel, so every tunnel result here is simulation.
+
+**Side time-of-flight centring: built and bench-tested, no longer used (as of 8 Nov).** The driver and `tube_node` stay in [`tube/`](tube), together with an experimental stereo centring that is off in every launch default. What we measured:
+
 <p align="center">
   <img src="docs/media/tube_tof.gif" width="640" alt="Cross-section of the tunnel: the drone starts 12 cm left of centre, two orange beams measure the distance to each wall, and the drone moves back to within 2 cm of the centre.">
 </p>
 
-The tunnel is the 10-point checkpoint, and it's dark: for about 3 s the camera has nothing to track. Two things carry the drone through:
-
-- **`blind_carry`** (on in the course launch): if odometry stops inside the tube, the drone keeps moving along the route on PX4's own estimate, for at most 4 s. In the master sim, freezing in place hit the tube 3/3 times. `blind_carry` landed 4/4 and made 6/6 clean passes at 0.5 m/s.
-- **Side time-of-flight centring**: one VL53L1X on each side, each on its own I²C bus. They carry their own 940 nm light, so the dark doesn't matter. The offset from centre is simply (L − R) / 2. A reading is used only inside the tube, only when L + R adds up to the tube's width, only if it's under 0.3 s old, and never more than 15 cm off the planned route. Otherwise the drone flies the route.
-
-The first ToF driver reached only about 30 cm, and each wall is about 65 cm away. The rewrite reaches 60–90 cm. On skybeta-19 it ran at **9.6 Hz**, with **99–99.6 %** of readings valid and steady to ±0.3 cm. In a closed-loop test with the sensors raycast off the course model, a route 10–12 cm off centre ends **within 2 cm** of the centreline.
+One VL53L1X on each side, each on its own I²C bus. They carry their own 940 nm light, so the dark doesn't matter. The offset from centre is simply (L − R) / 2. A reading is used only inside the tube, only when L + R adds up to the tube's width, only if it's under 0.3 s old, and never more than 15 cm off the planned route. The first ToF driver reached only about 30 cm, and each wall is about 65 cm away. The rewrite reaches 60–90 cm. On skybeta-19 it ran at **9.6 Hz**, with **99–99.6 %** of readings valid and steady to ±0.3 cm. In a closed-loop test with the sensors raycast off the course model, a route 10–12 cm off centre ends **within 2 cm** of the centreline.
 
 ### 5. Landing on the bullseye
 
@@ -265,8 +268,8 @@ The lesson is in the chart: 17–25 cm of planned room is less than any one real
 | Autonomous hover and 180° yaw | **skybeta-19, real** | Climbed, held and landed under our setpoints; yaw reached its target |
 | First two course runs | **skybeta-19, real** | Both hit a wall (MD at 1.5 m, the north net at the maze exit). Fully logged and analysed above. |
 | Stereo odometry | skybeta-19 | 31.2 Hz, 49 ms worst gap (Jetson quiet) |
-| Side ToF sensors | skybeta-19 bench | 9.6 Hz, 99–99.6 % valid, ±0.3 cm |
-| ToF centring | closed-loop test | 10–12 cm off centre → within 2 cm |
+| Side ToF sensors (no longer used) | skybeta-19 bench | 9.6 Hz, 99–99.6 % valid, ±0.3 cm |
+| Side-ToF centring (no longer used) | closed-loop test | 10–12 cm off centre → within 2 cm |
 | Camera pad landing | Gazebo, 32 cm injected drift | 29.4 cm off → 4.6–6.4 cm |
 
 ## Run it
@@ -290,7 +293,7 @@ master_sim/regress.py --laps 3 default                          # several laps, 
 |---|---|
 | [`navless_nav/`](navless_nav) | The ROS 2 package that flies the course: `course_mission`, the route and carrot, tube guidance, pad vision, `mirror_relay` (live pose, ToF and camera to the laptop) and the launch files |
 | [`gazebo_sim/`](gazebo_sim) | Gazebo + PX4 SITL of the course, the as-built course file, route export, the gate and the mirror dashboard |
-| [`tube/`](tube) | Side ToF driver, `tube_node` centring, the bench view and experimental stereo centring |
+| [`tube/`](tube) | Side ToF driver, `tube_node` centring, the bench view and experimental stereo centring: built and bench-tested, no longer used on the drone |
 | [`hardware_slam/`](hardware_slam) | cuVSLAM on the drone, the odometry gate and the SLAM map viewer |
 | [`depthcloud/`](depthcloud) | Stereo depth, the course-model localizer, the phone-scan course and the walk-session recorder |
 | [`planner/`](planner) | 3D grid, A\*, B-spline, the PX4 bridge, and the real-flight start and kill scripts |
@@ -442,7 +445,7 @@ The message should show up in Slack under your agent's name.
 
 ## Team
 
-- **Raaga:** the flight program (`navless_nav`): routes, heading hold and guards, the height-offset fix, the tunnel and side ToF, the Gazebo sim and gate, the live dashboard, and the agent channel
+- **Raaga:** the flight program (`navless_nav`): routes, heading hold and guards, the height-offset fix, the tunnel (`blind_carry`, plus the side-ToF centring we built and no longer use), the Gazebo sim and gate, the live dashboard, and the agent channel
 - **Koji:** positioning on the drone: cuVSLAM, the odometry gate, the split sim on the Jetson, and the Jetson's networking
 - **Shining:** the phone-scan course, stereo depth and the localizer, the first flight tests, drift correction and the flight recorder
 - **Favour:** the path planner and live re-planning

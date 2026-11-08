@@ -1,0 +1,332 @@
+{
+ "frame": "ENU metres, origin = floor centre (x east, y north, z up). three.js: (x, z, -y).",
+ "notes": "AS-BUILT course. Walls MN/MD/MT replaced M1/M2/M3 on 2026-11-07. A1, C1 sit where the phone-LiDAR scan put them. The old floor tape is NOT included (it is the old maze and must not be followed).",
+ "net": {
+  "halfX": 3.048,
+  "halfY": 3.048,
+  "height": 3.048
+ },
+ "walls": [
+  {
+   "name": "Barrier1",
+   "kind": "barrier",
+   "a": [
+    -3.048,
+    0.4572
+   ],
+   "b": [
+    -1.4351,
+    0.4572
+   ],
+   "thickness": 0.1016,
+   "height": 1.7272
+  },
+  {
+   "name": "Barrier2",
+   "kind": "barrier",
+   "a": [
+    -1.4351,
+    0.4572
+   ],
+   "b": [
+    0.1778,
+    0.4572
+   ],
+   "thickness": 0.1016,
+   "height": 1.7272
+  },
+  {
+   "name": "Barrier3",
+   "kind": "barrier",
+   "a": [
+    0.1778,
+    0.4572
+   ],
+   "b": [
+    1.5748,
+    0.4572
+   ],
+   "thickness": 0.1016,
+   "height": 1.7272
+  },
+  {
+   "name": "A1",
+   "kind": "approach",
+   "a": [
+    -1.5596,
+    -0.8712
+   ],
+   "b": [
+    -1.2649,
+    0.4064
+   ],
+   "thickness": 0.1016,
+   "height": 1.7272
+  },
+  {
+   "name": "C1",
+   "kind": "chicane",
+   "a": [
+    1.5164,
+    -1.1354
+   ],
+   "b": [
+    1.1684,
+    0.4064
+   ],
+   "thickness": 0.1016,
+   "height": 1.7272
+  },
+  {
+   "name": "C2a",
+   "kind": "chicane_window",
+   "a": [
+    -0.7468,
+    -3.0297
+   ],
+   "b": [
+    -0.1951,
+    -1.5141
+   ],
+   "thickness": 0.1016,
+   "height": 1.7272,
+   "window": {
+    "center": [
+     -0.4709,
+     -2.2718
+    ],
+    "width": 0.9144,
+    "height": 0.9144,
+    "bottom": 0.3048,
+    "top": 1.2192
+   }
+  },
+  {
+   "name": "C2b",
+   "kind": "chicane",
+   "a": [
+    -0.195,
+    -1.5139
+   ],
+   "b": [
+    0.1567,
+    -0.5471
+   ],
+   "thickness": 0.1016,
+   "height": 1.7272
+  },
+  {
+   "name": "MN",
+   "kind": "maze",
+   "a": [
+    -2.5471,
+    2.985
+   ],
+   "b": [
+    -0.8301,
+    2.985
+   ],
+   "thickness": 0.1016,
+   "height": 1.7272
+  },
+  {
+   "name": "MD",
+   "kind": "maze",
+   "a": [
+    -1.9959,
+    0.508
+   ],
+   "b": [
+    -0.1689,
+    2.048
+   ],
+   "thickness": 0.1016,
+   "height": 1.7272
+  },
+  {
+   "name": "MT",
+   "kind": "maze",
+   "a": [
+    -0.1821,
+    0.508
+   ],
+   "b": [
+    1.5349,
+    1.352
+   ],
+   "thickness": 0.1016,
+   "height": 1.7272
+  }
+ ],
+ "removedWalls": [
+  "M1",
+  "M2",
+  "M3"
+ ],
+ "tunnel": {
+  "xMin": 1.5748,
+  "xMax": 3.048,
+  "yMin": -0.3048,
+  "yMax": 1.2192,
+  "ovalWidth": 1.4732,
+  "ovalHeight": 1.8288,
+  "length": 1.524,
+  "axis": "north-south",
+  "zBottom": 0.0254,
+  "zTop": 1.8542,
+  "note": "Sits about 1 in off the floor on three low cradles (10.9 in tall). Top of tube is 73 in, above the 68 in walls. Dark inside.",
+  "centerX": 2.3114
+ },
+ "boulders": [
+  {
+   "center": [
+    2.0117,
+    -2.4689
+   ],
+   "diameter": 0.4572,
+   "height": 0.5334
+  },
+  {
+   "center": [
+    2.5298,
+    -1.5545
+   ],
+   "diameter": 0.4572,
+   "height": 0.5334
+  },
+  {
+   "center": [
+    0.7925,
+    -2.347
+   ],
+   "diameter": 0.4572,
+   "height": 0.5334
+  },
+  {
+   "center": [
+    -2.5603,
+    -2.4994
+   ],
+   "diameter": 0.4572,
+   "height": 0.5334
+  },
+  {
+   "center": [
+    -1.3411,
+    -2.3774
+   ],
+   "diameter": 0.4572,
+   "height": 0.5334
+  }
+ ],
+ "pad": {
+  "center": [
+   -2.0422,
+   -0.7925
+  ],
+  "rOuter": 0.762,
+  "rings": [
+   0.508,
+   0.2286
+  ],
+  "rApproach": 0.9906
+ },
+ "launch": [
+  -2.5146,
+  0.9144
+ ],
+ "gates": {
+  "gate_A": {
+   "a": [
+    -0.1689,
+    2.048
+   ],
+   "b": [
+    -0.1689,
+    3.048
+   ],
+   "note": "maze exit since 2026-11-07: the 1 m gap between the long diagonal's (MD) tip and the north net"
+  },
+  "gate_B": {
+   "a": [
+    0.1567,
+    -0.5471
+   ],
+   "b": [
+    0.1567,
+    0.4064
+   ],
+   "note": "north end of chicane into landing area"
+  }
+ },
+ "checkpoints": [
+  {
+   "n": 1,
+   "name": "FIRST CORRIDOR",
+   "points": 4,
+   "at": [
+    -1.9646,
+    1.8144
+   ]
+  },
+  {
+   "n": 2,
+   "name": "MAZE",
+   "points": 7,
+   "at": [
+    -0.1689,
+    2.548
+   ]
+  },
+  {
+   "n": 3,
+   "name": "TUNNEL",
+   "points": 10,
+   "at": [
+    2.3114,
+    -0.3048
+   ]
+  },
+  {
+   "n": 4,
+   "name": "CHICANE",
+   "points": 7,
+   "at": [
+    -0.4709,
+    -2.2718
+   ]
+  },
+  {
+   "n": 5,
+   "name": "LANDING",
+   "points": 7,
+   "at": [
+    -2.0422,
+    -0.7925
+   ]
+  }
+ ],
+ "drone": {
+  "overall_with_props": {
+   "length_x": 0.366,
+   "width_y": 0.475,
+   "height_z": 0.116
+  },
+  "overall_with_props_in": {
+   "length": 14.4,
+   "width": 18.7,
+   "height": 4.6
+  },
+  "motor_xy_front": [
+   0.08,
+   0.16
+  ],
+  "motor_xy_rear": [
+   -0.15,
+   0.14
+  ],
+  "prop_diameter_in_model_in": 6.1,
+  "battery": "OVONIC 4S 5000 mAh",
+  "motors": "DYS X2807 1500KV"
+ }
+}
