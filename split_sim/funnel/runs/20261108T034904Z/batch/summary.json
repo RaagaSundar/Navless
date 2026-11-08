@@ -1,0 +1,146 @@
+{
+  "finished": 5,
+  "airborne": 5,
+  "verified_crossings": 5,
+  "planned_landings": 4,
+  "final_landed_disarmed": 5,
+  "contact_events": 0,
+  "verified_windy_runs": 5,
+  "median_absolute_crossing_error_m": 0.02602530939466278,
+  "worst_absolute_crossing_error_m": 0.06306905108373154,
+  "verified_landing_range_m": [
+    0.546487712877759,
+    1.0511940277653165
+  ],
+  "sampled_airborne_wind_range_m_s": [
+    0.35,
+    1.65
+  ],
+  "runs": [
+    {
+      "index": 1,
+      "run_id": "20261108T034904Z",
+      "seed": 1058784111,
+      "configured_offset_m": -0.3064,
+      "measured_spawn_xy_m": [
+        0.0834000075774048,
+        -0.30640323124366853
+      ],
+      "gust_period_s": 6.652,
+      "wind_mean_y_m_s": -1.0,
+      "wind_min_m_s": 0.350014,
+      "wind_max_m_s": 1.64998,
+      "windy_link_verified": true,
+      "airborne_samples": 4798,
+      "crossing_verified": true,
+      "lateral_error_m": -0.06306905108373154,
+      "max_centerline_error_last_meter_m": 0.11540912193372607,
+      "landing_distance_beyond_plane_m": 1.0274831439358398,
+      "contacts_verified": true,
+      "wall_contacts": 0,
+      "final_landed_disarmed": true,
+      "mission_exit": 0,
+      "operator_stopped": false
+    },
+    {
+      "index": 2,
+      "run_id": "20261108T035354Z",
+      "seed": 2693231125,
+      "configured_offset_m": -0.2004,
+      "measured_spawn_xy_m": [
+        -0.13309999257661187,
+        -0.20040129740066687
+      ],
+      "gust_period_s": 5.224,
+      "wind_mean_y_m_s": -1.0,
+      "wind_min_m_s": 0.350002,
+      "wind_max_m_s": 1.65,
+      "windy_link_verified": true,
+      "airborne_samples": 4921,
+      "crossing_verified": true,
+      "lateral_error_m": 0.007931270065516935,
+      "max_centerline_error_last_meter_m": 0.09065738509898225,
+      "landing_distance_beyond_plane_m": 1.0511940277653165,
+      "contacts_verified": true,
+      "wall_contacts": 0,
+      "final_landed_disarmed": true,
+      "mission_exit": 0,
+      "operator_stopped": false
+    },
+    {
+      "index": 3,
+      "run_id": "20261108T035659Z",
+      "seed": 409250586,
+      "configured_offset_m": 0.2409,
+      "measured_spawn_xy_m": [
+        0.030700007220709764,
+        0.24090123064656913
+      ],
+      "gust_period_s": 4.426,
+      "wind_mean_y_m_s": 1.0,
+      "wind_min_m_s": 0.350028,
+      "wind_max_m_s": 1.64997,
+      "windy_link_verified": true,
+      "airborne_samples": 4918,
+      "crossing_verified": true,
+      "lateral_error_m": -0.001181854379797395,
+      "max_centerline_error_last_meter_m": 0.10084244032524274,
+      "landing_distance_beyond_plane_m": 1.0466017510654244,
+      "contacts_verified": true,
+      "wall_contacts": 0,
+      "final_landed_disarmed": true,
+      "mission_exit": 0,
+      "operator_stopped": false
+    },
+    {
+      "index": 4,
+      "run_id": "20261108T040016Z",
+      "seed": 3152770479,
+      "configured_offset_m": 0.3394,
+      "measured_spawn_xy_m": [
+        0.12470000741208795,
+        0.33939883947339916
+      ],
+      "gust_period_s": 4.072,
+      "wind_mean_y_m_s": -1.0,
+      "wind_min_m_s": 0.350251,
+      "wind_max_m_s": 1.65,
+      "windy_link_verified": true,
+      "airborne_samples": 4772,
+      "crossing_verified": true,
+      "lateral_error_m": -0.02602530939466278,
+      "max_centerline_error_last_meter_m": 0.094861520973293,
+      "landing_distance_beyond_plane_m": 1.0479046515290258,
+      "contacts_verified": true,
+      "wall_contacts": 0,
+      "final_landed_disarmed": true,
+      "mission_exit": 0,
+      "operator_stopped": false
+    },
+    {
+      "index": 5,
+      "run_id": "20261108T040318Z",
+      "seed": 1746907054,
+      "configured_offset_m": 0.2036,
+      "measured_spawn_xy_m": [
+        -0.015899992588077432,
+        0.2035988424397943
+      ],
+      "gust_period_s": 4.259,
+      "wind_mean_y_m_s": -1.0,
+      "wind_min_m_s": 0.35,
+      "wind_max_m_s": 1.65,
+      "windy_link_verified": true,
+      "airborne_samples": 4450,
+      "crossing_verified": true,
+      "lateral_error_m": 0.032569691871059576,
+      "max_centerline_error_last_meter_m": 0.052858223799293697,
+      "landing_distance_beyond_plane_m": 0.546487712877759,
+      "contacts_verified": true,
+      "wall_contacts": 0,
+      "final_landed_disarmed": true,
+      "mission_exit": null,
+      "operator_stopped": true
+    }
+  ]
+}

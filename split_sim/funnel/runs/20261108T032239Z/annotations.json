@@ -1,0 +1,29 @@
+{
+  "notes": [
+    "Preflight only. After team approval the Jetson was unreachable over mDNS, wired 10.55.0.2 and the documented wireless address. Independent recorders had timed out on the Mac. No arm request or trajectory was issued. See flight/before-approval-launch.log and flight/final-status.log for native PX4 telemetry, and flight/preflight-only.log for the earlier ready observation. The Mac simulation was then stopped."
+  ],
+  "confounds": [
+    "This is one split-platform SITL setup. Floor appearance and commanded motion changed together. Stereo tracking, timing and contact behavior are simulation-specific."
+  ],
+  "changes": [
+    {
+      "field": "world appearance",
+      "before": "uniform floor",
+      "after": "440 visual-only matte floor markings for SLAM; same two wall collision boxes and aperture",
+      "evidence": [
+        "build_world.py",
+        "funnel.sdf"
+      ]
+    },
+    {
+      "field": "mission",
+      "before": "stationary yaw alignment followed by landing at launch",
+      "after": "metric midpoint estimation, continuous approach corrections, SLAM-guided crossing and a far-side landing target",
+      "evidence": [
+        "settings.json",
+        "pilot/traverse.py",
+        "pilot/passage.py"
+      ]
+    }
+  ]
+}

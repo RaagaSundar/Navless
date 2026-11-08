@@ -1,0 +1,48 @@
+--- mission.py
++++ mission.py
+@@ -127,7 +127,7 @@
+     from nav_msgs.msg import Odometry
+     from px4_msgs.msg import (OffboardControlMode, TrajectorySetpoint, VehicleCommand,
+                              VehicleStatus, VehicleLocalPosition, VehicleLandDetected, VehicleCommandAck, EstimatorStatusFlags)
+-    from navless_nav.course_mission import CourseMission
++    from hover import FunnelHover
+     rclpy.init()
+     use_sim = Parameter('use_sim_time', value=True)
+ 
+@@ -559,7 +559,8 @@
+                 elif now-self.request_at > 3.0:
+                     self.stop('Offboard/arm request timed out')
+                     return
+-            if route_land_ready(mission,self.phase,self.nav_state,armed,offboard,status.failsafe,land.landed):
++            if (self.phase == 'ACTIVE' and self.nav_state == 'ready' and mission.state == 'LAND'
++                    and armed and offboard and not status.failsafe and not land.landed):
+                 self.land_requested_at = now
+                 self.get_logger().info('route endpoint verified on fused navigation: requesting PX4 autonomous landing')
+                 self.command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
+@@ -628,21 +629,15 @@
+                     self.stop('optional yaw policy invalid/stale input: stopped stream')
+                     return
+                 sp.yaw = self.split_frame.course_yaw_to_control(yaw)
++            if status.failsafe:
++                self.stop('PX4 failsafe active; yielding authority')
++                return
++            sp.yaw = float(p.heading) if braking else mission.heading(now, p, self.pose_history)
+             self.mode_pub.publish(mode)
+             self.sp_pub.publish(sp)
+             self.last_stream_at = now
+ 
+-    mission = CourseMission(parameter_overrides=[use_sim,
+-        Parameter('route_file',value=str(Path(args.route).resolve())),
+-        Parameter('odometry_topic',value='/split_course/px4_navigation'),
+-        Parameter('start_height_m',value=args.start_height),
+-        Parameter('takeoff_altitude_m',value=float(json.loads(Path(args.route).read_text())['waypoints_enu'][0][2]) if args.qualified_astar else 0.85),
+-        Parameter('start_bearing_deg',value=args.start_bearing),
+-        Parameter('cruise_speed_mps',value=0.40 if args.qualified_astar else 0.5), Parameter('max_lead_m',value=0.18 if args.qualified_astar else 0.6),
+-        Parameter('max_lat_accel_mps2',value=0.12 if args.qualified_astar else 0.25),
+-        Parameter('max_turn_sagitta_m',value=0.015 if args.qualified_astar else 0.0),
+-        Parameter('takeoff_lead_m',value=0.25), Parameter('fly_home',value=False),
+-        Parameter('blind_carry',value=False)])
++    mission = FunnelHover(parameter_overrides=[use_sim])
+     interface = Interface()
+     from rclpy.executors import SingleThreadedExecutor
+     executor = SingleThreadedExecutor()

@@ -1,0 +1,104 @@
+{
+  "run_id": "20261108T035659Z",
+  "crossing_verified": true,
+  "airborne_samples": 4918,
+  "opening_width_m": 1.0000000000000002,
+  "center_at_crossing": {
+    "t": 74.68369373558193,
+    "x": 3.9999999999999996,
+    "y": -0.001181854379797395,
+    "z": 1.1136212172965139
+  },
+  "lateral_error_m": -0.001181854379797395,
+  "max_centerline_error_last_meter_m": 0.10084244032524274,
+  "landing_distance_beyond_plane_m": 1.0466017510654244,
+  "final_landed_disarmed": true,
+  "contacts_verified": true,
+  "wall_contacts": 0,
+  "phases": [
+    {
+      "event": "passage",
+      "state": "CLIMB",
+      "t": 27.504,
+      "reason": "Offboard active",
+      "position": [
+        -0.00020690102932415032,
+        -0.0002649143740420527,
+        0.0238300368655473
+      ],
+      "center": null
+    },
+    {
+      "event": "passage",
+      "state": "AIM",
+      "t": 40.504000000000005,
+      "reason": "at traversal height",
+      "position": [
+        0.0054242911223291645,
+        0.03391934075847312,
+        0.9468442380893975
+      ],
+      "center": null
+    },
+    {
+      "event": "passage",
+      "state": "APPROACH",
+      "t": 43.6,
+      "reason": "metric opening acquired",
+      "position": [
+        -0.002730282348859468,
+        0.009250733258583773,
+        1.0229928076732904
+      ],
+      "center": [
+        3.989648229374003,
+        0.18472318129926468
+      ]
+    },
+    {
+      "event": "passage",
+      "state": "CROSS",
+      "t": 65.7,
+      "reason": "center locked before edges leave view",
+      "position": [
+        2.7694163128308147,
+        0.12704411155830342,
+        1.0255697548855096
+      ],
+      "center": [
+        3.961615955253275,
+        0.18700707742217487
+      ]
+    },
+    {
+      "event": "passage",
+      "state": "LAND",
+      "t": 83.0,
+      "reason": "far-side position held for one second",
+      "position": [
+        4.958313335202501,
+        0.22942582921578678,
+        1.0282824814785272
+      ],
+      "center": [
+        3.961615955253275,
+        0.18700707742217487
+      ]
+    }
+  ],
+  "index": 3,
+  "seed": 409250586,
+  "configured_offset_m": 0.2409,
+  "measured_spawn_xy_m": [
+    0.030700007220709764,
+    0.24090123064656913
+  ],
+  "gust_period_s": 4.426,
+  "wind_mean_y_m_s": 1.0,
+  "airborne_wind_samples": 350,
+  "wind_min_m_s": 0.350028,
+  "wind_max_m_s": 1.64997,
+  "wind_max_gap_sim_s": 0.21199999999998909,
+  "windy_link_verified": true,
+  "mission_exit": 0
+}

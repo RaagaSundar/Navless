@@ -1,0 +1,5 @@
+{
+  "notes": ["First funnel benchmark. No equivalent prior run was identified. The static camera fixture and stereo settings are archived in bench.sdf. Per-frame image bearings and cuVSLAM tracking are in observations.jsonl."],
+  "confounds": ["A static camera fixture is pitched level at 0.9 m with -6 degrees world yaw. OpenCV uses dark wall boundaries against bright sky. No motion, occlusion, or onboard flight authority was tested.", "The sensor bridge reported a segmentation fault during process teardown after the observation interval. See container.log and bridge.log."],
+  "changes": [{"field":"simulation fixture","before":"no paired baseline","after":"two matte panels and fixed stereo rig","evidence":["bench.sdf","observations.jsonl","aim.png"]}]
+}

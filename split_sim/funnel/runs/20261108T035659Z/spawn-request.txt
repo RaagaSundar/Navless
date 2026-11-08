@@ -1,0 +1,1 @@
+sdf_filename: "/funnel/simulated-quad.sdf", name: "dh_quad_0", pose: {position:{x:0.0307,y:0.2409,z:0.075},orientation:{z:-0.052335956,w:0.998629535}}

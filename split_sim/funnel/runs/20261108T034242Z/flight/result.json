@@ -1,0 +1,89 @@
+{
+  "run_id": "20261108T034242Z",
+  "crossing_verified": true,
+  "airborne_samples": 4774,
+  "opening_width_m": 1.0000000000000002,
+  "center_at_crossing": {
+    "t": 78.70227775909248,
+    "x": 3.9999999999999996,
+    "y": 5.218468557839038e-05,
+    "z": 1.0987494970395324
+  },
+  "lateral_error_m": 5.218468557839038e-05,
+  "max_centerline_error_last_meter_m": 0.015764675603566824,
+  "landing_distance_beyond_plane_m": 1.0304759517987363,
+  "final_landed_disarmed": true,
+  "contacts_verified": true,
+  "wall_contacts": 0,
+  "phases": [
+    {
+      "event": "passage",
+      "state": "CLIMB",
+      "t": 32.800000000000004,
+      "reason": "Offboard active",
+      "position": [
+        -0.0009778279274902267,
+        -0.00016812629277614108,
+        0.00043188268318772316
+      ],
+      "center": null
+    },
+    {
+      "event": "passage",
+      "state": "AIM",
+      "t": 44.800000000000004,
+      "reason": "at traversal height",
+      "position": [
+        0.009745273529880458,
+        -0.005680070660951521,
+        0.9242987674660981
+      ],
+      "center": null
+    },
+    {
+      "event": "passage",
+      "state": "APPROACH",
+      "t": 47.900000000000006,
+      "reason": "metric opening acquired",
+      "position": [
+        0.0011682857867515676,
+        0.005056358530370183,
+        0.992903892416507
+      ],
+      "center": [
+        3.9766053251414544,
+        0.4233721626671314
+      ]
+    },
+    {
+      "event": "passage",
+      "state": "CROSS",
+      "t": 69.708,
+      "reason": "center locked before edges leave view",
+      "position": [
+        2.767925965044355,
+        0.3015377920585879,
+        1.0064535778947175
+      ],
+      "center": [
+        3.94987868291492,
+        0.4227592094973835
+      ]
+    },
+    {
+      "event": "passage",
+      "state": "LAND",
+      "t": 86.7,
+      "reason": "far-side position held for one second",
+      "position": [
+        4.940135060694018,
+        0.5278152955837927,
+        1.0048089665360749
+      ],
+      "center": [
+        3.94987868291492,
+        0.4227592094973835
+      ]
+    }
+  ]
+}

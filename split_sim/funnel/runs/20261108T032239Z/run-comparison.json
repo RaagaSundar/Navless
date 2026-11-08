@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "run_id": "20261108T032239Z",
+  "name": "Funnel traversal \u2014 preflight only, Jetson disconnected",
+  "kind": "flight attempted",
+  "baseline_id": "20261108T030458Z",
+  "changes": [
+    {
+      "field": "renderer-source.json:world_sha256",
+      "before": "4a0f3528180fc5ae179fd25e8e26812ba2c85b36c39e979eb4667b74cb2ed26b",
+      "after": "6d6c08b581db8adbda1e7a8915fc69bc2952182686bc2cd6ab2ea5590a4d142e",
+      "evidence": [
+        "renderer-source.json"
+      ],
+      "provenance": "archived field difference"
+    },
+    {
+      "field": "settings.json:cruise_m_s",
+      "before": "not archived",
+      "after": 0.25,
+      "evidence": [
+        "settings.json"
+      ],
+      "provenance": "archived field difference"
+    },
+    {
+      "field": "settings.json:max_lead_m",
+      "before": "not archived",
+      "after": 0.16,
+      "evidence": [
+        "settings.json"
+      ],
+      "provenance": "archived field difference"
+    },
+    {
+      "field": "settings.json:yaw_policy",
+      "before": "OpenCV opening center during in-place hover",
+      "after": "OpenCV hover alignment then hold yaw; continuously update metric midpoint during approach",
+      "evidence": [
+        "settings.json"
+      ],
+      "provenance": "archived field difference"
+    },
+    {
+      "field": "world appearance",
+      "before": "uniform floor",
+      "after": "440 visual-only matte floor markings for SLAM; same two wall collision boxes and aperture",
+      "evidence": [
+        "build_world.py",
+        "funnel.sdf"
+      ],
+      "provenance": "human annotation; inspect evidence"
+    },
+    {
+      "field": "mission",
+      "before": "stationary yaw alignment followed by landing at launch",
+      "after": "metric midpoint estimation, continuous approach corrections, SLAM-guided crossing and a far-side landing target",
+      "evidence": [
+        "settings.json",
+        "pilot/traverse.py",
+        "pilot/passage.py"
+      ],
+      "provenance": "human annotation; inspect evidence"
+    }
+  ],
+  "notes": [
+    "Preflight only. After team approval the Jetson was unreachable over mDNS, wired 10.55.0.2 and the documented wireless address. Independent recorders had timed out on the Mac. No arm request or trajectory was issued. See flight/before-approval-launch.log and flight/final-status.log for native PX4 telemetry, and flight/preflight-only.log for the earlier ready observation. The Mac simulation was then stopped."
+  ],
+  "confounds": [
+    "This is one split-platform SITL setup. Floor appearance and commanded motion changed together. Stereo tracking, timing and contact behavior are simulation-specific."
+  ],
+  "evidence": [
+    "settings.json",
+    "renderer-source.json"
+  ],
+  "source_sha256": {
+    "settings.json": "a7daf5ee8ce5799b3be1e723f4bc0d56bda89bdeda321ecee53bc92e3f1ce700",
+    "renderer-source.json": "59a8f5244c5caf125d4c99cc4e8c700eab27219184cfadbd0b537a0271d3e767"
+  },
+  "telemetry": {
+    "state": "arm/landed telemetry not archived",
+    "observed_flight": false,
+    "source": null,
+    "sample_count": 0
+  },
+  "snapshot": {
+    "settings.json:estimator": "stereo cuVSLAM on Jetson, PX4 EV XY/yaw + downward range height",
+    "settings.json:start_bearing_deg": 96,
+    "settings.json:takeoff_height_m": 1,
+    "settings.json:cruise_m_s": 0.25,
+    "settings.json:max_lead_m": 0.16,
+    "settings.json:yaw_policy": "OpenCV hover alignment then hold yaw; continuously update metric midpoint during approach",
+    "settings.json:yaw_rate_deg_s": 5,
+    "renderer-source.json:world_sha256": "6d6c08b581db8adbda1e7a8915fc69bc2952182686bc2cd6ab2ea5590a4d142e",
+    "renderer-source.json:spawn_sdf_sha256": "a5d6131addc341245d145647efbc332f0e264a14ee38e775c20cf0c211aca852"
+  },
+  "comparison_state": "recorded differences with annotations"
+}
