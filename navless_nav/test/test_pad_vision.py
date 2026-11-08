@@ -43,9 +43,9 @@ def fly(node, px4, drone, until, pad, false_fixes=(), max_s=900.0, dt=0.1):
         done = until()
         assert h.T[0] < end, f'timed out in {node.state} {node.pad.get("phase")} at {drone}'
         x, y, z, yaw = drone
-        node.odometry_cb(types.SimpleNamespace(pose=types.SimpleNamespace(pose=types.SimpleNamespace(
-            position=types.SimpleNamespace(x=x, y=y, z=z),
-            orientation=types.SimpleNamespace(x=0.0, y=0.0, z=math.sin(yaw / 2), w=math.cos(yaw / 2))))))
+        h.send_odom(node, x, y, z, yaw=yaw)
+        h.vslam(node)
+        h.px4_heading(node, yaw)
         if pad is not None and visible(drone[:3], yaw, pad):
             node.pad_center_cb(pad_msg(*pad))
         for t, fx, fy in false_fixes:

@@ -5,6 +5,7 @@ D, a planar transform in odom with corrected = D * course_to_odom(p), so the rou
 the walls while cuVSLAM's odometry frame drifts. Here a perfect localizer publishes the true drift D,
 and the drone's true position in the route's (walls') frame is D^-1 * its odometry position.
 """
+import json
 import math
 import os
 import sys
@@ -16,17 +17,42 @@ import test_fly_home as h    # noqa: E402  (stubs ROS, imports course_mission)
 
 cm = h.course_mission
 TOPIC = '/team/localize/odom_correction'
-DRIFT = (0.30, -0.20, 4.0)                  # dx, dy (m), dyaw (deg)
+# dx, dy (m), dyaw (deg). The registration now applies from the first takeoff setpoint, so the
+# drone's true start D^-1 * (0, 0) is where the fence and the route-start check see it: this sign
+# keeps it east of the launch mark (0.53 m from the west net), and |(dx, dy)| = 0.23 m stays inside
+# the 0.35 m start limit (tracking_error_max_m); a drone placed further off is not flown.
+DRIFT = (0.20, 0.12, 4.0)
 RATE_M, RATE_DEG = 0.12, 4.5                # course_mission's wall_correction_rate_* defaults
 
 
-def corr_msg(dx, dy, dyaw_deg, frame='odom'):
+def corr_msg(dx, dy, dyaw_deg, frame='odom', t=None):
+    """cloud_localize's PoseStamped D, stamped with its cloud's capture time."""
     a = math.radians(dyaw_deg)
     return types.SimpleNamespace(
-        header=types.SimpleNamespace(frame_id=frame),
+        header=types.SimpleNamespace(frame_id=frame, stamp=h.stamp(t)),
         pose=types.SimpleNamespace(
             position=types.SimpleNamespace(x=dx, y=dy, z=0.0),
             orientation=types.SimpleNamespace(x=0.0, y=0.0, z=math.sin(a / 2), w=math.cos(a / 2))))
+
+
+def status_msg(msg, **fields):
+    """The /team/localize/status that vouches for correction `msg` (cloud_localize's schema):
+    a fully observed tracking match from trusted odometry, unless `fields` say otherwise."""
+    s = msg.header.stamp
+    data = dict(correction_source_stamp_ns=s.sec * 1_000_000_000 + s.nanosec, correction_epoch=0,
+                correction_status='tracking', correction_valid=True, odometry_valid=True,
+                correction_frame='odom', source_epoch_fault=None,
+                correction_measured={'x': 1.0, 'y': 1.0, 'heading': 1.0})
+    data.update(fields)
+    return types.SimpleNamespace(data=json.dumps(data))
+
+
+def localize(node, d, frame='odom', t=None, **fields):
+    """One qualified localizer frame: its status, then its correction (as published)."""
+    m = corr_msg(*d, frame=frame, t=t)
+    node.localizer_status_cb(status_msg(m, **fields))
+    node.odom_correction_cb(m)
+    return m
 
 
 def unapply(d, p):
@@ -57,16 +83,18 @@ def start(feed=None, **overrides):
     h.SUBS.clear()
     if feed is not None:
         def hook(node):
+            h.px4_heading(node)
             d = feed(h.T[0], node)
             if d is not None:
-                node.odom_correction_cb(corr_msg(*d))
+                localize(node, d)
         h.PX4_HOOK[0] = hook
     h.OVERRIDES.clear()
     h.OVERRIDES.update(route_file='route_gate_b.json', cruise_speed_mps=1.0, heading_mode='hold', **overrides)
     node = cm.CourseMission()
     px4 = {'armed': False, 'offboard_active': False, 'landed': True}
     pos = [0.0, 0.0, 0.0]
-    h.fly(node, px4, pos, lambda: h.T[0] >= 2.5)
+    # past the pre-arm settle and, with wall_correction, initial_alignment_settle_s of a still D
+    h.fly(node, px4, pos, lambda: h.T[0] >= 3.0)
     h.arm(px4)
     return node, px4, pos
 
@@ -145,7 +173,9 @@ def test_a_jump_in_d_is_ramped_never_stepped():
 
 def test_d_holds_still_in_the_tube_zone():
     try:
-        node, px4, pos = start(feed=lambda t, n: (0.02 * t, 0.0, 0.0), wall_correction=True)
+        # still on the ground (the pre-arm alignment needs a still D), drifting in flight
+        node, px4, pos = start(feed=lambda t, n: (0.02 * max(0.0, t - 3.0), 0.0, 0.0),
+                               wall_correction=True)
         rows = fly_route(node, px4, pos)
         steps = list(zip(rows, rows[1:]))
         in_zone = [(a, b) for a, b in steps if a[2]]       # the carrot in the zone as the tick began
@@ -171,7 +201,9 @@ def test_when_messages_stop_the_last_d_stays():
 
 def test_the_held_heading_turns_with_dyaw():
     try:
-        node, px4, pos = start(feed=lambda t, n: (0.0, 0.0, 5.0), wall_correction=True)
+        # Registered at 5 deg on the ground; the walls then say 8 deg in flight.
+        node, px4, pos = start(feed=lambda t, n: (0.0, 0.0, 8.0 if n.state == 'ROUTE' else 5.0),
+                               wall_correction=True)
         rows = []
 
         def record():
@@ -181,9 +213,11 @@ def test_the_held_heading_turns_with_dyaw():
 
         h.fly(node, px4, pos, record)
         assert len(rows) > 100
-        # every route setpoint: the takeoff heading (north, 0) turned by the dyaw applied that tick
-        assert all(yaw is not None and abs(h.wrap(yaw - dyaw)) < 1e-9 for yaw, dyaw in rows)
-        assert abs(rows[-1][1] - math.radians(5.0)) < 1e-9
+        # The nose took off at odom 0, i.e. -5 deg in the registered route frame; every route
+        # setpoint holds that route-frame heading, turned by the dyaw applied that tick.
+        assert all(yaw is not None and abs(h.wrap(yaw - (dyaw - math.radians(5.0)))) < 1e-9
+                   for yaw, dyaw in rows)
+        assert abs(rows[0][0]) < 1e-9 and abs(rows[-1][1] - math.radians(8.0)) < 1e-9
     finally:
         h.reset_heading()
 
@@ -191,11 +225,12 @@ def test_the_held_heading_turns_with_dyaw():
 def test_bad_messages_are_ignored():
     try:
         node, px4, pos = start(wall_correction=True)
-        for bad in (corr_msg(0.1, 0.0, 0.0, frame='map'), corr_msg(float('nan'), 0.0, 0.0),
-                    corr_msg(3.5, 0.0, 0.0), corr_msg(0.0, 0.0, 45.0)):
-            node.odom_correction_cb(bad)
+        t = h.T[0]
+        for i, bad in enumerate(((0.1, 0.0, 0.0, 'map'), (float('nan'), 0.0, 0.0, 'odom'),
+                                 (3.5, 0.0, 0.0, 'odom'), (0.0, 0.0, 45.0, 'odom'))):
+            localize(node, bad[:3], frame=bad[3], t=t - 0.05 + 0.01 * i)
             assert node.corr_rx is None
-        node.odom_correction_cb(corr_msg(0.1, -0.1, 2.0))
+        localize(node, (0.1, -0.1, 2.0), t=t)
         assert node.corr_rx is not None and abs(node.corr_rx[2] - math.radians(2.0)) < 1e-12
     finally:
         h.reset_heading()

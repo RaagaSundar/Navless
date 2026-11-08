@@ -77,3 +77,30 @@ def test_repeated_or_old_sample_is_not_republished(sample):
     finally:
         node.destroy_node()
         rclpy.try_shutdown()
+
+
+def test_a_jump_latches_the_gate_until_restart(sample):
+    import rclpy
+    from odom_gate import OdomGate
+    rclpy.init()
+    node=OdomGate()
+    try:
+        now=node.get_clock().now().nanoseconds
+        sample.header.stamp.sec=now//1000000000
+        sample.header.stamp.nanosec=now%1000000000
+        node.tracking=True
+        node.status_time=time.monotonic()
+        node.odom(sample)
+        assert node.accepted==1
+        jumped=copy.deepcopy(sample)
+        jumped.header.stamp.nanosec+=100000
+        jumped.pose.pose.position.x+=1.14       # a recorded course-crash step, 0.1 ms later
+        node.odom(jumped)
+        assert node.accepted==1 and node.integrity.fault=='position_jump'
+        healthy=copy.deepcopy(sample)
+        healthy.header.stamp.nanosec+=200000
+        node.odom(healthy)                       # back where it was: still not relayed
+        assert node.accepted==1 and node.rejected==2
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()

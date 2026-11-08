@@ -104,15 +104,17 @@ def test_a_bad_heading_mode_falls_back_to_travel():
     assert cm.CourseMission().heading_mode == 'travel'
 
 
-def steady_push(t0, dy=0.10):
+def steady_push(t0, dy=0.10, rise=0.3):
     """A push PX4 doesn't take out, fixed to the drone's body: it sits dy to its left of whatever it
     is told (19's level / centre-of-gravity bias; on 2026-11-07 the liftoff slide flipped with a
-    180 deg yaw), so in odom it turns with the nose."""
+    180 deg yaw), so in odom it turns with the nose. It builds up over `rise` s (a 30 cm step in
+    one odometry sample would be the jump FAULT)."""
     def off(t):
         if t < t0:
             return (0.0, 0.0, 0.0)
         c, s = math.cos(h.YAW[0]), math.sin(h.YAW[0])
-        return (-s * dy, c * dy, 0.0)
+        k = dy * min(1.0, (t - t0) / rise)
+        return (-s * k, c * k, 0.0)
     return off
 
 
@@ -124,11 +126,11 @@ def test_drift_correction_cancels_a_steady_push_during_the_takeoff_settle():
         assert node.state == 'ROUTE'
         assert h.T[0] - t0 < 25.0                              # settled, not the timeout fallback
         assert abs(math.hypot(*node.drift_body) - 0.10) < 0.03  # learned the 10 cm push
-        # without it the same push never settles within 5 cm: the timeout starts the route
+        # without it the same push never settles within 5 cm: the timeout holds, no route
         node, px4, pos = start(offset=steady_push(2.7), takeoff_timeout_s=8.0, drift_correction=False)
         t0 = h.T[0]
         h.fly(node, px4, pos, lambda: node.state not in ('WAIT_FOR_OFFBOARD', 'TAKEOFF'))
-        assert h.T[0] - t0 >= 8.0 and node.drift_body == (0.0, 0.0)
+        assert h.T[0] - t0 >= 8.0 and node.drift_body == (0.0, 0.0) and node.state == 'HOLD'
     finally:
         h.reset_heading()
 
@@ -199,7 +201,9 @@ def test_flight_log_off_writes_nothing():
 def test_with_a_body_fixed_push_the_route_is_flown_closer_to_its_targets():
     """The learned correction keeps cancelling 19's body-fixed push along the route as the nose turns."""
     def median_error(**kw):
-        node, px4, pos = start(offset=steady_push(2.7), **kw)
+        # A 15 cm settle radius, so the uncorrected flight (pushed 10 cm off) settles and flies
+        # the route too: an unsettled takeoff now holds instead of starting it.
+        node, px4, pos = start(offset=steady_push(2.7), takeoff_settle_radius_m=0.15, **kw)
         errs = []
 
         def until():

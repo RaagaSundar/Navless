@@ -54,6 +54,7 @@ from dh.tube import MODES as TUBE_MODES, TubeBlackout, env_settings as tube_env,
 
 ODOM_TOPIC = "/visual_slam/tracking/odometry"
 STATUS_TOPIC = "/visual_slam/status"
+PX4_LOCAL_TOPIC = "/fmu/out/vehicle_local_position"    # read only, as on the drone
 PX4_ALTCTL, PX4_POSCTL, PX4_OFFBOARD = 2, 3, 6     # PX4 custom main modes
 LANDED_ON_GROUND = 1
 
@@ -99,7 +100,21 @@ class PointStamped:
 class Odometry:
     def __init__(self):
         self.header = _ns(stamp=None, frame_id="odom")
+        self.child_frame_id = "base_link"
         self.pose = _ns(pose=_ns(position=_vec(), orientation=_ns(x=0.0, y=0.0, z=0.0, w=1.0)))
+
+
+def _stamp(t):
+    """A ROS stamp: course_mission takes odometry only with its capture time."""
+    ns = int(round(t * 1e9))
+    return _ns(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
+
+
+class VehicleLocalPosition:
+    """The heading fields course_mission reads (its pre-arm check needs a good PX4 heading)."""
+    def __init__(self, heading, heading_reset_counter=0, heading_good_for_control=True):
+        self.heading, self.heading_reset_counter = heading, heading_reset_counter
+        self.heading_good_for_control = heading_good_for_control
 
 
 class String:
@@ -194,13 +209,17 @@ def install_ros_standin():
 
     mod("rclpy", init=lambda args=None: None, ok=lambda: False, spin=lambda n: None, shutdown=lambda: None)
     sys.modules["rclpy"].node = mod("rclpy.node", Node=Node)
-    sys.modules["rclpy"].qos = mod("rclpy.qos", qos_profile_sensor_data=10)   # course_mission's /tube/offset
+    sys.modules["rclpy"].qos = mod("rclpy.qos", qos_profile_sensor_data=10,   # course_mission's /tube/offset
+                                   QoSProfile=lambda **kw: kw,                 # ...and its PX4 heading
+                                   ReliabilityPolicy=_ns(BEST_EFFORT=1), DurabilityPolicy=_ns(TRANSIENT_LOCAL=1),
+                                   HistoryPolicy=_ns(KEEP_LAST=1))
     for pkg, attrs in (("geometry_msgs", dict(PointStamped=PointStamped, PoseStamped=PoseStamped,
                                               TwistStamped=TwistStamped)),
                        ("nav_msgs", dict(Odometry=Odometry)),
                        ("std_msgs", dict(String=String)),
                        ("rcl_interfaces", dict(ParameterDescriptor=lambda **kw: kw)),
-                       ("isaac_ros_visual_slam_interfaces", dict(VisualSlamStatus=VisualSlamStatus))):
+                       ("isaac_ros_visual_slam_interfaces", dict(VisualSlamStatus=VisualSlamStatus)),
+                       ("px4_msgs", dict(VehicleLocalPosition=VehicleLocalPosition))):
         sys.modules[pkg] = mod(pkg)
         sys.modules[pkg].msg = mod(pkg + ".msg", **attrs)
 
@@ -733,6 +752,7 @@ def main():
                 odom_buf.popleft()
             if odom_buf[0][0] <= st - a.odom_delay + 1e-9 and odom_buf[0][1] is not None:
                 msg = Odometry()
+                msg.header.stamp = _stamp(odom_buf[0][0])              # its capture time, not now
                 msg.pose.pose.position.x, msg.pose.pose.position.y, msg.pose.pose.position.z = map(float, odom_buf[0][1])
                 o = msg.pose.pose.orientation
                 o.x, o.y, o.z, o.w = map(float, odom_buf[0][2])
@@ -740,6 +760,10 @@ def main():
             since = st - (fi.armed_at or 1e18)
             lost = bool(dropout and dropout[0] <= since < dropout[1]) or not tracking
             publish(STATUS_TOPIC, VisualSlamStatus(2 if lost else 1))
+            # PX4's heading (NED = pi/2 - odom ENU yaw): SITL's attitude in the power-up frame, so
+            # it always agrees with the camera here (no magnetometer resets are modelled)
+            yaw_odom = math.atan2(2 * (qo[3] * qo[2] + qo[0] * qo[1]), 1 - 2 * (qo[1] ** 2 + qo[2] ** 2))
+            publish(PX4_LOCAL_TOPIC, VehicleLocalPosition(math.pi / 2 - yaw_odom))
             if relay is not None and relay.n_clients:
                 # The live dashboard (gazebo_sim/mirror/mirror.py --run): the drone's true pose in the
                 # power-up frame, what the node commands, and which state it is in.

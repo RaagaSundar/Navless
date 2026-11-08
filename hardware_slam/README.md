@@ -60,7 +60,8 @@ the service before the drone flies. Mapping mode closes the flight-mode `gate` w
 ever runs.
 
 To install or update on a drone, copy `run_mapping.sh`, `container_mode.sh`, `stop_mapping.sh`,
-`odom_gate.py` and `map_server.py` to `~/team_ws/handheld_slam/`. Run the dry run above, then
+`odom_gate.py`, `map_server.py` and `../navless_nav/navless_nav/navigation_integrity.py` to
+`~/team_ws/handheld_slam/` (without `navigation_integrity.py` the gate refuses to start). Run the dry run above, then
 `sudo systemctl enable --now handheld-slam.service` (or `restart`). All of this is on the ground,
 disarmed.
 
@@ -114,6 +115,12 @@ world FRD (`pose_frame=2`). The original bridge's tracking-reset handling stays
 in place. The gate rejects stale, out-of-order, failed-tracking, wrong-frame,
 nonfinite and invalid-covariance estimates. The stamp must be at most 250 ms old
 and no more than 50 ms ahead; tracking status must be fresh within 250 ms.
+Each relayed sample must also continue the last one in source time (at most 2 m/s
+and 3 rad/s, plus 5 cm / 0.05 rad): a jump or a backwards stamp **latches** the gate
+and nothing more is relayed until it is restarted (`/mapping/gate_status` `fault`).
+A SLAM restart or mode switch on the ground therefore needs a gate restart too
+(`sudo systemctl restart handheld-slam.service`). With the stock bridge feeding PX4,
+this protects only the gate's consumers (localizer, course mission), not PX4.
 Visualization and exports run in another process and cannot block the gate.
 
 The measured body→camera mount is preserved: translation

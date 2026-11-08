@@ -13,16 +13,17 @@ Switch back to navless_course.launch.py once these flights look like the sim. No
 needs editing, and there is nothing to remember to revert. In Gazebo these speeds flew the window route
 from arming to touchdown in about 43 s (the tuned launch: 32.6 s).
 
-The three speeds are pinned. An include's launch arguments are applied after the command line, so
-`navless_course_slow.launch.py cruise_speed_mps:=0.3` still flies 0.5. For any other speed, launch
-navless_course.launch.py with the values given explicitly. navless_course.launch.py's other arguments
-(route_file, relay, ...) still take command-line values here.
+The three speeds are defaults, not forced values: for example, cruise_speed_mps:=0.3 and
+max_lead_m:=0.4 are forwarded unchanged to the course launch. Its other arguments (route_file,
+wall_correction, localizer, ...) remain available. A changed speed or lead needs separate
+qualification; this wrapper does not establish hardware readiness or authorize arming.
 """
 import os
 
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 
 from ament_index_python.packages import get_package_share_directory
 
@@ -31,8 +32,9 @@ SLOW = {'cruise_speed_mps': '0.5', 'max_lead_m': '0.6', 'max_lat_accel_mps2': '0
 
 
 def generate_launch_description():
-    return LaunchDescription([IncludeLaunchDescription(
+    declared = [DeclareLaunchArgument(name, default_value=value) for name, value in SLOW.items()]
+    return LaunchDescription(declared + [IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
             get_package_share_directory('navless_nav'), 'launch', 'navless_course.launch.py')),
-        launch_arguments=SLOW.items(),
+        launch_arguments={name: LaunchConfiguration(name) for name in SLOW}.items(),
     )])

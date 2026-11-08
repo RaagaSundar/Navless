@@ -105,6 +105,10 @@ ARGUMENTS = [
     ('stereo_cloud_rate_hz', '3.0', 'stereo_cloud rate_hz (keep <= 3 Hz in flight to preserve cuVSLAM CPU)'),
     ('localizer', 'true',
      'run depthcloud/cloud_localize.py (as-built course; needs stereo_cloud): the wall correction source'),
+    # Deliberately separate from odometry_topic: pointing it at raw cuVSLAM would let the localizer
+    # treat unvalidated odometry as the gate's. It makes no correction without hardware_slam/odom_gate.
+    ('validated_odom_topic', '/mapping/validated_odometry',
+     "cloud_localize: the gate's validated odometry (the only odometry its corrections may use)"),
     # course_mission's live map viewer (live_map_viz.py) owns 8082; cloud_localize's 3D viewer moves here.
     ('localizer_http_port', '8083', "cloud_localize's 3D viewer port (8082 is the planner map)"),
     # Where the localizer's rotation comes from (cloud_localize ROT_MODES): 'yaw' = roll/pitch from
@@ -163,6 +167,7 @@ def generate_launch_description():
              '-p', ['http_port:=', LaunchConfiguration('localizer_http_port')],
              '-p', ['rot_mode:=', LaunchConfiguration('localizer_rot_mode')],
              '-p', ['yaw_corr_deg:=', LaunchConfiguration('localizer_yaw_corr_deg')],
+             '-p', ['validated_odom_topic:=', LaunchConfiguration('validated_odom_topic')],
              '-p', ['use_sim_time:=', LaunchConfiguration('use_sim_time')]],
         output='screen', name='cloud_localize', condition=IfCondition(LaunchConfiguration('localizer')))
     relay = Node(

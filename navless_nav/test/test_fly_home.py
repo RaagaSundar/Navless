@@ -34,6 +34,14 @@ ODOM_OFFSET = [None]
 # so the drone ends up Z_BIAS below it (as on skybeta-19). Off: the drone flies
 # to the setpoint's z directly, as every older test assumes.
 PX4_OWN_Z = [False]
+# Every tick, fly() hands the node what the real stack sends: odometry with a
+# source stamp and odom/base_link frames, cuVSLAM's status (VO_STATE; None =
+# none sent) and, unless PX4_HOOK replaces it, PX4's heading agreeing with the
+# camera, good for control. Missing or bad inputs are a test's explicit choice.
+VO_STATE = [1]
+ODOM_AGE = [0.0]    # odometry source stamp this far behind its (immediate) receipt, s
+STATUS = []         # /team/navigation/status payloads (dicts), not flight commands
+NAV_STATUS_TOPIC = '/team/navigation/status'
 
 
 def reset_heading():
@@ -42,10 +50,47 @@ def reset_heading():
     PX4_HOOK[0] = None
     ODOM_OFFSET[0] = None
     PX4_OWN_Z[0] = False
+    VO_STATE[0] = 1
+    ODOM_AGE[0] = 0.0
+    STATUS.clear()
 
 
 def wrap(a):
     return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def stamp(t=None):
+    """A ROS stamp at sim time t (default now)."""
+    ns = int(round((T[0] if t is None else t) * 1e9))
+    return types.SimpleNamespace(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
+
+
+def odom_msg(x, y, z, yaw=None, t=None, frame_id='odom', child_frame_id='base_link'):
+    """nav_msgs/Odometry as cuVSLAM sends it: stamped at capture, odom <- base_link."""
+    yaw = YAW[0] if yaw is None else yaw
+    return types.SimpleNamespace(
+        header=types.SimpleNamespace(stamp=stamp(t), frame_id=frame_id),
+        child_frame_id=child_frame_id,
+        pose=types.SimpleNamespace(pose=types.SimpleNamespace(
+            position=types.SimpleNamespace(x=x, y=y, z=z),
+            orientation=types.SimpleNamespace(x=0.0, y=0.0, z=math.sin(yaw / 2),
+                                              w=math.cos(yaw / 2)))))
+
+
+def send_odom(node, x, y, z, **kw):
+    node.odometry_cb(odom_msg(x, y, z, **kw))
+
+
+def vslam(node, state=1):
+    node.status_cb(types.SimpleNamespace(vo_state=state))
+
+
+def px4_heading(node, yaw=None, resets=0, good=True):
+    """px4_msgs/VehicleLocalPosition's heading fields (NED heading = pi/2 - ENU yaw)."""
+    yaw = YAW[0] if yaw is None else yaw
+    node.px4_local_cb(types.SimpleNamespace(heading=wrap(math.pi / 2 - yaw),
+                                            heading_reset_counter=resets,
+                                            heading_good_for_control=good))
 
 
 def pose_yaw(m):
@@ -78,6 +123,8 @@ class Node:
         return types.SimpleNamespace(value=self._params[name])
 
     def create_publisher(self, msg_type, topic, qos):
+        if topic == NAV_STATUS_TOPIC:
+            return types.SimpleNamespace(publish=lambda m: STATUS.append(json.loads(m.data)))
         return types.SimpleNamespace(publish=lambda m: SENT.append((topic, m)))
 
     def create_subscription(self, msg_type, topic, *args):
@@ -135,12 +182,13 @@ def fly(node, px4, pos, until, max_s=600.0, dt=0.1):
         assert T[0] < end, f'timed out in {node.state} at {pos}'
         off = ODOM_OFFSET[0](T[0]) if ODOM_OFFSET[0] is not None else (0.0, 0.0, 0.0)
         seen = [a + b for a, b in zip(pos, off)]
-        node.odometry_cb(types.SimpleNamespace(pose=types.SimpleNamespace(
-            pose=types.SimpleNamespace(position=types.SimpleNamespace(
-                x=seen[0], y=seen[1], z=seen[2]), orientation=types.SimpleNamespace(
-                    x=0.0, y=0.0, z=math.sin(YAW[0] / 2), w=math.cos(YAW[0] / 2))))))
+        send_odom(node, *seen, t=T[0] - ODOM_AGE[0])
+        if VO_STATE[0] is not None:
+            vslam(node, VO_STATE[0])
         if PX4_HOOK[0] is not None:
             PX4_HOOK[0](node)
+        else:
+            px4_heading(node)
         px4['local_enu'] = [pos[0], pos[1], pos[2] + Z_BIAS[0]]
         node.state_cb(types.SimpleNamespace(data=json.dumps(px4)))
         SENT.clear()
@@ -299,9 +347,9 @@ def test_fly_home_lands_only_close_to_the_launch_mark():
     # mark when the carrot gets there: the landing must wait for 0.10 m.
     dt = 0.1
     while node.state == 'ROUTE' and T[0] - t0 < 120.0:
-        node.odometry_cb(types.SimpleNamespace(pose=types.SimpleNamespace(
-            pose=types.SimpleNamespace(position=types.SimpleNamespace(
-                x=pos[0], y=pos[1], z=pos[2])))))
+        send_odom(node, *pos)
+        vslam(node)
+        px4_heading(node)
         px4['local_enu'] = list(pos)
         node.state_cb(types.SimpleNamespace(data=json.dumps(px4)))
         SENT.clear()

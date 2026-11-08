@@ -30,9 +30,9 @@ def make(**overrides):
 
 def tick(node, px4, pos, local=True):
     """One 10 Hz tick with the drone sitting at pos -> what the node published."""
-    node.odometry_cb(types.SimpleNamespace(pose=types.SimpleNamespace(
-        pose=types.SimpleNamespace(position=types.SimpleNamespace(
-            x=pos[0], y=pos[1], z=pos[2])))))
+    h.send_odom(node, *pos)
+    h.vslam(node)
+    h.px4_heading(node)
     state = dict(px4)
     if local:
         state['local_enu'] = [pos[0], pos[1], pos[2] + h.Z_BIAS[0]]
@@ -134,8 +134,9 @@ def test_one_missing_px4_position_is_tolerated_but_not_a_second_of_none():
 
 def test_check_off_streams_at_once():
     node, px4, pos = make(prearm_height_tol_m=0.0)
+    h.T[0] = 0.1                # a zero source stamp is never valid odometry
     h.Z_BIAS[0] = 0.6
-    assert poses(tick(node, px4, pos))
+    assert poses(tick(node, px4, pos))      # the first tick with valid odometry
 
 
 def test_fly_home_rearm_is_checked_again_on_the_pad():

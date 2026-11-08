@@ -80,8 +80,8 @@ def test_start_offset_is_measured_from_where_the_route_starts_after_the_lean():
     assert node.state == 'ROUTE'
     # If the drone drifts > max_start_offset_m (0.6 m) away during takeoff before start_route():
     node, px4, pos = climb(0.25, start=(0.0, 0.0, 0.0))
-    node.odometry_cb(h.types.SimpleNamespace(pose=h.types.SimpleNamespace(
-        pose=h.types.SimpleNamespace(position=h.types.SimpleNamespace(x=1.0, y=0.0, z=0.85)))))
+    # (set directly: as odometry, a 1 m step in one sample would latch the jump FAULT)
+    node.position = (1.0, 0.0, 0.85)
     node.start_route()
     assert node.state == 'HOLD'
 

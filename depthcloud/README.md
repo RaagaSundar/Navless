@@ -62,6 +62,42 @@ Pass with `--ros-args -p name:=value`.
 
 ## Localization against the course model: `cloud_localize.py`
 
+### Local control-confidence candidate (not deployed or flight-qualified)
+
+`require_validated_odometry:=true` is now the default. A required gate that is silent, stale, or
+not matched to the cloud capture time cannot silently fall back to raw TF. The localizer also
+requires a fresh positive cuVSLAM tracking status. Setting this option false permits an explicit
+TF fallback for observation only; such a fallback never qualifies a control correction.
+
+Correction output now requires a new `tracking` match with measured x, y **and heading** (each
+ICP projection >0.9), capture-time validated odometry, and source age <=250 ms (at most 5 ms
+future skew). `weak` and odometry-propagated poses remain useful to the viewer but cannot steer.
+In yaw mode, a `tracking` label on x/y alone does not prove heading observability.
+
+The status JSON carries exact integer `source_stamp_ns`, source age/frame, observed source-time
+epoch, `input_odom_stamp_ns`, `input_odom_epoch` (null if the input has no reset-counter contract),
+and `source_epoch_fault`. Correction identity is separate: `correction_source_stamp_ns`,
+`correction_epoch`, `correction_status`, `correction_measured`, `correction_frame`, and
+`correction_valid`. Consumers must pair the correction pose with matching metadata, not the latest
+unrelated status. A new weak cloud never refreshes the source stamp of an older correction.
+Source-time regression latches a fault; restart/re-alignment is an operator decision. Raw VIO,
+camera calibration, and upstream covariance values are not modified.
+
+For existing recorded `.npz` dumps, an offline audit can summarize coverage, captures, fitness,
+matches, and observability without running ROS, ICP, or any controller:
+
+```bash
+python3 depthcloud/recorded_quality.py /path/to/loc_dump --name "Recorded localizer audit" \
+  --source-run-id ORIGINAL_IMMUTABLE_RUN_ID --output /path/to/perception-quality.json
+```
+
+It reports accuracy as **unknown** unless `--reference reference.json` supplies independently
+evidenced, timestamp-matched 4x4 poses in the course frame. The reference schema is documented
+in the tool's module help. File-format fixtures in its tests are not real sensor or flight evidence.
+The audit does not replay ICP or establish flight qualification. If a new replay experiment is
+run, create its named run-local comparison metadata using `split_sim/run_comparison.py` before
+presenting its result, retaining the source recording's immutable ID.
+
 This runs alongside `stereo_cloud.py`, which it doesn't modify. It matches each `/team/stereo/points` cloud to an .obj using point-to-plane ICP, starting from the previous pose, and outputs:
 
 - `/team/localize/pose` (`geometry_msgs/PoseStamped`, `frame_id: course`): the camera's pose in the .obj frame, Z up, metres
@@ -149,7 +185,7 @@ Start it with `docker exec -d ...` or in its own shell: a background `&` inside 
 
 **Odometry fusion:** each frame, the camera's motion since the previous frame comes from the stack's Isaac ROS Visual SLAM. It's applied first as a prediction, then ICP corrects it against the course. When nothing matches (looking through the net), the estimate keeps moving on odometry, with status `odometry` shown in blue. Turn it off with `use_odometry:=false`.
 
-- **Source:** Koji's fail-closed gate, `/mapping/validated_odometry` (`hardware_slam/odom_gate.py`). Only samples that passed its checks are used: tracking OK, at most 250 ms old, right frames, finite, valid covariance. If that topic is silent for more than 2 s, it falls back to raw TF `odom` → camera, but only while `/visual_slam/status` reports tracking.
+- **Source:** Koji's fail-closed gate, `/mapping/validated_odometry` (`hardware_slam/odom_gate.py`). Only samples that passed its checks are used: tracking OK, at most 250 ms old, right frames, finite, valid covariance, continuous in source time (a jump latches the gate). With the default `require_validated_odometry:=true` there is no fallback: no gate sample within 60 ms of the cloud, no correction. Only with `require_validated_odometry:=false` does a gate silent for more than 2 s fall back to raw TF `odom` → camera, while `/visual_slam/status` reports tracking, and that observer-only pose never publishes a correction.
 - **Gaps:** after untrusted frames, the next trusted one bridges the gap, because VSLAM's frame is continuous. Gaps over 3 s restart the chain.
 - **Resets:** a step faster than 3 m/s (or 360°/s) is treated as a VSLAM reset and rejected, and the last good step is repeated in its place, so a mid-turn reset doesn't freeze the heading.
 

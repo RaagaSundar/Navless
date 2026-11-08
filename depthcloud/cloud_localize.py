@@ -287,9 +287,76 @@ def pose_angles(T):
 # Drift correction for odometry-frame flight (navless_nav): how far cuVSLAM's frame has slid
 # ----------------------------------------------------------------------------------------------
 
-# Localizer statuses whose pose feeds the drift correction: both carry a course match (weak = some directions
-# held at the odometry prediction, so they simply keep the last correction there). Not "odometry" (no match).
-CORR_STATUSES = ("tracking", "weak")
+# A partial match is useful to the viewer, but cannot establish a control-frame correction.
+CORR_STATUSES = ("tracking",)
+
+
+class SourceEpoch:
+    """Latch a source-time regression; restarting/re-aligning is an operator decision."""
+    def __init__(self):
+        self.last_ns, self.epoch, self.fault = None, 0, None
+
+    def observe(self, stamp_ns):
+        if self.fault:
+            return False, self.fault
+        if stamp_ns <= 0:
+            return False, "invalid source timestamp"
+        if self.last_ns is not None and stamp_ns < self.last_ns:
+            self.epoch += 1
+            self.fault = "source timestamp regressed; realignment required"
+            return False, self.fault
+        if stamp_ns == self.last_ns:
+            return False, "duplicate source timestamp"
+        self.last_ns = stamp_ns
+        return True, ""
+
+
+def odometry_source_policy(history, stamp_ns, ros_now, tracking, status_age,
+                           require_validated=True, max_age=0.25):
+    """Select a capture-time gate sample; TF fallback is explicit and still needs fresh status."""
+    if tracking is not True or not 0 <= status_age <= 0.25:
+        return None, "VSLAM status missing, stale or not tracking"
+    if history:
+        near = min(history, key=lambda row: abs(row[0] - stamp_ns))
+        if abs(near[0] - stamp_ns) <= 60_000_000 and -0.005 <= ros_now-near[0]*1e-9 <= max_age:
+            return near, "validated (Koji gate)"
+    if require_validated:
+        return None, "required validated odometry unavailable at cloud time"
+    if history and abs(history[-1][0] - stamp_ns) < 2_000_000_000:
+        return None, "validated odometry gap"
+    return None, "tf"
+
+
+def correction_eligible(status, measured, stamp_ns, ros_now, odometry_valid,
+                        epoch_fault=False, max_age=0.25):
+    """A correction must be a new, fresh, fully observed planar match, not a propagated pose."""
+    age = ros_now-stamp_ns*1e-9
+    if epoch_fault:
+        return False, "source epoch fault"
+    if stamp_ns <= 0 or not math.isfinite(age) or not -0.005 <= age <= max_age:
+        return False, "cloud capture stale or future"
+    if status != "tracking":
+        return False, "course match is not tracking"
+    if not odometry_valid:
+        return False, "no trusted capture-time odometry"
+    try:
+        observed = all(math.isfinite(float(measured.get(k, 0.0))) and float(measured.get(k, 0.0)) > 0.9
+                       for k in ("x", "y", "heading"))
+    except (AttributeError, TypeError, ValueError):
+        observed = False
+    if not observed:
+        return False, "planar position or heading is not observed"
+    return True, ""
+
+
+def paired_correction_metadata(last_meta, stamp_ns, epoch, updated):
+    """Keep the accepted correction's identity; a different cloud cannot refresh it."""
+    out = dict(last_meta or dict(correction_source_stamp_ns=None,
+               correction_source_stamp_s=None, correction_epoch=epoch,
+               correction_status=None, correction_measured={}))
+    out["correction_valid"] = bool(updated
+        and out["correction_source_stamp_ns"] == stamp_ns and out["correction_epoch"] == epoch)
+    return out
 
 
 def se2(x, y, yaw):
@@ -313,7 +380,7 @@ class OdomCorrection:
     navless_nav turns course points into odometry coordinates once, from the launch mark and the start
     bearing (route.course_to_odom): that is the NOMINAL course<-odom transform T_nom. As cuVSLAM drifts (or
     if the drone was placed slightly off the mark / off north), the true course<-odom transform T_meas
-    differs. Our course-matched frames (CORR_STATUSES: tracking, weak) measure it: T_meas = (base_link in the
+    differs. Our qualified tracking frames measure it: T_meas = (base_link in the
     course, from the localizer) * inverse(base_link in odom, from odometry at the same instant).
 
     The correction is the planar transform D (in the odometry frame) with
@@ -1568,6 +1635,12 @@ def main():
             # valid covariance). Fallback: raw TF odom -> camera, used only while /visual_slam/status
             # says tracking. Either way, a step faster than the drone can fly is rejected as a reset.
             self.use_odom, self.odom_frame = bool(p("use_odometry", True)), p("odom_frame", "odom")
+            self.require_validated = bool(p("require_validated_odometry", True))
+            self.max_source_age = float(p("max_source_age_s", 0.25))
+            self.source_clock, self.odom_clock = SourceEpoch(), SourceEpoch()
+            self.input_odom_epoch = None  # nav_msgs/Odometry has no reset-counter contract.
+            self.input_odom_stamp_ns = None
+            self.last_correction_meta = None
             self.base_frame = p("base_frame", "base_link")
             self.validated = deque(maxlen=300)                       # (stamp ns, 4x4 odom<-base_link)
             self.vo_tracking, self.vo_time = None, 0.0               # None = no status topic seen
@@ -1609,6 +1682,17 @@ def main():
 
         def on_validated(self, msg):
             st = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+            if msg.header.frame_id != self.odom_frame or msg.child_frame_id != self.base_frame:
+                return
+            if not self.odom_clock.observe(st)[0]:
+                return
+            # Preserve an upstream epoch only when one is actually present; do not manufacture one.
+            epoch = getattr(msg, "reset_counter", None)
+            if epoch is not None and self.input_odom_epoch is not None and epoch != self.input_odom_epoch:
+                self.odom_clock.epoch += 1
+                self.odom_clock.fault = "input odometry reset counter changed; realignment required"
+                return
+            self.input_odom_epoch = epoch
             self.validated.append((st, self.to_mat(msg.pose.pose.orientation, msg.pose.pose.position)))
 
         def on_vo_status(self, msg):
@@ -1630,21 +1714,21 @@ def main():
             Tbc = self.base_to_cam(msg.header.frame_id)
             if Tbc is None:
                 return None, "no base_link->camera TF"
-            if self.validated:
-                near = min(self.validated, key=lambda s: abs(s[0] - st))
-                if abs(near[0] - st) <= 60_000_000:                    # validated sample within 60 ms
-                    return near[1] @ Tbc, "validated (Koji gate)"
-                if abs(self.validated[-1][0] - st) < 2_000_000_000:
-                    return None, "validated odometry gap"            # gate is alive but rejected these
-                # gate silent for > 2 s: assume it isn't running and fall back to TF below
-            # fallback: raw TF, but only while cuVSLAM reports tracking (fail closed)
-            if self.vo_tracking is False or (self.vo_tracking and time.monotonic() - self.vo_time > 0.25):
-                return None, "VSLAM not tracking"
+            near, source = odometry_source_policy(
+                self.validated, st, self.get_clock().now().nanoseconds*1e-9,
+                self.vo_tracking, time.monotonic()-self.vo_time,
+                self.require_validated, self.max_source_age)
+            self.input_odom_stamp_ns = near[0] if near is not None else None
+            if self.source_clock.fault or self.odom_clock.fault:
+                return None, "source epoch fault; realignment required"
+            if near is not None:
+                return near[1] @ Tbc, source
+            if source != "tf":
+                return None, source
             try:
                 tf = self.tf_buffer.lookup_transform(self.odom_frame, msg.header.frame_id,
                                                      Time.from_msg(msg.header.stamp), Duration(seconds=0.05))
-                return self.to_mat(tf.transform.rotation, tf.transform.translation), \
-                    "tf" + (" (status unchecked)" if self.vo_tracking is None else "")
+                return self.to_mat(tf.transform.rotation, tf.transform.translation), "tf (explicit observer fallback)"
             except tf2_ros.TransformException:
                 return None, "no odom TF at cloud time"
 
@@ -1686,7 +1770,10 @@ def main():
             info = {k: v for k, v in loc.info.items() if isinstance(v, (int, float, str, bool, dict, type(None)))}
             meta = {"stamp": msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9, "frame_id": msg.header.frame_id,
                     "status": loc.status, "info": info, "cropped": loc.cropped,
-                    "odom_source": self.tracker.odom_source, "odom_note": loc.odom_note, "dt": dt}
+                    "odom_source": self.tracker.odom_source, "odom_note": loc.odom_note, "dt": dt,
+                    "source_age_s": self.get_clock().now().nanoseconds*1e-9
+                                    - (msg.header.stamp.sec + msg.header.stamp.nanosec*1e-9),
+                    "source_epoch": self.source_clock.epoch, "processing_ms": self.tracker.ms}
             np.savez_compressed(os.path.join(self.dump_dir, f"frame_{self.n_frames:05d}.npz"),
                                 raw=raw.astype(np.float32), src=np.asarray(loc.last_src, np.float32),
                                 T_pred=loc.last_T_pred, T=loc.T, delta=np.eye(4) if delta is None else delta,
@@ -1698,6 +1785,22 @@ def main():
             if now - self.last < self.period:
                 return
             self.last = now
+            stamp_ns = msg.header.stamp.sec*1_000_000_000 + msg.header.stamp.nanosec
+            stamp_ok, stamp_reason = self.source_clock.observe(stamp_ns)
+            source_age = self.get_clock().now().nanoseconds*1e-9-stamp_ns*1e-9
+            if not stamp_ok or not -0.005 <= source_age <= self.max_source_age:
+                s = self.tracker.state()
+                s.update(status="invalid", correction_valid=False, correction_reason=stamp_reason or "stale cloud",
+                         source_stamp_ns=stamp_ns, source_stamp_s=stamp_ns*1e-9,
+                         source_epoch=self.source_clock.epoch, source_age_s=source_age,
+                         source_epoch_fault=self.source_clock.fault or self.odom_clock.fault,
+                         source_frame=msg.header.frame_id, correction_frame=self.odom_frame,
+                         correction_source_stamp_ns=None, correction_epoch=self.source_clock.epoch,
+                         input_odom_epoch=self.input_odom_epoch,
+                         input_odom_time_epoch=self.odom_clock.epoch)
+                s.pop("truth", None)
+                self.pub_status.publish(String(data=json.dumps(s)))
+                return
             if not self.started and not self.start_tracking(msg):
                 return
             delta, dt = None, None
@@ -1725,14 +1828,43 @@ def main():
                     self.get_logger().warn(f"frame dump failed: {e}")
             # Drift correction for odometry-frame flight: only from frames whose x, y and heading were measured
             # against the walls (`tracking`), paired with odometry at the same instant.
-            if status in self.corr_statuses and O is not None and self.T_base_cam is not None:
+            measured = self.tracker.loc.measured
+            # A rejected jump may leave a repeated-motion hypothesis in the observer. It is not
+            # a measured pose and must never be paired with raw jumped odometry to move setpoints.
+            trusted_odom = (O is not None and src == "validated (Koji gate)"
+                            and not self.tracker.loc.odom_note)
+            eligible, why = correction_eligible(
+                status, measured, stamp_ns, self.get_clock().now().nanoseconds*1e-9, trusted_odom,
+                self.source_clock.fault or self.odom_clock.fault, self.max_source_age)
+            updated = False
+            if eligible and status in self.corr_statuses and self.T_base_cam is not None:
                 inv_bc = np.linalg.inv(self.T_base_cam)
-                self.odom_corr.update(se2_of(T @ inv_bc), se2_of(O @ inv_bc), now)
+                updated = self.odom_corr.update(se2_of(T @ inv_bc), se2_of(O @ inv_bc), now)
+                if updated:
+                    self.last_correction_meta = dict(
+                        correction_source_stamp_ns=stamp_ns, correction_source_stamp_s=stamp_ns*1e-9,
+                        correction_epoch=self.source_clock.epoch, correction_status=status,
+                        correction_measured=dict(measured))
             corr = self.odom_corr.state(now)
+            # An old D remains in the filter, but is never relabelled as a new cloud's measurement.
+            paired = paired_correction_metadata(self.last_correction_meta, stamp_ns,
+                                                 self.source_clock.epoch, updated)
+            corr["valid"] = bool(corr["valid"] and paired["correction_valid"])
             s = self.tracker.state()
             s.pop("trail", None)
             s.pop("truth", None)
             s["odom_correction"] = corr
+            s.update(paired)
+            s.update(source_stamp_ns=stamp_ns, source_stamp_s=stamp_ns*1e-9,
+                     source_epoch=self.source_clock.epoch,
+                     source_age_s=self.get_clock().now().nanoseconds*1e-9-stamp_ns*1e-9,
+                     source_epoch_fault=self.source_clock.fault or self.odom_clock.fault,
+                     source_frame=msg.header.frame_id, correction_frame=self.odom_frame,
+                     input_odom_epoch=self.input_odom_epoch, input_odom_time_epoch=self.odom_clock.epoch,
+                     input_odom_stamp_ns=self.input_odom_stamp_ns, odometry_valid=trusted_odom,
+                     odometry_rejection=self.tracker.loc.odom_note,
+                     correction_valid=corr["valid"], correction_reason=why if not eligible else
+                     ("" if updated else "correction consistency gate rejected update"))
             self.pub_status.publish(String(data=json.dumps(s)))
             if corr["valid"]:
                 cm = PoseStamped()

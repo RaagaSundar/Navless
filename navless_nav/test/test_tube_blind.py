@@ -26,14 +26,11 @@ def step(node, px4, pos, vo_state=1, dt=0.1, frozen=None, moving=False, yaw=0.0)
     (vo_state 2) odometry stops, or with `frozen` keeps repeating that pose,
     or with `moving` keeps following the drone (IMU-propagated). The drone
     holds heading `yaw` (odom ENU)."""
-    node.status_cb(types.SimpleNamespace(vo_state=vo_state))
+    h.vslam(node, vo_state)
+    h.px4_heading(node, yaw)
     if vo_state != 2 or frozen is not None or moving:
         p = frozen if (vo_state == 2 and frozen is not None) else pos
-        node.odometry_cb(types.SimpleNamespace(pose=types.SimpleNamespace(
-            pose=types.SimpleNamespace(
-                position=types.SimpleNamespace(x=p[0], y=p[1], z=p[2]),
-                orientation=types.SimpleNamespace(
-                    x=0.0, y=0.0, z=math.sin(yaw / 2), w=math.cos(yaw / 2))))))
+        h.send_odom(node, *p, yaw=yaw)
     px4['local_enu'] = list(pos)          # PX4's own estimate (perfect here)
     node.state_cb(types.SimpleNamespace(data=json.dumps(px4)))
     h.SENT.clear()
@@ -216,6 +213,10 @@ def test_vio_back_moves_the_carrot_up_to_a_drone_that_got_ahead():
     ahead = cm.Carrot(node.route, 1.0, math.inf)
     ahead.index, ahead.point = node.carrot.index, node.carrot.point
     pos[:] = list(ahead.advance(0.8))
+    # PX4 dead-reckoned that drift (its estimate arrives before the first sample back,
+    # which must agree with it: see test_navigation_faults' post-gap checks)
+    px4['local_enu'] = list(pos)
+    node.state_cb(types.SimpleNamespace(data=json.dumps(px4)))
     step(node, px4, pos)                               # VIO back
     assert math.dist(node.carrot.point, pos) < 0.15
     assert math.dist(node.carrot.point, frozen) > 0.65

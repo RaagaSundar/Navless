@@ -10,9 +10,12 @@ flight interface's topic namespace):
     subscribe  /fmu/out/vehicle_local_position  PX4's heading, read only (the
                                                 heading guard; never /fmu/in)
     subscribe  /team/localize/odom_correction   cloud_localize's drift correction
-                                                (wall_correction only)
+                                                (wall_correction only), used only when
+    subscribe  /team/localize/status            its status vouches for that exact cloud
+    subscribe  /visual_slam/status              cuVSLAM tracking (required)
     publish    FI_NS/setpoint/{pose,twist}      where we want to be (ENU, odom),
                                                 with the takeoff heading held
+    publish    /team/navigation/status          JSON, every tick: state, fault, readiness
 
 Never publishes to /fmu/*, never arms, never changes mode: flight_interface
 owns that, and enters Offboard once when the pilot arms, then switches to
@@ -70,6 +73,12 @@ States (10 Hz timer):
     HOLD               hover at the last target.
     PAUSED             the pilot took over. Nothing advances; once the
                        vehicle is disarmed we go back to waiting.
+    FAULT              latched for good (see latch_navigation_fault): an
+                       odometry jump/reset/stale clock, a PX4 heading reset
+                       in flight, VIO lost outside ROUTE, a localizer epoch
+                       change, or sustained lateral error in ROUTE. Nothing
+                       is commanded again (a twist descent keeps descending);
+                       the pilot takes over; restart the node to fly again.
 
 Every setpoint outside the idle states is pulled inside the net by
 net_margin_m: flight_interface clamps altitude only, never x/y.
@@ -78,6 +87,7 @@ import json
 import math
 import threading
 import time
+from collections import deque
 
 import numpy as np
 
@@ -97,6 +107,10 @@ from navless_nav.route import (Carrot, clamp_to_net, course_to_odom,
 from navless_nav.tube_guidance import TubeGuidance
 from navless_nav.flight_log import FlightLog, LoggingLogger, resolve_dir
 from navless_nav.pad_tracker import PadTracker
+from navless_nav.navigation_integrity import PoseIntegrity
+from navless_nav.correction_contract import CorrectionContract
+from navless_nav.cloud_transform import (CloudTransformError, rigid_transform,
+                                        stamp_s, transform_pointcloud)
 
 try:
     from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
@@ -157,6 +171,28 @@ TUBE_X = (1.5748, 3.048)
 TUBE_Y = (-0.3048, 1.2192)
 
 PARAMETERS = (
+    # Navigation integrity (navigation_integrity.PoseIntegrity). An odometry sample counts only
+    # with a source stamp no older than this, in these frames, and no faster than these bounds
+    # since the last accepted one (source time). A frame/reset change or a jump latches FAULT:
+    # nothing more is commanded and the node must be restarted (disarmed, realigned).
+    ('odom_source_max_age_s', 0.25),
+    ('odom_future_tolerance_s', 0.05),    # hardware_slam/odom_gate's camera-vs-node clock allowance
+    ('odom_frame', 'odom'),
+    ('odom_body_frame', 'base_link'),
+    ('odom_max_speed_mps', 2.0),
+    ('odom_max_angular_rate_rps', 3.0),
+    # In commanded flight, the first sample after a source gap longer than this must be within
+    # odom_gap_px4_tol_m of PX4's own estimate (plus their usual offset), or FAULT.
+    ('odom_gap_check_s', 0.3),
+    ('odom_gap_px4_tol_m', 0.35),
+    # ROUTE only: a lateral distance from the route polyline beyond this for this long latches
+    # FAULT. Unqualified candidate values, NOT a clearance guarantee for the 6-14 cm course gaps.
+    ('tracking_error_max_m', 0.35),
+    ('tracking_error_timeout_s', 0.75),
+    # wall_correction: the localizer's D must hold still (2 cm, 0.5 deg) this long before the
+    # pre-arm stream starts; the route is then flown from that registration.
+    ('initial_alignment_settle_s', 2.0),
+    ('cloud_capture_max_age_s', 0.5),
     ('takeoff_altitude_m', 0.85),
     # Climb target this far along the route's first leg instead of straight
     # above the drone, m (see takeoff_target). 0 = straight up. Gazebo, drone
@@ -170,8 +206,8 @@ PARAMETERS = (
     # Settle before the route: hold the takeoff target within this (odom,
     # horizontal) for takeoff_settle_s first. On 19 (2026-11-07 test
     # flights) both liftoffs slid 25-33 cm sideways and took 10-15 s to come
-    # back. If it never settles by takeoff_timeout_s, the route starts as it
-    # did before (within arrival_radius_m), with a warning. 0 s = off.
+    # back. If it never settles by takeoff_timeout_s, it holds there and the
+    # route never starts. 0 s = off.
     ('takeoff_settle_radius_m', 0.05),
     ('takeoff_settle_s', 2.0),
     ('takeoff_timeout_s', 30.0),
@@ -251,7 +287,8 @@ PARAMETERS = (
     ('heading_guard_deg', 15.0),
     ('heading_guard_s', 1.0),
     # Pre-arm: also refuse to stream while PX4's heading and the camera's
-    # disagree by more than this (PX4 on the magnetometer), deg; 0 = off.
+    # disagree by more than this (PX4 on the magnetometer), deg. A fresh PX4
+    # heading that is good for control is required; 0 never streams.
     ('prearm_heading_tol_deg', 10.0),
     ('publish_rate_hz', 10.0),
     # Where we read our own position. Use the same odometry that feeds PX4's
@@ -378,6 +415,9 @@ PARAMETERS = (
     ('wall_correction', False),
     ('wall_correction_topic', '/team/localize/odom_correction'),
     ('wall_correction_stale_s', 3.0),     # older than this is logged; D stays
+    # A NEW correction is taken only this soon after its cloud was captured (source stamp),
+    # so a delayed message never re-applies old data; cloud_localize itself allows 0.25 s.
+    ('wall_correction_max_age_s', 0.5),
     ('wall_correction_rate_mps', 0.12),
     ('wall_correction_rate_dps', 4.5),
     ('wall_correction_max_m', 3.0),       # messages beyond these are ignored
@@ -490,6 +530,34 @@ class CourseMission(Node):
         self.stall_timeout = param('stall_timeout_s')
         self.net_margin = param('net_margin_m')
         self.odom_timeout = param('odom_timeout_s')
+        self.integrity = PoseIntegrity(
+            max_age_s=param('odom_source_max_age_s'),
+            future_tolerance_s=param('odom_future_tolerance_s'),
+            max_speed_mps=param('odom_max_speed_mps'),
+            max_yaw_rate_rps=param('odom_max_angular_rate_rps'),
+            frame_id=str(self.get_parameter('odom_frame').value),
+            child_frame_id=str(self.get_parameter('odom_body_frame').value))
+        self.navigation_fault = None
+        self.fault_descending = False   # latched during LAND/REFUSED: keep pushing down
+        self.vio_lost_at = None         # first tick of a VIO loss while commanding
+        self.takeover_ready = False     # every pre-arm check passed (logged on each change)
+        self.odom_gap = param('odom_gap_check_s')
+        self.odom_gap_tol = param('odom_gap_px4_tol_m')
+        self.px4_ref = None             # odom - PX4 position, horizontal (update_px4_reference)
+        self.error_since = None
+        self.tracking_error_max = param('tracking_error_max_m')
+        self.tracking_error_timeout = param('tracking_error_timeout_s')
+        self.initial_alignment_settle = param('initial_alignment_settle_s')
+        self.cloud_max_age = param('cloud_capture_max_age_s')
+        self.cloud_tf = None
+        self._frame_history = deque(maxlen=300)
+        self._mapping_epoch = 0
+        try:
+            import tf2_ros
+            self.cloud_tf = tf2_ros.Buffer()
+            self._cloud_listener = tf2_ros.TransformListener(self.cloud_tf, self)
+        except ImportError:
+            pass  # no TF means no map insertion; never use a guessed camera pose
         self.land_at_end = str(self.get_parameter('land_at_end').value
                                ).lower() in ('true', '1')
         self.land_speed = param('land_speed_mps')
@@ -535,6 +603,10 @@ class CourseMission(Node):
         self.tof_used_stamp = None
         self.wall_corr = str(self.get_parameter('wall_correction').value).lower() in ('true', '1')
         self.corr_stale = param('wall_correction_stale_s')
+        self.correction_contract = CorrectionContract(param('wall_correction_max_age_s'))
+        self.alignment_since = None
+        self.alignment_candidate = None
+        self.alignment_ready = False
         self.corr_rate_m = param('wall_correction_rate_mps')
         self.corr_rate_rad = math.radians(param('wall_correction_rate_dps'))
         self.corr_max_m = param('wall_correction_max_m')
@@ -542,6 +614,7 @@ class CourseMission(Node):
         self.corr = (0.0, 0.0, 0.0)     # applied D (dx, dy, dyaw): odom <- route frame
         self.corr_rx = None             # the last D received (dx, dy, dyaw), and when
         self.corr_rx_at = None
+        self._pending_corrections = {}
         self.corr_at = None             # when the applied D was last stepped
         self.corr_stale_logged = False
         self.yaw = None             # odometry heading: the offset is along body y
@@ -613,6 +686,7 @@ class CourseMission(Node):
             PoseStamped, POSE_TOPIC, 10)
         self.twist_pub = self.create_publisher(
             TwistStamped, TWIST_TOPIC, 10)
+        self.navigation_status_pub = self.create_publisher(String, '/team/navigation/status', 10)
         self.create_subscription(
             Odometry, str(self.get_parameter('odometry_topic').value),
             self.odometry_cb, 10)
@@ -626,6 +700,7 @@ class CourseMission(Node):
             self.create_subscription(PointStamped, '/tube/offset', self.tof_offset_cb,
                                      qos_profile_sensor_data)
         if self.wall_corr:
+            self.create_subscription(String, '/team/localize/status', self.localizer_status_cb, 10)
             self.create_subscription(
                 PoseStamped, str(self.get_parameter('wall_correction_topic').value),
                 self.odom_correction_cb, 10)
@@ -767,7 +842,6 @@ class CourseMission(Node):
 
     def _bg_cloud_loop(self):
         """Permanent dedicated thread: decode & insert stereo pointclouds into the 3D occupancy grid."""
-        from planner.px4_bridge_node import decode_ros_pointcloud2_optical
         while not self._bg_stop.is_set():
             self._cloud_wake.wait(timeout=0.1)
             self._cloud_wake.clear()
@@ -779,13 +853,13 @@ class CourseMission(Node):
                 # Process the freshest stereo cloud frame
                 item = self._bg_cloud_batch[-1]
                 self._bg_cloud_batch.clear()
-            msg, cur_course, yaw_enu = item
-            pts_world = drop_floor_points(decode_ros_pointcloud2_optical(
-                msg, cur_course, yaw_enu, max_depth_m=2.80), self.obstacle_min_height)
+            pts_world, origin, epoch = item
+            if epoch != self._mapping_epoch or self.navigation_fault:
+                continue
             if pts_world.size > 0:
                 with self._planner_lock:
                     n_added = self.planner_grid.insert_point_cloud(
-                        pts_world, sensor_origin_m=cur_course, min_live_hits=2)
+                        pts_world, sensor_origin_m=origin, min_live_hits=2)
                     if n_added > 0:
                         self.live_grid_updated = True
                 if n_added > 0:
@@ -803,7 +877,7 @@ class CourseMission(Node):
                 self._bg_replan_req = None
             if req is None:
                 continue
-            now, cur_course, rem_enu, launch_xy, bearing_deg = req
+            now, cur_course, rem_enu, launch_xy, bearing_deg, epoch = req
             self._bg_replanning = True
             try:
                 with self._planner_lock:
@@ -823,39 +897,34 @@ class CourseMission(Node):
                 new_odom = [course_to_odom(p, launch, bearing_deg, self.start_height)
                             for p in wps_enu]
                 with self._planner_lock:
-                    self._bg_replan_result = (now, new_odom, kind)
+                    self._bg_replan_result = (now, new_odom, kind, epoch)
             except (ValueError, RuntimeError) as exc:
                 self.get_logger().warn(f'Online replan skipped ({exc}).')
             finally:
                 self._bg_replanning = False
 
     def pointcloud_cb(self, msg):
-        """Insert live stereo pointcloud obstacles into the 3D occupancy grid for online replanning."""
+        """Admit only calibrated, capture-time geometry from the current navigation epoch."""
         self.cloud_rx_count += 1
-        if not self.replan_on_obstacles or self.static_asbuilt_route or self.position is None or self.frame is None:
+        if (not self.replan_on_obstacles or self.static_asbuilt_route or self.position is None
+                or self.frame is None or self.navigation_fault or not self.vio_ok()):
             return
-        # Where the walls say the drone is (the wall correction's frame; plain
-        # odometry when it is off), so live obstacles land on the right map cells.
-        cur_course = odom_to_course(
-            self.corr_to_route(self.position), self.frame[0], self.frame[1], self.start_height)
-        # The nose's course yaw: odom +x points along the start bearing, and the
-        # nose has turned self.yaw from there (minus the correction's dyaw).
-        # Without an odometry heading, assume the start bearing as before.
-        yaw_enu = 0.5 * math.pi - math.radians(self.frame[1])
-        if self.yaw is not None:
-            yaw_enu = wrap_pi(yaw_enu + self.yaw - self.corr[2])
+        epoch = self._mapping_epoch
+        try:
+            pts_world, origin = self.capture_cloud(msg)
+        except Exception as exc:    # tf2 raises its own types; any failure skips the cloud
+            self.info_once('cloud_tf_missing', 'Live map skipped: capture-time calibrated TF required: '
+                           + str(exc))
+            return
         if self._bg_worker_enabled:
             with self._planner_lock:
-                self._bg_cloud_batch.append((msg, cur_course, yaw_enu))
+                self._bg_cloud_batch.append((pts_world, origin, epoch))
             self._cloud_wake.set()
             return
-        from planner.px4_bridge_node import decode_ros_pointcloud2_optical
-        pts_world = drop_floor_points(decode_ros_pointcloud2_optical(
-            msg, cur_course, yaw_enu, max_depth_m=2.80), self.obstacle_min_height)
-        if pts_world.size > 0:
+        if pts_world.size > 0 and epoch == self._mapping_epoch:
             with self._planner_lock:
                 n_added = self.planner_grid.insert_point_cloud(
-                    pts_world, sensor_origin_m=cur_course, min_live_hits=2)
+                    pts_world, sensor_origin_m=origin, min_live_hits=2)
                 if n_added > 0:
                     self.live_grid_updated = True
 
@@ -884,8 +953,9 @@ class CourseMission(Node):
                 res = self._bg_replan_result
                 self._bg_replan_result = None
             if res is not None:
-                r_now, new_odom, kind = res
-                self._apply_replanned_route(r_now, new_odom, kind)
+                r_now, new_odom, kind, epoch = res
+                if epoch == self._mapping_epoch and not self.navigation_fault:
+                    self._apply_replanned_route(r_now, new_odom, kind)
             if not self.live_grid_updated or (now - self.last_replan_at) < 0.35 or self._bg_replanning:
                 return
             self.live_grid_updated = False
@@ -898,7 +968,7 @@ class CourseMission(Node):
             else:
                 cur_course = rem_enu[0]
             with self._planner_lock:
-                self._bg_replan_req = (now, cur_course, rem_enu, self.frame[0], self.frame[1])
+                self._bg_replan_req = (now, cur_course, rem_enu, self.frame[0], self.frame[1], self._mapping_epoch)
             self._bg_wake.set()
             return
 
@@ -951,21 +1021,218 @@ class CourseMission(Node):
                 c_probe, clearance_m=self.planner_cfg.obstacle_inflation_m + 0.12)
         return 0.35 if near_obs else 1.0
 
+    def latch_navigation_fault(self, reason):
+        """Stop commanding for good; only an operator restart (disarmed, realigned) clears it.
+
+        What happens next is flight_interface's: a pose setpoint persists, a twist expires
+        after its setpoint_timeout_s (1 s) and it then holds the last pose. That hold is in
+        PX4's frame, which may be the broken one, so FAULT is not a safe state by itself: the
+        safety pilot must take over. Never a new HOLD or route from here. One exception: a
+        fault during a twist descent (LAND, REFUSED) keeps pushing straight down, with no
+        horizontal or yaw command, until PX4 disarms; stopping it would make flight_interface
+        climb back to the last pose (0.85 m up over the pad).
+        """
+        if self.navigation_fault is not None:
+            return
+        self.navigation_fault = str(reason)
+        self.fault_descending = self.state in ('LAND', 'REFUSED')
+        # No _planner_lock: a long background A* must not delay the descent twist. The epoch
+        # bump alone discards anything the workers still hand back.
+        self._mapping_epoch += 1
+        self._bg_cloud_batch.clear()
+        self._bg_replan_req = self._bg_replan_result = None
+        self.goto('FAULT')
+        self.get_logger().error(
+            'NAVIGATION FAULT LATCHED: ' + self.navigation_fault + '. '
+            + ('Descending straight down until PX4 disarms. ' if self.fault_descending else
+               'No more setpoints: flight_interface holds the last pose; PILOT TAKE OVER. ')
+            + 'No automatic resume; restart the node after disarming.')
+        self._state_fault()
+
+    def _state_fault(self):
+        if not (self.armed and self.offboard_active):
+            self.fault_descending = False   # disarmed or the pilot has it: never again
+        if not self.fault_descending:
+            return
+        msg = TwistStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'odom'
+        msg.twist.linear.x = 0.0
+        msg.twist.linear.y = 0.0
+        msg.twist.linear.z = -float(self.land_speed)
+        msg.twist.angular.z = 0.0
+        self.twist_pub.publish(msg)
+
+    def publish_navigation_status(self):
+        """/team/navigation/status, every tick: why the node is (not) commanding."""
+        vio = self.vio_ok()
+        message = String()
+        message.data = json.dumps({
+            'state': self.state, 'fault_latched': self.navigation_fault is not None,
+            'reason': self.navigation_fault, 'fault_descending': self.fault_descending,
+            'vio_ok': vio, 'odometry': self.integrity.fault or self.integrity.reason,
+            'alignment_ready': self.alignment_ready if self.wall_corr else None,
+            'correction': self.correction_contract.reason if self.wall_corr else None,
+            'armed': self.armed, 'offboard_active': self.offboard_active})
+        self.navigation_status_pub.publish(message)
+
+    def check_tracking_error(self):
+        """ROUTE: lateral distance from the route polyline (not the carrot, which leads on
+        purpose). TAKEOFF is left to the settle check: faulting there changes nothing PX4
+        does (flight_interface holds the same target) and the route never starts unsettled."""
+        error = 0.0
+        if self.state == 'ROUTE' and len(self.route or []) >= 2:
+            p = self.corr_to_route(self.position)
+            error = math.inf
+            for a, b in zip(self.route, self.route[1:]):
+                dx, dy = b[0] - a[0], b[1] - a[1]
+                length = dx * dx + dy * dy
+                t = min(1.0, max(0.0, ((p[0]-a[0])*dx+(p[1]-a[1])*dy)/length)) if length else 0.0
+                error = min(error, math.hypot(p[0]-a[0]-t*dx, p[1]-a[1]-t*dy))
+        if error > self.tracking_error_max:
+            if self.error_since is None:
+                self.error_since = self.now_s()
+            elif self.now_s() - self.error_since >= self.tracking_error_timeout:
+                self.latch_navigation_fault(f'sustained lateral tracking error {error:.2f} m')
+        else:
+            self.error_since = None
+
+    def initial_alignment(self):
+        if not self.wall_corr or self.going_home:
+            return True
+        if (self.corr_rx is None or self.corr_rx_at is None
+                or self.now_s() - self.corr_rx_at > self.corr_stale
+                or not self.correction_contract.current_valid):
+            self.alignment_candidate = self.alignment_since = None   # settle again from scratch
+            self.alignment_ready = False
+            return False
+        d = self.corr_rx
+        old = self.alignment_candidate
+        if (old is None or math.hypot(d[0]-old[0], d[1]-old[1]) > 0.02
+                or abs(wrap_pi(d[2]-old[2])) > math.radians(0.5)):
+            self.alignment_candidate, self.alignment_since = d, self.now_s()
+            self.alignment_ready = False
+            return False
+        if self.now_s() - self.alignment_since < self.initial_alignment_settle:
+            return False
+        # No flight command is displaced here: WAIT streams the current raw pose.
+        self.corr = self.correction_target()
+        self.alignment_ready = True
+        self.remember_map_frame()
+        return True
+
+    def remember_map_frame(self):
+        if not hasattr(self, 'corr'):
+            return
+        sample = (self.now_s(), tuple(self.odom_zero_offset), tuple(self.corr), self._mapping_epoch)
+        self._frame_history.append(sample)
+
+    def capture_cloud(self, msg):
+        """(course points, camera origin in the course) from the raw odom <- camera TF at
+        the cloud's own stamp; never the receipt-time pose. The origin comes from the same
+        transform as the points (the planner ray-casts free space from it)."""
+        acquired = stamp_s(msg.header.stamp)
+        if self.cloud_tf is None or self.frame is None or self.navigation_fault:
+            raise CloudTransformError('capture-time camera TF unavailable')
+        from rclpy.time import Time
+        from rclpy.duration import Duration
+        tf = self.cloud_tf.lookup_transform(
+            self.integrity.frame_id, msg.header.frame_id,
+            Time.from_msg(msg.header.stamp), timeout=Duration(seconds=0.0))
+        return self.project_cloud(msg, tf, acquired)
+
+    def course_from_raw_odom(self, acquired):
+        """4x4 course <- raw odom at `acquired`, from the alignment recorded then (this epoch)."""
+        history = tuple(self._frame_history)    # one C-level copy: tick appends from another thread
+        sample = next((s for s in reversed(history)
+                       if s[0] <= acquired and s[3] == self._mapping_epoch), None)
+        if sample is None:
+            raise CloudTransformError('no capture-time course alignment in this epoch')
+        _, zero, correction, _ = sample
+        a = correction[2]
+        D = rigid_transform((correction[0], correction[1], 0), (0, 0, math.sin(a/2), math.cos(a/2)))
+        raw_to_mission = np.eye(4)
+        raw_to_mission[:3, 3] = -np.asarray(zero)
+        angle = math.pi/2 - math.radians(self.frame[1])
+        nominal_course = rigid_transform((*self.frame[0], self.start_height),
+                                        (0, 0, math.sin(angle/2), math.cos(angle/2)))
+        return nominal_course @ np.linalg.inv(D) @ raw_to_mission
+
+    def project_cloud(self, msg, tf, acquired):
+        """capture_cloud without the TF query (tf: a geometry_msgs TransformStamped)."""
+        stamp = stamp_s(tf.header.stamp)
+        if tf.child_frame_id != msg.header.frame_id or tf.header.frame_id != self.integrity.frame_id:
+            raise CloudTransformError('TF frames do not match odom <- cloud frame')
+        t, q = tf.transform.translation, tf.transform.rotation
+        raw_camera = rigid_transform((t.x, t.y, t.z), (q.x, q.y, q.z, q.w))
+        course_camera = self.course_from_raw_odom(acquired) @ raw_camera
+        points = transform_pointcloud(
+            msg, course_camera, transform_stamp_s=stamp,
+            transform_source_frame=tf.child_frame_id, now_s=self.now_s(),
+            max_capture_age_s=self.cloud_max_age, min_depth_m=0.3, max_depth_m=2.8,
+            crop_min=(-3.1, -3.1, self.obstacle_min_height), crop_max=(3.1, 3.1, 1.70))
+        return points, tuple(float(v) for v in course_camera[:3, 3])
+
     # -- inputs ----------------------------------------------------------
     def odometry_cb(self, msg):
-        p = msg.pose.pose.position
-        raw = (float(p.x), float(p.y), float(p.z))
+        """Only a sample PoseIntegrity accepts moves the pose; anything else (no header,
+        stale, duplicate) is dropped, and a discontinuity latches FAULT. After a gap in
+        commanded flight the speed bound has grown with the gap, so the first sample back must
+        also agree with PX4's own (dead-reckoned) estimate: a relocalised or reset pose never
+        becomes the pose the route resumes from (carrot.catch_up)."""
+        previous = self.integrity.last_stamp_s
+        try:
+            p, q = msg.pose.pose.position, msg.pose.pose.orientation
+            raw = (float(p.x), float(p.y), float(p.z))
+            source_stamp = stamp_s(msg.header.stamp)
+            accepted = self.integrity.observe(
+                stamp_s=source_stamp, now_s=self.now_s(), frame_id=msg.header.frame_id,
+                child_frame_id=msg.child_frame_id, position=raw,
+                quaternion=(q.x, q.y, q.z, q.w),
+                reset_counter=getattr(msg, 'reset_counter', None))
+        except (AttributeError, TypeError, ValueError):
+            accepted = False
+            if self.armed:
+                self.latch_navigation_fault('malformed odometry source/pose')
+        if not accepted:
+            if self.integrity.fault:
+                self.latch_navigation_fault(self.integrity.fault)
+            return
+        position = tuple(r - z for r, z in zip(raw, self.odom_zero_offset))
+        commanding = self.armed and self.offboard_active and self.state not in IDLE_STATES
+        if commanding and previous is not None and source_stamp - previous > self.odom_gap:
+            why = self.gap_disagreement(position)
+            if why:
+                self.latch_navigation_fault(why)
+                return
         self.raw_position = raw
-        self.position = (
-            raw[0] - self.odom_zero_offset[0],
-            raw[1] - self.odom_zero_offset[1],
-            raw[2] - self.odom_zero_offset[2],
-        )
+        self.position = position
         self.odom_at = self.now_s()
+        self.update_px4_reference()
         q = getattr(msg.pose.pose, 'orientation', None)
         if q is not None:
             self.yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                                   1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+
+    def update_px4_reference(self):
+        """Smoothed odom minus PX4 position (horizontal) while both are fresh: the offset the
+        post-gap check expects (their origins and update rates differ; 5 Hz PX4 lags a bit)."""
+        if self.px4_pos is None or self.px4_at is None or self.now_s() - self.px4_at > 0.25:
+            return
+        d = (self.position[0] - self.px4_pos[0], self.position[1] - self.px4_pos[1])
+        r = self.px4_ref
+        self.px4_ref = d if r is None else (r[0] + 0.1 * (d[0] - r[0]), r[1] + 0.1 * (d[1] - r[1]))
+
+    def gap_disagreement(self, position):
+        """Why the first odometry sample after a gap cannot be trusted, or None."""
+        if (self.px4_pos is None or self.px4_at is None or self.px4_ref is None
+                or self.now_s() - self.px4_at > self.odom_timeout):
+            return 'odometry back after a gap with no fresh PX4 estimate to check it against'
+        off = math.hypot(position[0] - self.px4_pos[0] - self.px4_ref[0],
+                         position[1] - self.px4_pos[1] - self.px4_ref[1])
+        if off > self.odom_gap_tol:
+            return f"odometry back after a gap {off:.2f} m from PX4's estimate (relocalised?)"
+        return None
 
     def status_cb(self, msg):
         self.vo_state = int(msg.vo_state)
@@ -1001,17 +1268,21 @@ class CourseMission(Node):
         """PX4's heading (NED, clockwise from its x) as an ENU yaw, the same
         convention as odom's (flight_interface: yaw_ned = pi/2 - yaw_enu)."""
         heading = float(msg.heading)
-        if math.isfinite(heading):
+        if math.isfinite(heading) and getattr(msg, 'heading_good_for_control', False) is True:
             self.px4_yaw = wrap_pi(math.pi / 2.0 - heading)
             self.px4_yaw_at = self.now_s()
+        else:
+            self.px4_yaw = self.px4_yaw_at = None
         resets = int(msg.heading_reset_counter)
-        if (self.px4_heading_resets is not None
-                and resets != self.px4_heading_resets
-                and self.hold_yaw is not None and not self.heading_suspended):
-            self.suspend_heading(
-                f'PX4 reset its heading in flight (reset counter '
-                f'{self.px4_heading_resets} -> {resets}; a vision gap?)',
-                republish=True)
+        if self.px4_heading_resets is not None and resets != self.px4_heading_resets:
+            why = (f'PX4 reset its heading (reset counter {self.px4_heading_resets} -> '
+                   f'{resets}; a vision gap?)')
+            if self.armed and self.offboard_active and self.state not in IDLE_STATES:
+                # A yaw reset turns PX4's local frame under every odom setpoint
+                # flight_interface converts: the same discontinuity as an odometry jump.
+                self.latch_navigation_fault(why + ' while commanding flight')
+            elif self.hold_yaw is not None and not self.heading_suspended:
+                self.suspend_heading(why, republish=True)
         self.px4_heading_resets = resets
 
     def tof_offset_cb(self, msg):
@@ -1022,17 +1293,49 @@ class CourseMission(Node):
         self.tof_offset = ((stamp, offset) if msg.header.frame_id == 'base_link'
                            and math.isfinite(offset) else None)
 
+    def localizer_status_cb(self, msg):
+        try:
+            data = json.loads(msg.data)
+            if isinstance(data, dict):
+                self.correction_contract.status(data)
+                if self.correction_contract.fault:
+                    self.latch_navigation_fault(self.correction_contract.fault)
+                for pending in list(self._pending_corrections.values()):
+                    self.odom_correction_cb(pending)
+        except (ValueError, TypeError):
+            pass
+
     def odom_correction_cb(self, msg):
         """cloud_localize's drift correction D (see wall_correction): a
         PoseStamped in odom, position x/y = dx/dy, orientation = dyaw about z.
         It only arrives while cloud_localize considers it valid."""
         try:
             p, q = msg.pose.position, msg.pose.orientation
+            acquired = stamp_s(msg.header.stamp)
+            acquired_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+            rigid_transform((p.x, p.y, p.z), (q.x, q.y, q.z, q.w))
             dx, dy = float(p.x), float(p.y)
             dyaw = math.atan2(2.0 * (float(q.w) * float(q.z) + float(q.x) * float(q.y)),
                               1.0 - 2.0 * (float(q.y) ** 2 + float(q.z) ** 2))
-        except (AttributeError, TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError, CloudTransformError):
             return
+        self._pending_corrections[acquired_ns] = msg
+        if len(self._pending_corrections) > 8:
+            self._pending_corrections.pop(next(iter(self._pending_corrections)))
+        if not self.correction_contract.accept(acquired_ns, msg.header.frame_id, self.now_s()):
+            if self.correction_contract.reason == 'localization epoch changed':
+                if self.armed or self.state not in IDLE_STATES or self.going_home:
+                    self.latch_navigation_fault(self.correction_contract.reason)
+                else:
+                    # On the ground before any arming: register again from scratch.
+                    self.get_logger().warn('wall correction: localizer epoch changed before '
+                                           'arming; realigning.')
+                    self.correction_contract.epoch = None
+                    self.corr_rx = self.corr_rx_at = None
+                    self.alignment_candidate = self.alignment_since = None
+                    self.alignment_ready = False
+            return
+        self._pending_corrections.pop(acquired_ns, None)
         if msg.header.frame_id != 'odom' or not all(map(math.isfinite, (dx, dy, dyaw))):
             self.info_once('corr_bad', 'wall correction: ignoring a message that is not '
                            'in odom or not finite.')
@@ -1046,7 +1349,7 @@ class CourseMission(Node):
                 f'wall correction: first D ({dx:+.3f}, {dy:+.3f} m, '
                 f'{math.degrees(dyaw):+.2f} deg); it is applied in ROUTE.')
         self.corr_rx = (dx, dy, dyaw)
-        self.corr_rx_at = self.now_s()
+        self.corr_rx_at = acquired
         self.corr_stale_logged = False
 
     # -- wall correction (identity unless wall_correction is on) -----------
@@ -1073,7 +1376,7 @@ class CourseMission(Node):
         now = self.now_s()
         dt = 0.0 if self.corr_at is None else min(max(now - self.corr_at, 0.0), 0.2)
         self.corr_at = now
-        if not self.wall_corr or self.corr_rx is None or frozen:
+        if not self.wall_corr or self.corr_rx is None or frozen or not self.correction_contract.current_valid:
             return
         if now - self.corr_rx_at > self.corr_stale and not self.corr_stale_logged:
             self.corr_stale_logged = True
@@ -1081,7 +1384,10 @@ class CourseMission(Node):
                 f'wall correction: no message for {now - self.corr_rx_at:.1f} s; keeping '
                 f'the last D ({self.corr_rx[0]:+.3f}, {self.corr_rx[1]:+.3f} m, '
                 f'{math.degrees(self.corr_rx[2]):+.2f} deg).')
+        if now - self.corr_rx_at > self.corr_stale:
+            return  # hold the last APPLIED transform; do not keep chasing stale input
         self.corr = self.ease_correction(self.corr, self.correction_target(), dt)
+        self.remember_map_frame()
 
     def correction_target(self):
         """The applied correction that the last D asks for, in this node's
@@ -1142,9 +1448,18 @@ class CourseMission(Node):
                                    f'by {best[2]} camera fixes.')
 
     def vio_ok(self):
-        fresh = (self.odom_at is not None
-                 and self.now_s() - self.odom_at <= self.odom_timeout)
-        return fresh and self.vo_state != VO_LOST
+        now = self.now_s()
+        return (self.navigation_fault is None and self.integrity.fresh(now)
+                and self.vo_state == 1 and self.vo_at is not None
+                and 0 <= now - self.vo_at <= self.integrity.max_age_s)
+
+    def vio_recent(self):
+        """vio_ok(), or a gap of at most odom_timeout_s with no explicit loss report: for the
+        drift offset, so a status at the 0.25 s limit never steps the setpoint for a tick."""
+        if self.vio_ok():
+            return True
+        return (self.navigation_fault is None and self.vo_state != VO_LOST
+                and self.vio_lost_at is not None and self.now_s() - self.vio_lost_at <= self.odom_timeout)
 
     def state_cb(self, msg):
         try:
@@ -1207,6 +1522,8 @@ class CourseMission(Node):
         self.publish_pose(x, y, z, self.heading_cmd() if yaw is None else yaw)
 
     def publish_pose(self, x, y, z, yaw):
+        if self.navigation_fault:
+            return
         self.last_cmd_yaw = yaw
         msg = PoseStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -1227,6 +1544,8 @@ class CourseMission(Node):
     def send_twist(self, vx, vy, vz):
         """ENU world velocity in odom; expires after 1 s unless refreshed.
         Yaw rate steers the nose back to the held heading, if any."""
+        if self.navigation_fault:
+            return
         rate = 0.0
         yaw = self.heading_cmd()
         if yaw is not None and self.yaw is not None:
@@ -1433,7 +1752,7 @@ class CourseMission(Node):
         last pose (zero error against a frozen estimate) or paces PX4's own
         estimate through the tube, and an offset added there would have PX4
         push with no feedback (Gazebo 'freeze': into the south net)."""
-        if not self.drift_on or not self.vio_ok() or self.blind_carrying:
+        if not self.drift_on or not self.vio_recent() or self.blind_carrying:
             return False
         return (self.state in ('TAKEOFF', 'HOLD')
                 or (self.state == 'ROUTE' and self.drift_in_route))
@@ -1552,6 +1871,7 @@ class CourseMission(Node):
             # and re-measures PX4's floor offset.
             self.heights_agree_since = None
             self.prearm_passed = False
+            self.takeover_ready = False
             self.prearm_anchor_pos = None
             self.z_samples = []
             self.z_offset = 0.0
@@ -1560,21 +1880,30 @@ class CourseMission(Node):
         """Anchor odom_zero_offset so where the drone is when armed counts as the launch mark (0, 0, 0)."""
         if self.going_home or self.raw_position is None:
             return
-        self.odom_zero_offset = self.raw_position
+        old = self.odom_zero_offset
         self.position = (0.0, 0.0, 0.0)
         self.odom_zeroed = True
+        if tuple(old) == tuple(self.raw_position):
+            return      # every waiting tick re-zeroes; only a move changes the map frame
+        self.odom_zero_offset = self.raw_position
+        if self.alignment_ready:
+            # The same registration in the new zero: correction_target() is D - zero.
+            self.corr = (self.corr[0] + old[0] - self.raw_position[0],
+                         self.corr[1] + old[1] - self.raw_position[1], self.corr[2])
+        self._mapping_epoch += 1
+        self._frame_history.clear()
+        self.remember_map_frame()
 
     def headings_agree(self):
-        """Pre-arm check: PX4's heading matches the camera's (PX4 is not on
-        the magnetometer). Passes when there is no PX4 heading to compare."""
+        """Require a fresh PX4 heading; agreement alone does not prove course registration."""
         if self.prearm_heading_tol <= 0.0:
-            return True
+            return False
         px4 = self.px4_heading()
         if px4 is None or self.yaw is None:
             if VehicleLocalPosition is not None:
                 self.info_once('prearm_heading_none', 'pre-arm heading check: '
                                f'no PX4 heading on {PX4_LOCAL_TOPIC}; not checked.')
-            return True
+            return False
         off = abs(wrap_pi(px4 - self.yaw))
         if off <= self.prearm_heading_tol:
             return True
@@ -1667,6 +1996,38 @@ class CourseMission(Node):
 
     # -- state machine ---------------------------------------------------
     def tick(self):
+        self.remember_map_frame()
+        self.publish_navigation_status()
+        if self.integrity.fault:
+            self.latch_navigation_fault(self.integrity.fault)
+        if self.navigation_fault:
+            self._state_fault()
+            self.log_tick()
+            return
+        if self.state not in IDLE_STATES and self.armed and self.offboard_active:
+            now = self.now_s()
+            if self.state_at is None or not 0 <= now - self.state_at <= 1.0:
+                self.latch_navigation_fault('flight_interface state older than 1 s while commanding')
+                return
+            # The twist descents (LAND, REFUSED) need no position. ROUTE rides out a loss
+            # (frozen carrot / blind carry) for at most blind_carry_max_s + odom_timeout_s;
+            # elsewhere a loss longer than odom_timeout_s ends the mission: there is no
+            # position to command from. (A latched odom_gate looks like this too.)
+            # A stale wall correction is not a fault: D keeps its last applied value.
+            allowed = self.odom_timeout + (self.blind_max_s if self.state == 'ROUTE' else 0.0)
+            if self.state in ('LAND', 'REFUSED') or self.vio_ok():
+                self.vio_lost_at = None
+            elif self.vio_lost_at is None:
+                self.vio_lost_at = now
+            elif now - self.vio_lost_at > allowed:
+                self.latch_navigation_fault(f'VIO tracking lost for over {allowed:.2f} s '
+                                            f'in {self.state}')
+                return
+            self.check_tracking_error()
+            if self.navigation_fault:
+                return
+        else:
+            self.vio_lost_at = None
         if self.position is None:
             self.info_once(
                 'no_odom', 'no /visual_slam/tracking/odometry yet; nothing '
@@ -1711,8 +2072,18 @@ class CourseMission(Node):
         self.log_tick()
 
     def _state_wait_for_offboard(self):
-        ready = self.heights_agree()
-        ready = self.headings_agree() and ready
+        checks = {'height': self.heights_agree(), 'PX4 heading': self.headings_agree(),
+                  'VIO': self.vio_ok(), 'course alignment': self.initial_alignment()}
+        ready = all(checks.values())
+        if ready != self.takeover_ready:
+            # One line per change, no commas (tools/flight_day/fly_course.sh cuts the CSV log).
+            self.takeover_ready = ready
+            if ready:
+                self.get_logger().info('ready for takeover: height / PX4 heading / VIO / '
+                                       'course alignment all pass; streaming.')
+            else:
+                self.get_logger().warn('not ready for takeover: ' + ' / '.join(
+                    k for k, v in checks.items() if not v) + ' failing; not streaming.')
         if not self.offboard_active:
             if self.position is not None:
                 self.maybe_replan_for_discrepancies(self.now_s())
@@ -1721,9 +2092,9 @@ class CourseMission(Node):
             return
         if not ready:
             self.get_logger().error(
-                'Offboard came while PX4 and odom disagree (height or '
-                'heading): not taking off. Descending in place until PX4 '
-                'disarms.')
+                'Offboard came while not ready for takeover ('
+                + ', '.join(k for k, v in checks.items() if not v)
+                + ' failing): not taking off. Descending in place until PX4 disarms.')
             self.goto('REFUSED', self.position)
             self._state_refused()       # no tick without a setpoint
             return
@@ -1751,7 +2122,9 @@ class CourseMission(Node):
             return (x, y, self.takeoff_altitude)
         r0 = self.route[0]
         p = Carrot(self.route, 1.0, math.inf).advance(self.lead_m())
-        return (x + p[0] - r0[0], y + p[1] - r0[1], r0[2])
+        dx, dy = p[0] - r0[0], p[1] - r0[1]
+        c, s = math.cos(self.corr[2]), math.sin(self.corr[2])
+        return (x + c * dx - s * dy, y + s * dx + c * dy, r0[2])
 
     def lead_m(self):
         """takeoff_lead_m, but 0 on the fly_home take-off: the pad has room
@@ -1778,16 +2151,8 @@ class CourseMission(Node):
                 f'{self.now_s() - self.state_since:.1f} s after the climb began.')
             self.start_route()
         elif self.now_s() - self.state_since > self.takeoff_timeout:
-            if there:
-                self.get_logger().warn(
-                    f'takeoff never settled within {self.settle_radius * 100:.0f} cm '
-                    f'in {self.takeoff_timeout:.0f} s '
-                    f'({math.dist(self.position[:2], self.target[:2]) * 100:.0f} cm '
-                    'off now); starting the route anyway.')
-                self.start_route()
-                return
             self.get_logger().error(
-                f'takeoff target not reached in {self.takeoff_timeout:.0f} s '
+                f'takeoff did not settle in {self.takeoff_timeout:.0f} s '
                 f'({math.dist(self.position, self.target):.2f} m off); '
                 f'holding here. Check `clamped` in {STATE_TOPIC} and VIO.')
             self.goto('HOLD', self.position)
@@ -1833,11 +2198,13 @@ class CourseMission(Node):
         carrot.advance(self.lead_m())       # never pull back behind the lean
         # Measured from where the route starts after the lean, so the lean
         # does not use up max_start_offset_m.
+        # Never further off than ROUTE's own lateral-error FAULT allows.
         offset = math.dist(self.corr_to_route(self.position)[:2], carrot.point[:2])
-        if offset > self.max_start_offset:
+        limit = min(self.max_start_offset, self.tracking_error_max)
+        if offset > limit:
             self.get_logger().error(
                 f'{offset:.2f} m from the route start (limit '
-                f'{self.max_start_offset:.2f} m): not flying it from here. '
+                f'{limit:.2f} m): not flying it from here. '
                 'Holding. Power up on the launch mark.')
             self.goto('HOLD', self.target)
             return
