@@ -57,6 +57,9 @@ ARGUMENTS = [
     ('net_margin_m', '0.25', 'keep setpoints this far inside the net, m'),
     ('tof_tube_centering', 'true',
      'in the tube, steer toward the centre the side ToF sensors measure (at most 0.15 m from the route)'),
+    # Off until it is gated: cloud_localize (depthcloud/) must be running with the as-built .obj.
+    ('wall_correction', 'false',
+     "fly the route in the frame cloud_localize's drift correction keeps on the walls"),
     ('start_bearing_deg', '0.0', 'nose bearing on the launch mark at power-up (0 = north)'),
     # Speed, tuned for the centreline window route on the maze before 2026-11-07 (Gazebo + PX4 SITL, drone
     # profile, real pilot sequence). Arm to touchdown took 32.6 s on 3 of 3 laps, against 42.9 s at navless.launch.py's
@@ -100,7 +103,8 @@ def generate_launch_description():
         launch_arguments={n: LaunchConfiguration(n)
                           for n in ('route_file', 'start_bearing_deg', 'cruise_speed_mps',
                                     'max_lead_m', 'max_lat_accel_mps2', 'max_turn_sagitta_m',
-                                    'odometry_topic', 'net_margin_m', 'tof_tube_centering')}.items(),
+                                    'odometry_topic', 'net_margin_m', 'tof_tube_centering',
+                                    'wall_correction')}.items(),
     )
     # VL53L1X: from the team image, or from ~/team_ws/pylibs (pip install --target) if it is there.
     pylibs = '/root/team_ws/pylibs'
