@@ -45,10 +45,11 @@ ARGUMENTS = [
     ('drift_correction', 'true', 'learn and cancel a steady push while the target stands still (takeoff settle, hold)'),
     ('drift_apply_in_route', 'true', 'keep cancelling the learned (body-fixed) push along the route'),
     ('flight_log', 'true', 'write the flight recorder CSV to ~/team_ws/flight_logs'),
-    # skybeta-19 slides 25-40 cm to its LEFT at every liftoff (2026-11-07/08 logs): lean 28 cm right
-    # from the start of the climb; the drift correction refines it once above 0.4 m. 0 = off.
+    # skybeta-19 slid 25-40 cm to its LEFT at liftoff (2026-11-07/08 logs), partly while other
+    # commanders were also running; with those stopped the team expects less, so lean 15 cm right from
+    # the start of the climb (was 0.28); the drift correction refines it once above 0.4 m. 0 = off.
     ('drift_seed_body_x_m', '0.0', 'takeoff slide pre-compensation, body forward, m'),
-    ('drift_seed_body_y_m', '-0.28', 'takeoff slide pre-compensation, body left, m (negative = lean right)'),
+    ('drift_seed_body_y_m', '-0.15', 'takeoff slide pre-compensation, body left, m (negative = lean right)'),
     ('route_source', 'planner', "'planner' (EGO planner) or 'file' (fly route_file as exported: the gated drone19 routes)"),
     # Team decision (Shining, 2026-11-08): Favour's planner WITH localization. `localizer` (below) starts
     # depthcloud/cloud_localize.py on the as-built course, fed by stereo_cloud's /team/stereo/points; its
