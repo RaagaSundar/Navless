@@ -1,0 +1,38 @@
+{
+  "generatedBy": "pitch/scripts/extract-course-data.mjs",
+  "repo": "RaagaSundar/Navless",
+  "ref": "drone19/flight",
+  "refCommit": "6c123b9c312a88609268ec46eedcf59647fe913d",
+  "files": {
+    "course": {
+      "path": "gazebo_sim/course/course_asbuilt.json",
+      "lastCommit": "f75e3ae",
+      "date": "2026-11-07",
+      "subject": "drone19: route for the organisers' new maze (M1-M3 replaced by MN, MD, MT)"
+    },
+    "route": {
+      "path": "gazebo_sim/course/route_centreline_window_asbuilt.json",
+      "lastCommit": "993a967",
+      "date": "2026-11-07",
+      "subject": "drone19: new-maze route leaves the west net at once (NE beside MD, round MD's tip)"
+    },
+    "routeB": {
+      "path": "gazebo_sim/course/route_centreline_gate_b_asbuilt.json",
+      "lastCommit": "993a967",
+      "date": "2026-11-07",
+      "subject": "drone19: new-maze route leaves the west net at once (NE beside MD, round MD's tip)"
+    },
+    "maze": {
+      "path": "depthcloud/asbuilt/maze_2026-11-07.json",
+      "lastCommit": "f75e3ae",
+      "date": "2026-11-07",
+      "subject": "drone19: route for the organisers' new maze (M1-M3 replaced by MN, MD, MT)"
+    },
+    "obj": {
+      "path": "dronehacks-course-asbuilt.obj",
+      "lastCommit": "f75e3ae",
+      "date": "2026-11-07",
+      "subject": "drone19: route for the organisers' new maze (M1-M3 replaced by MN, MD, MT)"
+    }
+  }
+}

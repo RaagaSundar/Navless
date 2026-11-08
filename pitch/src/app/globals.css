@@ -1,0 +1,364 @@
+@import "tailwindcss";
+
+/* ───────────────────────────── design tokens: future Mars, golden hour ─────────────────────────────
+   Mirrors src/lib/palette.ts (the WebGL side reads that file). Warm = the world and the route, cool (ice) = what the drone
+   perceives and decides, danger = obstacles only. */
+@theme {
+  --color-void: #0d0807;
+  --color-umber: #1b0f0b;
+  --color-regolith: #4a2a1d;
+  --color-ink: #f6e9d9;
+  --color-sand: #f1dcc0;
+  --color-gold: #f6b25e;
+  --color-rust: #e0592a;
+  --color-ember: #ff7d45;
+  --color-dust: #c9805f;
+  --color-ice: #9cc6dd;
+  --color-danger: #ff5a3c;
+  --color-amber: #f2b24a;
+  --color-ok: #9ccfb0;
+
+  --font-display: "Archivo Black", "Arial Black", Impact, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:root {
+  --accent: var(--color-gold);
+  --accent-soft: color-mix(in srgb, var(--accent) 40%, transparent);
+  --ink-dim: rgb(246 233 217 / 0.62);
+  --ink-faint: rgb(246 233 217 / 0.22);
+  --panel: rgb(20 11 9 / 0.72);
+  color-scheme: dark;
+}
+
+/* The whole HUD re-themes by flipping one attribute on the deck root: no React re-render. */
+[data-mode="override"] {
+  --accent: var(--color-ember);
+}
+
+/* ───────────────────────────── base ───────────────────────────── */
+html {
+  background: var(--color-void);
+  scrollbar-width: none;
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+}
+html::-webkit-scrollbar {
+  display: none;
+}
+body {
+  margin: 0;
+  background: var(--color-void);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: geometricPrecision;
+  overflow-x: hidden;
+}
+::selection {
+  background: var(--color-rust);
+  color: var(--color-void);
+}
+canvas {
+  display: block;
+  outline: none;
+  touch-action: none;
+}
+
+/* Lenis (smooth scroll) state classes */
+html.lenis,
+html.lenis body {
+  height: auto;
+}
+.lenis.lenis-smooth {
+  scroll-behavior: auto !important;
+}
+.lenis.lenis-stopped {
+  overflow: hidden;
+}
+
+/* ───────────────────────────── type ───────────────────────────── */
+.font-display {
+  font-family: var(--font-display);
+  font-weight: 400; /* Archivo Black is already the black weight */
+  letter-spacing: -0.045em;
+  line-height: 0.86;
+  text-transform: uppercase;
+}
+.hud-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.2;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  text-shadow: 0 0 14px rgb(13 8 7 / 0.85);
+}
+.hud-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "zero" 1, "tnum" 1;
+  letter-spacing: 0.02em;
+  text-shadow: 0 0 14px rgb(13 8 7 / 0.85);
+}
+.hud-accent {
+  color: var(--accent);
+}
+
+/* ───────────────────────────── HUD primitives ───────────────────────────── */
+
+/* [ ]-style corner brackets painted with gradients so any element can wear them without extra DOM. */
+.brackets {
+  --bk: var(--accent);
+  --bt: 1px;
+  --bl: 12px;
+  background:
+    linear-gradient(var(--bk), var(--bk)) top left / var(--bl) var(--bt) no-repeat,
+    linear-gradient(var(--bk), var(--bk)) top left / var(--bt) var(--bl) no-repeat,
+    linear-gradient(var(--bk), var(--bk)) top right / var(--bl) var(--bt) no-repeat,
+    linear-gradient(var(--bk), var(--bk)) top right / var(--bt) var(--bl) no-repeat,
+    linear-gradient(var(--bk), var(--bk)) bottom left / var(--bl) var(--bt) no-repeat,
+    linear-gradient(var(--bk), var(--bk)) bottom left / var(--bt) var(--bl) no-repeat,
+    linear-gradient(var(--bk), var(--bk)) bottom right / var(--bl) var(--bt) no-repeat,
+    linear-gradient(var(--bk), var(--bk)) bottom right / var(--bt) var(--bl) no-repeat;
+}
+
+.hairline {
+  background: linear-gradient(90deg, var(--accent), transparent);
+  height: 1px;
+}
+
+/* Full-screen finishing layer: a soft vignette, nothing that moves (pointer-events: none, composited, no layout) */
+.fx-vignette {
+  background: radial-gradient(ellipse at 50% 46%, transparent 42%, rgb(13 8 7 / 0.42) 80%, rgb(13 8 7 / 0.82) 100%);
+}
+
+/* ───────────────────────────── the big button ───────────────────────────── */
+.inject-btn {
+  position: relative;
+  isolation: isolate;
+  cursor: pointer;
+  color: var(--color-ink);
+  background: color-mix(in srgb, var(--accent) 10%, rgb(20 11 9 / 0.86));
+  border: 2px solid var(--accent);
+  backdrop-filter: blur(6px);
+  transition: background 160ms ease, color 160ms ease;
+  /* one slow breath of glow (3.6 s per cycle), not a flash */
+  animation: breathe 3.6s ease-in-out infinite;
+}
+.inject-btn:hover {
+  background: var(--accent);
+  color: var(--color-void);
+}
+.inject-btn[data-armed="true"] {
+  background: var(--accent);
+  color: var(--color-void);
+  animation: none;
+}
+
+/* ───────────────────────────── terminal ───────────────────────────── */
+.term-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent-soft) transparent;
+}
+.term-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.term-scroll::-webkit-scrollbar-thumb {
+  background: var(--accent-soft);
+}
+.caret {
+  display: inline-block;
+  width: 0.55em;
+  height: 1.05em;
+  background: var(--accent);
+  vertical-align: -0.17em;
+  animation: blink 1.6s ease-in-out infinite;
+}
+
+/* ───────────────────────────── keyframes (all slow; nothing flashes) ───────────────────────────── */
+@keyframes breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    box-shadow: 0 0 30px 2px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+}
+@keyframes blink {
+  50% {
+    opacity: 0.15;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inject-btn,
+  .caret {
+    animation: none !important;
+  }
+}
+
+/* ───────────────────────────── in-scene tags (drei <Html>) ───────────────────────────── */
+.hud-tag {
+  position: relative;
+  white-space: nowrap;
+  will-change: opacity;
+}
+.hud-tag-box {
+  position: relative;
+  padding: 6px 10px 7px;
+  background: var(--panel);
+  backdrop-filter: blur(3px);
+}
+.hud-tag-box .hud-label {
+  color: var(--ink-dim);
+}
+.hud-tag-box .hud-value {
+  font-size: 11px;
+  color: var(--color-ink);
+}
+.hud-leader {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  overflow: visible;
+  pointer-events: none;
+}
+.hud-leader line {
+  stroke: var(--accent);
+  stroke-width: 1;
+  opacity: 0.6;
+}
+.hud-leader circle {
+  fill: var(--accent);
+}
+
+.beam-label {
+  font: 500 10px var(--font-mono);
+  letter-spacing: 0.1em;
+  color: #ffd0b8;
+  white-space: nowrap;
+  padding: 2px 6px;
+  background: var(--panel);
+  border: 1px solid rgb(255 90 60 / 0.5);
+}
+.cp-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 9px;
+  font: 500 10px var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  background: var(--panel);
+  border: 1px solid rgb(246 178 94 / 0.32);
+  color: rgb(246 233 217 / 0.78);
+  transition: border-color 0.4s, color 0.4s;
+}
+.cp-tag .cp-n {
+  color: var(--color-gold);
+  font-weight: 700;
+}
+.cp-tag[data-hit="1"] {
+  border-color: var(--color-gold);
+  color: var(--color-ink);
+}
+.via-tag {
+  font: 500 9px var(--font-mono);
+  letter-spacing: 0.22em;
+  color: rgb(241 220 192 / 0.85);
+  text-transform: uppercase;
+  white-space: nowrap;
+  text-shadow: 0 0 10px #0d0807, 0 0 3px #0d0807;
+}
+.seal-tag {
+  font: 800 12px var(--font-mono);
+  letter-spacing: 0.22em;
+  color: var(--color-void);
+  background: var(--color-danger);
+  padding: 4px 9px;
+  white-space: nowrap;
+}
+.obs-tag {
+  font: 700 10px var(--font-mono);
+  letter-spacing: 0.22em;
+  color: var(--color-danger);
+  background: var(--panel);
+  padding: 2px 7px;
+  border: 1px solid rgb(255 90 60 / 0.6);
+  white-space: nowrap;
+}
+.hover-tag {
+  font: 700 11px var(--font-mono);
+  letter-spacing: 0.2em;
+  padding: 4px 9px;
+  white-space: nowrap;
+  background: rgb(13 8 7 / 0.86);
+  border: 1px solid var(--color-danger);
+  color: var(--color-ink);
+  text-transform: uppercase;
+}
+.hover-tag[data-v="seal"] {
+  border-color: var(--color-amber);
+  color: var(--color-amber);
+}
+.hover-tag[data-v="wall"],
+.hover-tag[data-v="dup"] {
+  border-color: #9a8a7e;
+  color: #9a8a7e;
+}
+
+/* ───────────────────────────── terminal rows ───────────────────────────── */
+.term-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font: 400 11px/1.6 var(--font-mono);
+  letter-spacing: 0.01em;
+}
+.term-stamp {
+  color: rgb(246 233 217 / 0.3);
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.term-tag {
+  flex: none;
+  min-width: 3.6em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--tag, var(--accent));
+}
+.term-text {
+  color: rgb(246 233 217 / 0.82);
+  word-break: break-word;
+}
+.term-row[data-lvl="dim"] .term-text { color: rgb(246 233 217 / 0.4); }
+.term-row[data-lvl="ok"] .term-text { color: var(--color-ok); }
+.term-row[data-lvl="warn"] .term-text { color: var(--color-amber); }
+.term-row[data-lvl="err"] .term-text { color: var(--color-danger); }
+.term-tag[data-tag="EVENT"] { --tag: var(--color-amber); }
+.term-tag[data-tag="MAP"] { --tag: var(--color-gold); }
+.term-tag[data-tag="PLAN"] { --tag: var(--color-rust); }
+.term-tag[data-tag="A*"] { --tag: var(--color-ice); }
+.term-tag[data-tag="PRUNE"] { --tag: rgb(246 233 217 / 0.55); }
+.term-tag[data-tag="EGO"] { --tag: #d99a86; }
+.term-tag[data-tag="TRACK"] { --tag: var(--color-ok); }
+.term-tag[data-tag="FSM"] { --tag: var(--color-amber); }
+.term-tag[data-tag="WARN"] { --tag: var(--color-danger); }
+.term-tag[data-tag="OK"] { --tag: var(--color-ok); }
+.term-tag[data-tag="SYS"] { --tag: rgb(246 233 217 / 0.5); }
+
+.term-tag[data-tag="VIO"] { --tag: var(--color-ice); }
+.term-tag[data-tag="GATE"] { --tag: var(--color-ice); }
+.term-tag[data-tag="CAM"] { --tag: var(--color-gold); }
+.term-tag[data-tag="EKF2"] { --tag: #d99a86; }
+.term-tag[data-tag="HEAD"] { --tag: rgb(246 233 217 / 0.55); }
+.term-tag[data-tag="PX4"] { --tag: var(--color-ok); }
+.term-tag[data-tag="NAV"] { --tag: var(--color-ink); }
+.term-tag[data-tag="MAG"] { --tag: var(--color-amber); }
+.term-tag[data-tag="WALL"] { --tag: rgb(246 233 217 / 0.55); }
+.term-tag[data-tag="TUBE"] { --tag: var(--color-rust); }
+.term-tag[data-tag="BLIND"] { --tag: var(--color-amber); }
