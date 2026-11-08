@@ -109,9 +109,17 @@ FlyX Lab still simulates the plan. So there are two courses, and every tool pick
   | long diagonal, tip 1 m from the north net | (−1.996, 0.508) → (−0.169, 2.048) |
   | wall to the tube | (−0.182, 0.508) → (1.535, 1.352) |
 
-  - **The repo-root `.obj` has this new maze.** It was made by `asbuilt/maze_change_2026-11-07.js`, a Node script run on the previous as-built `.obj`; the top view is `asbuilt/maze_change_2026-11-07.svg`.
-  - :warning: **`course_asbuilt.json` and `make_asbuilt.py` still describe the old maze,** including its floor line and gate A. **Re-running `make_asbuilt.py` would put the old dividers back:** run `maze_change_2026-11-07.js` on its output afterwards.
-  - **The taped floor line still on the course is the old maze's.** Its southward leg at x ≈ −0.85 crosses the new diagonal at about (−0.85, 1.47), and its top stretch (y ≈ 2.79) passes about 14 cm from the new north wall. **Don't plan a route along it.**
+  - **The change is data:** `asbuilt/maze_2026-11-07.json`. `make_asbuilt.py` applies it after the scan walls (`--changes ''` skips it).
+  - **`course_asbuilt.json`:**
+    - M1, M2 and M3 move to `removed_walls`; `MN`, `MD` and `MT` are added;
+    - **gate A** is now the maze exit: the 1 m gap between MD's tip and the north net;
+    - the checkpoint zones are redrawn roughly around the new walls.
+  - **The repo-root `.obj`** is regenerated the same way. It matches the first hand-made version (`asbuilt/maze_change_2026-11-07.js`, top view `.svg`) to within 0.12 mm.
+  - :warning: **The taped floor line was not re-laid, so it's the old maze's tape.**
+    - Its southward leg at x ≈ −0.85 runs under the new diagonal (MD) at about (−0.85, 1.47), and its top stretch (y ≈ 2.79) passes about 14 cm from the new north wall.
+    - So `floor_line_in` is **removed**. The tape is kept as `floor_tape_in`, for reference only (a camera sees it), with a note: **do not follow**.
+    - **Plan the maze path from the walls.**
+    - `walk_test.py` uses the tape corners only as known floor spots.
 
 `cloud_localize.py` uses the **as-built** course by default: `-p course:=asbuilt` (default) or `plan`. It finds the .obj next to the script, in `~/team_ws/src/dronehacks`, or in the repo root; `-p obj:=...` overrides it. `walk_test.py --course asbuilt|plan` works the same way.
 

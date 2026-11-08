@@ -65,14 +65,21 @@ def checkpoints_from(course_json):
     """(name, x, y, what to look for) in the window route's order, from a course json: launch mark, the
     floor line's corners and end (gate A), the tube's mouths and middle, the landing pad centre."""
     c = json.load(open(course_json))
-    line = c["floor_line_in"]
     tube = c["tunnel"]["footprint_in"]
     tx = (tube["x_min"] + tube["x_max"]) / 2
     cps = [("launch mark", *course_m(*c["launch_mark_in"]), "start here, nose north, BEFORE starting cloud_localize")]
-    for k, p in enumerate(line[1:-1]):
-        hint = LINE_HINTS[k] if k < len(LINE_HINTS) else "floor line corner"
-        cps.append((f"line corner {k + 1}", *course_m(*p), f"floor line: {hint}"))
-    cps.append(("line end", *course_m(*line[-1]), "floor line: its end, at gate A (maze exit)"))
+    if "floor_line_in" in c:
+        line = c["floor_line_in"]
+        for k, p in enumerate(line[1:-1]):
+            hint = LINE_HINTS[k] if k < len(LINE_HINTS) else "floor line corner"
+            cps.append((f"line corner {k + 1}", *course_m(*p), f"floor line: {hint}"))
+        cps.append(("line end", *course_m(*line[-1]), "floor line: its end, at gate A (maze exit)"))
+    else:
+        # Maze changed 2026-11-07: the tape is the old maze's (not a path), but its corners are still real,
+        # visible spots on the floor. Skip the ones the new walls cover or crowd.
+        for k, p in enumerate(c.get("floor_tape_in", [])[1:]):
+            cps.append((f"tape corner {k + 1}", *course_m(*p),
+                        "old floor-tape corner (NOT a flight path): put the drone's centre on it if it fits"))
     cps += [("tube north mouth", *course_m(tx, tube["y_max"]), "centre of the tube's north opening, on the floor"),
             ("tube middle", *course_m(tx, (tube["y_min"] + tube["y_max"]) / 2), "halfway through the tube (dark: the hard one)"),
             ("tube south mouth", *course_m(tx, tube["y_min"]), "centre of the tube's south opening"),

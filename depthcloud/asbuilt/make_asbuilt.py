@@ -109,9 +109,58 @@ def build(plan, scan):
     return c
 
 
+def to_in(p):
+    return [round(p[0] / IN + 120, 2), round(p[1] / IN + 120, 2)]
+
+
+def apply_changes(c, ch):
+    """Later course changes on top of the scanned as-built course (e.g. maze_2026-11-07.json): walls removed,
+    walls added (with their own .obj group), the observed floor tape (NOT a path to follow) and the maze exit."""
+    gone = set(ch.get("remove_walls", []))
+    c["removed_walls"] = [{"name": w["name"], "obj_group": OBJ_GROUP.get(w["name"], w["name"]),
+                           "removed": "organisers' maze change 2026-11-07"} for w in c["walls"] if w["name"] in gone]
+    c["walls"] = [w for w in c["walls"] if w["name"] not in gone]
+    for a in ch.get("add_walls", []):
+        s, e = to_in(a["start_m"]), to_in(a["end_m"])
+        dx, dy = e[0] - s[0], e[1] - s[1]
+        c["walls"].append({"name": a["name"], "kind": a["kind"], "start_in": s, "end_in": e,
+                           "length_in": round(math.hypot(dx, dy), 1),
+                           "bearing_deg": round(math.degrees(math.atan2(dx, dy)) % 360, 1),
+                           "thickness_in": a["thickness_in"], "height_in": a["height_in"],
+                           "obj_group": a["obj_group"], "note": a.get("note", ""),
+                           "source": "organisers' maze change 2026-11-07 (Shining's sketch, 1 m gap measured)"})
+    if "floor_tape_m" in ch:
+        # The taped line on the floor is the OLD maze's and was not re-laid. Keep it for reference (a camera
+        # sees it) but remove floor_line_in, so nothing plans a route along it by mistake.
+        c.pop("floor_line_in", None)
+        c["floor_tape_in"] = [to_in(p) for p in ch["floor_tape_m"]]
+        c["floor_tape_note"] = ("The old maze's tape, still on the floor after the 2026-11-07 maze change. "
+                                "DO NOT FOLLOW: it runs under the new long diagonal (MD) at about (-0.85, 1.47) m "
+                                "and within ~14 cm of the new north wall (MN). Plan the maze path from the walls.")
+    if "maze_exit_m" in ch:
+        ex = [to_in(p) for p in ch["maze_exit_m"]]
+        c["gates_in"]["gate_A"] = {"between": ex, "note": "maze exit since 2026-11-07: the 1 m gap between the "
+                                   "long diagonal's (MD) tip and the north net"}
+        tip_x, tip_y = ex[0]
+        md = next(w for w in c["walls"] if w["name"] == "MD")
+        for cp in c["checkpoints"]:
+            if cp["name"] == "First corridor":
+                cp["area_in"] = [[0, BAR_N], [md["start_in"][0], BAR_N], [tip_x, tip_y], [0, tip_y]]
+            elif cp["name"] == "Maze":
+                cp["area_in"] = [[0, tip_y], [tip_x, tip_y], [tip_x, NET], [0, NET]]
+            elif cp["name"] == "Tunnel":
+                cp["area_in"][0], cp["area_in"][-1] = [tip_x, BAR_N], [tip_x, NET]
+        c["checkpoint_zones_note"] = "First corridor / Maze / Tunnel zones redrawn roughly around the 2026-11-07 maze"
+    c["_notes"] = ("MAZE CHANGED 2026-11-07: M1, M2, M3 removed; walls MN, MD, MT added (depthcloud/asbuilt/"
+                   "maze_2026-11-07.json); floor_line_in removed (the tape is the old maze's: see floor_tape_note); "
+                   "gate A = the maze exit gap. " + c["_notes"])
+    return c
+
+
 def write_obj(src, dst, course):
-    """Plan .obj minus the moved walls' faces, plus boxes at the as-built positions (same group names)."""
-    moved = {OBJ_GROUP[w["name"]]: w for w in course["walls"] if "source" in w}
+    """Plan .obj minus the faces of every moved or removed wall, plus boxes for the as-built and added walls."""
+    moved = {w.get("obj_group") or OBJ_GROUP[w["name"]]: w for w in course["walls"] if "source" in w}
+    drop = set(moved) | {r["obj_group"] for r in course.get("removed_walls", [])}
     nv, group = 0, ""
     with open(src) as fin, open(dst, "w") as fout:
         for line in fin:
@@ -120,7 +169,7 @@ def write_obj(src, dst, course):
                 nv += 1
             elif t and t[0] == "g":
                 group = " ".join(t[1:])
-            elif t and t[0] == "f" and group in moved:
+            elif t and t[0] == "f" and group in drop:
                 continue
             fout.write(line)
         fout.write("\n# --- AS-BUILT walls from depthcloud/asbuilt/make_asbuilt.py (phone scan 2026-11-06, "
@@ -149,12 +198,17 @@ def main():
     ap.add_argument("--out", default=OUT)
     ap.add_argument("--obj", help="the organisers' dronehacks-course-v3.obj: also write the as-built .obj")
     ap.add_argument("--obj-out", help="default: dronehacks-course-asbuilt.obj next to --obj")
+    ap.add_argument("--changes", default=os.path.join(HERE, "maze_2026-11-07.json"),
+                    help="later course changes applied after the scan walls ('' = none)")
     a = ap.parse_args()
     plan = json.load(open(a.plan))
     # the floor-line rule must reproduce the plan's own line from the plan's walls
     assert all(abs(p - q) < 0.01 for P, Q in zip(floor_line(plan), plan["floor_line_in"]) for p, q in zip(P, Q)), \
         (floor_line(plan), plan["floor_line_in"])
     c = build(plan, json.load(open(a.scan_walls)))
+    if a.changes:
+        c = apply_changes(c, json.load(open(a.changes)))
+        print(f"applied {a.changes}")
     with open(a.out, "w") as f:
         json.dump(c, f, indent=2)
         f.write("\n")
@@ -162,7 +216,8 @@ def main():
     for w in c["walls"]:
         if "source" in w:
             print(f"  {w['name']:<3} {w['start_in']} -> {w['end_in']}  bearing {w['bearing_deg']:5.1f}")
-    print("  floor line:", c["floor_line_in"])
+    print("  removed:", [r["name"] for r in c.get("removed_walls", [])])
+    print("  floor line:", c.get("floor_line_in", "(none)"), "| floor tape (do not follow):", c.get("floor_tape_in"))
     print("  gate A:", c["gates_in"]["gate_A"]["between"])
     if a.obj:
         dst = a.obj_out or os.path.join(os.path.dirname(os.path.abspath(a.obj)), "dronehacks-course-asbuilt.obj")
