@@ -16,6 +16,7 @@ from navless_nav.route import NET_HALF_M, REPO_ROOT    # noqa: E402
 
 ARGS = launch._arguments(launch.COURSE)
 ROUTE = ARGS['route_file']
+GATE_B = launch._gate_b_values()       # the backup launch: Gate B route, base speeds, turn cap
 
 
 def test_course_launch_flies_the_asbuilt_route():
@@ -24,10 +25,18 @@ def test_course_launch_flies_the_asbuilt_route():
     assert r['min_clearance_m_nose_north'] >= 0.08
 
 
+def test_gate_b_backup_is_planned_on_the_asbuilt_course():
+    r = json.load(open(os.path.join(REPO_ROOT, GATE_B['route_file'])))
+    assert r['route_type'] == 'GATE_B_CENTRELINE'
+    assert r['course_file'] == 'gazebo_sim/course/course_asbuilt.json'
+    assert r['min_clearance_m_nose_north'] >= 0.08
+
+
 def test_net_margin_leaves_every_route_point_alone():
     assert 'net_margin_m' in launch._forwarded(launch.COURSE)
-    pts = json.load(open(os.path.join(REPO_ROOT, ROUTE)))['waypoints_enu']
-    assert max(max(abs(p[0]), abs(p[1])) for p in pts) <= NET_HALF_M - float(ARGS['net_margin_m'])
+    for route in (ROUTE, GATE_B['route_file']):
+        pts = json.load(open(os.path.join(REPO_ROOT, route)))['waypoints_enu']
+        assert max(max(abs(p[0]), abs(p[1])) for p in pts) <= NET_HALF_M - float(ARGS['net_margin_m']), route
 
 
 def fly(**params):
@@ -36,8 +45,8 @@ def fly(**params):
     h.T[0] = 0.0
     h.Z_BIAS[0] = 0.0
     h.OVERRIDES.clear()
-    h.OVERRIDES.update(route_file=ROUTE, cruise_speed_mps=0.5, max_lead_m=0.6, max_lat_accel_mps2=0.25,
-                       **params)
+    h.OVERRIDES.update({'route_file': ROUTE, 'cruise_speed_mps': 0.5, 'max_lead_m': 0.6,
+                        'max_lat_accel_mps2': 0.25}, **params)
     node = cm.CourseMission()
     px4 = {'armed': False, 'offboard_active': False, 'landed': True}
     pos = [0.0, 0.0, 0.0]
@@ -55,3 +64,9 @@ def test_flies_the_whole_route_without_a_setpoint_pulled_off_it():
     node = fly(net_margin_m=float(ARGS['net_margin_m']))
     assert node.state == 'LAND' and 'fenced' not in node.log_once
     assert 'fenced' in fly(net_margin_m=0.4).log_once      # navless.launch.py's margin would have
+
+
+def test_gate_b_backup_flies_the_whole_route_at_its_launch_settings():
+    settings = {k: (v if k == 'route_file' else float(v)) for k, v in GATE_B.items()}
+    node = fly(net_margin_m=float(ARGS['net_margin_m']), **settings)
+    assert node.state == 'LAND' and 'fenced' not in node.log_once

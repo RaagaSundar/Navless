@@ -62,7 +62,8 @@ ARGUMENTS = [
     # slow launch's (the maze is the limit; the window keeps >= 11.5 cm). Without it, 1 deg east left
     # 7.4 cm at the window. The aim matches this cut, so re-check the window crossing if these speeds or
     # max_turn_sagitta_m change. For another route, set the three back to navless.launch.py's 0.5 / 0.6 /
-    # 0.25; for the Gate B route also set max_turn_sagitta_m below to 0.08.
+    # 0.25; for the Gate B route also set max_turn_sagitta_m below to 0.08 (navless_course_gate_b.launch.py
+    # does both).
     ('cruise_speed_mps', '0.7', 'route speed on straights, m/s'),
     ('max_lead_m', '0.8',
      'how far the carrot may run ahead of the drone, m: PX4 flies at about 0.95 x this, so keep it '
