@@ -12,6 +12,10 @@ The settings come from the environment, so one export before run_sim.sh and fly_
   DH_TUBE_RESET_JUMP     what the pose does when tracking comes back: empty for no jump; dx,dy,dz in the
                          odom frame (m, x = the nose at power-up); or resume, which restarts from the last
                          tracked pose as if the drone had not moved while blind (no IMU fusion)
+  DH_PAD_DRIFT           dx,dy,dz (odom m): visual-odometry drift at the landing pad. Once the true pose is
+                         back within PAD_DRIFT_RADIUS of the pad after being 3 m+ away (the launch mark is
+                         1.8 m from it), the error ramps in over
+                         PAD_DRIFT_RAMP m of path, for PX4's vision and the node's odometry alike.
 """
 import math
 import os
@@ -24,6 +28,8 @@ TUBE_X = (1.5748, 3.048)
 TUBE_Y = (-0.3048, 1.2192)
 TUBE_TOP = 1.84
 MODES = ("off", "stop", "freeze")
+PAD_XY = np.array([-2.042, -0.792])     # course_v3.json landing_pad_in centre, world m
+PAD_DRIFT_RADIUS, PAD_DRIFT_RAMP = 2.0, 1.0
 
 
 def in_tube(p):
@@ -94,15 +100,38 @@ class TubeBlackout:
         self.exit = None                 # (t, p) where the path left the tube during it
         self.held = None                 # reported position frozen at the entry
         self.passes = []                 # one record per blackout, sim times
+        drift = parse_jump(os.environ.get("DH_PAD_DRIFT", ""))
+        self.drift = None if drift is None or isinstance(drift, str) else self.R @ drift   # world frame
+        self.drift_path = None           # path length since the drift started, m
+        self.drift_armed = False         # been 3 m+ from the pad (left the launch area)
+
+    def drift_now(self, p):
+        """The pad drift (world) for this true position; advances along the path."""
+        if self.drift is None:
+            return np.zeros(3)
+        if self.drift_path is None:
+            self.drift_armed |= bool(np.linalg.norm(p[:2] - PAD_XY) >= 3.0)
+            if not self.drift_armed or np.linalg.norm(p[:2] - PAD_XY) >= PAD_DRIFT_RADIUS:
+                return np.zeros(3)
+            self.drift_path, self.drift_last = 0.0, p
+            self.log(f"pad drift starts ramping in at world ({p[0]:.2f}, {p[1]:.2f})")
+        self.drift_path += float(np.linalg.norm(p - self.drift_last))
+        self.drift_last = p
+        return self.drift * min(1.0, self.drift_path / PAD_DRIFT_RAMP)
 
     def describe(self):
         jump = ("none" if self.jump is None else self.jump if isinstance(self.jump, str)
                 else ",".join(f"{v:g}" for v in self.jump) + " m (odom)")
-        return f"{self.mode}, recover delay {self.delay:g} s, reset jump {jump}"
+        drift = "" if self.drift is None else f", pad drift {os.environ.get('DH_PAD_DRIFT')} m (odom)"
+        return f"{self.mode}, recover delay {self.delay:g} s, reset jump {jump}{drift}"
 
     def step(self, t, p):
         """Returns (tracking, reported world position, or None when nothing is published)."""
         p = np.asarray(p, float)
+        tracking, reported = self._step(t, p)
+        return tracking, (None if reported is None else reported + self.drift_now(p))
+
+    def _step(self, t, p):
         inside = self.mode != "off" and in_tube(p)
         prev, self.prev = self.prev, (t, p)
         if self.tracking:

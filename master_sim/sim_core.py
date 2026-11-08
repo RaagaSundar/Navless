@@ -131,7 +131,7 @@ def main():
     print(f"[sim_core] power-up pose ({p0[0]:.3f}, {p0[1]:.3f}, {p0[2]:.3f}), nose "
           f"{math.degrees(yaw0):.1f} deg ENU", flush=True)
     tube = None
-    if a.tube_blackout != "off":
+    if a.tube_blackout != "off" or os.environ.get("DH_PAD_DRIFT"):     # pad drift lives there too
         if (a.tube_blackout, a.tube_recover_delay, a.tube_reset_jump) != a.env_tube:
             print("[sim_core] WARNING: tube settings differ from DH_TUBE_*, which sensor_bridge.py uses for PX4's "
                   "vision: the brain and PX4 will not lose tracking together", flush=True)
@@ -339,6 +339,9 @@ def write_summary(out, rows, course, gt, a, result, score, clearance, Obstacles,
     clr, names = clearance(Obstacles(), P, math.pi / 2 - np.array([r[11] for r in rows], float))
     clr = np.where(flying, clr, np.inf)
     pad = np.array(map_to_world(*course["landing_pad_in"]["center"]))
+    shift = [float(v) for v in os.environ.get("DH_PAD_SHIFT", "").split(",") if v.strip()]
+    if shift:                                   # make_assets.py moved the pad in the world
+        pad = pad + np.array(shift[:2])
     home = P[0, :2]
     lows = [i for i in range(1, len(P)) if flying[i - 1] and not flying[i]]   # each touchdown
     contacts = sorted({n for (_, n) in gt.contacts})

@@ -8,7 +8,10 @@ OUT_DIR/dh_quad_stereo.sdf
     model's existing `stereo_camera` box: 7.5 cm baseline, 1024x640 like the skybeta stack's
     /oak/{left,right}/image_raw. The frame ids are the optical frames sim_core.py puts in TF.
 OUT_DIR/models/dh_course/
-    The course with a speckle texture on every face. The official mesh is flat grey, and stereo
+    The course with a speckle texture on every face. DH_PAD_SHIFT=dx,dy (world m) moves the landing
+    pad's meshes (the mat, its rings and cross, the approach ring) by that much: the course changed,
+    the map didn't (sim_core.py scores against the moved pad).
+    The speckle texture: The official mesh is flat grey, and stereo
     matching finds nothing on a flat colour. The real walls' texture is unknown, so the depth
     quality in this sim is a guess either way. Put OUT_DIR/models first on GZ_SIM_RESOURCE_PATH.
 """
@@ -99,11 +102,24 @@ def make_course(out):
             mtl.append("map_Kd speckle.png\n")
     open(os.path.join(dst_dir, "meshes", "course.mtl"), "w").writelines(mtl)
 
+    src = os.path.join(src_dir, "meshes", "course_visual.obj")
+    shift = [float(v) for v in os.environ.get("DH_PAD_SHIFT", "").split(",") if v.strip()]
+    moved, group = set(), ""
+    if shift:                                   # vertices of the pad's faces
+        for line in open(src):
+            if line.startswith("g "):
+                group = line[2:].strip()
+            elif line.startswith("f ") and group.startswith(("Landing pad", "Approach ring")):
+                moved.update(int(r.split("/")[0]) for r in line.split()[1:])
+
     # Planar UVs per face, projected on the plane the face mostly lies in.
     verts, out_lines, vt = [], [], []
-    for line in open(os.path.join(src_dir, "meshes", "course_visual.obj")):
+    for line in open(src):
         if line.startswith("v "):
             verts.append(tuple(map(float, line.split()[1:4])))
+            if len(verts) in moved:
+                x, y, z = verts[-1]
+                line = f"v {x + shift[0]:.6f} {y + shift[1]:.6f} {z:.6f}\n"
         if not line.startswith("f "):
             out_lines.append(line)
             continue
