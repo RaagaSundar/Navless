@@ -11,7 +11,7 @@ COMPETITOR_PKG=navless_nav and COMPETITOR_LAUNCH=navless_course.launch.py.
   mirror_relay (relay:=true)          read-only telemetry for the laptop dashboard, port 8775
 
 skybeta-19's flight branch: the route is planned on the as-built course map (Shining's phone
-scan of the real course, gazebo_sim/course/course_asbuilt.json), and course_mission steers on
+scan of the real course plus the organisers' 2026-11-07 maze, gazebo_sim/course/course_asbuilt.json), and course_mission steers on
 the ToF chain in the tube (tof_tube_centering: at most 0.15 m from the route, dropped as soon
 as the readings stop). The sensors were checked on 19: each side reacts alone, and the bus-7
 sensor is on the drone's left.
@@ -38,23 +38,28 @@ TOF_MOUNT_M = '0.075'
 TUBE_WIDTH_M = '1.45'
 
 ARGUMENTS = [
-    # The window route on the as-built course (tools/export_route.py --course course/course_asbuilt.json
-    # --tube-exit-drop-in 42 --pad-from-south-in 26 --maze-top-north-m 0.04 --window-via-in 136 44):
-    # planned >= 8.6 cm to every wall (M1's north end; M3 11.1, net 9.8, A1 19.6, window 21.0); flown
-    # on the stub drone at both speed settings >= 8.4 cm. The via point keeps the downward rangefinder
-    # (PX4's height reference) 28 cm off boulder 3, which would read 0.4 m short. The plan's route
-    # (route_centreline_window.json) passes 3.6 cm from a real wall. Shining confirmed the as-built walls.
+    # The window route on the as-built course with the organisers' 2026-11-07 maze: M1-M3 are gone, and
+    # MN (along the north net), MD (the long diagonal) and MT (barrier line to the tube) replace them
+    # (tools/export_route.py --course course/course_asbuilt.json --tube-exit-drop-in 42
+    # --pad-from-south-in 26 --window-via-in 136 44). North up corridor 1, east through Gate A (between
+    # MD's tip and the net) at y 220.2 in, then the tube, the window and the pad as before; 14.9 m.
+    # Planned >= 17.9 cm to every wall (Barrier 1 behind the launch mark; A1 19.6, window 21.0, C1 21.2,
+    # MN 23.1, MD's tip 23.1). The floor tape is the old maze's and runs under MD: nothing follows it.
+    # The via point keeps the downward rangefinder (PX4's height reference) 28 cm off boulder 3, which
+    # would read 0.4 m short. As-built Gazebo gate on the new maze (gate_asbuilt.sh, drone profile,
+    # course_mission's 0.5 / 0.6 / 0.25, 3 laps): all landed 6.2-6.9 cm from the pad centre, no contacts,
+    # 38.6-38.8 s from arming to touchdown (the old maze: ~47 s). Closest: MN 17.4 cm, window wall 19.9,
+    # MD 20.9, C1 21.7.
     ('route_file', 'gazebo_sim/course/route_centreline_window_asbuilt.json',
      'route to fly (repo-relative): the window route on the as-built course map'),
-    # On the as-built course the gaps between M1's and M3's north ends and the north net are only
-    # ~0.6 m, and the route crosses them 0.256 m from the net. navless.launch.py's 0.4 m would pull
-    # those setpoints into the wall ends (stub drone: M1 -4.3 cm, M3 -1.2 cm).
+    # The route keeps >= 0.5 m from the net since the 2026-11-07 maze (it crossed M1's and M3's north
+    # ends 0.256 m from it before, which is why this is not navless.launch.py's 0.4 m).
     ('net_margin_m', '0.25', 'keep setpoints this far inside the net, m'),
     ('tof_tube_centering', 'true',
      'in the tube, steer toward the centre the side ToF sensors measure (at most 0.15 m from the route)'),
     ('start_bearing_deg', '0.0', 'nose bearing on the launch mark at power-up (0 = north)'),
-    # Speed, tuned for the centreline window route above (Gazebo + PX4 SITL, drone profile, real pilot
-    # sequence). Arm to touchdown took 32.6 s on 3 of 3 laps, against 42.9 s at navless.launch.py's
+    # Speed, tuned for the centreline window route on the maze before 2026-11-07 (Gazebo + PX4 SITL, drone
+    # profile, real pilot sequence). Arm to touchdown took 32.6 s on 3 of 3 laps, against 42.9 s at navless.launch.py's
     # 0.5 / 0.6 / 0.25. Every lap kept >= 11.9 cm to every wall (window wall >= 12.9 cm) and landed
     # 12-13 cm from the pad centre. Going faster costs window-wall margin first: 0.9 m/s left 11.9 cm.
     # Placement: the route aims its window crossing 4 cm off-centre to cancel the carrot's cut (tools/

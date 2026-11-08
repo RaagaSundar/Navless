@@ -18,14 +18,13 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from ament_index_python.packages import get_package_share_directory
 
 # The route: tools/export_route.py --route gate_b --course course/course_asbuilt.json --sdf <as-built
-# model.sdf> --maze-top-north-m 0.04 --pad-from-south-in 26 --gate-b-turns-in 59 151.5 118 86.5.
-# The same head as the window route up to the tube, then west under C1's south end, up the chicane,
-# west through Gate B, south east of A1 and onto the pad from the south. Planned >= 8.6 cm to every
-# wall (M1's north end; net 9.8, M3 11.1, >= 17.9 after the tube); the rangefinder beam misses every
-# boulder. Speeds: navless.launch.py's 0.5 / 0.6 / 0.25 (navless_course.launch.py's faster ones were
-# tuned for the window route), with the Gate B turn cap of 0.08 m. As-built Gazebo gate (gate_asbuilt.sh,
-# drone profile, 3 laps): all landed 6-7 cm from the pad centre, no contacts, 52 s from arming to
-# touchdown (the window route: ~47 s). Closest: north net 5.4 cm, M1 9.1, M3 11.7, >= 24 cm after the tube.
+# model.sdf> --pad-from-south-in 26 --gate-b-turns-in 59 151.5 118 86.5, on the organisers' 2026-11-07
+# maze. The same head as the window route up to the tube (north up corridor 1, east through Gate A),
+# then west under C1's south end, up the chicane, west through Gate B, south east of A1 and onto the
+# pad from the south; 16.5 m. Planned >= 17.9 cm to every wall (Barrier 1 behind the launch mark; A1
+# 19.6, MN 23.1, MD's tip 23.1, C1 24.5); the rangefinder beam misses every boulder. Speeds:
+# navless.launch.py's 0.5 / 0.6 / 0.25 (navless_course.launch.py's faster ones were tuned for the
+# window route), with the Gate B turn cap of 0.08 m.
 GATE_B = {
     'route_file': 'gazebo_sim/course/route_centreline_gate_b_asbuilt.json',
     'cruise_speed_mps': '0.5',

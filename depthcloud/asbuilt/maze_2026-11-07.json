@@ -1,0 +1,17 @@
+{
+  "_notes": "Organisers' maze change, 2026-11-07 (to make the maze easier). M1, M2 and M3 were removed and three new walls put up. Positions measured from Shining's sketch, calibrated on the plan walls in it (fit <= 1.4 cm); confirmed by Shining, with the 1 m gap from the long diagonal's tip to the north net measured on the course. The taped floor line was NOT re-laid: it is the old maze's tape, crosses the new long diagonal at about (-0.85, 1.47) m, and must NOT be followed. Applied by make_asbuilt.py after the scan-wall step. Course metres: x east, y north, origin floor centre.",
+  "remove_walls": ["M1", "M2", "M3"],
+  "add_walls": [
+    {"name": "MN", "kind": "maze", "obj_group": "Maze wall north (new 2026-11-07)",
+     "start_m": [-2.547, 2.985], "end_m": [-0.830, 2.985], "thickness_in": 4, "height_in": 68,
+     "note": "along the north net, about 5 cm off it"},
+    {"name": "MD", "kind": "maze", "obj_group": "Maze wall long diagonal (new 2026-11-07)",
+     "start_m": [-1.996, 0.5080], "end_m": [-0.169, 2.048], "thickness_in": 4, "height_in": 68,
+     "note": "from the barrier line's north face up to a tip 1.000 m from the north net (3.048 m)"},
+    {"name": "MT", "kind": "maze", "obj_group": "Maze wall to tube (new 2026-11-07)",
+     "start_m": [-0.182, 0.5080], "end_m": [1.535, 1.352], "thickness_in": 4, "height_in": 68,
+     "note": "from the barrier line's north face to near the tube's north-west corner"}
+  ],
+  "maze_exit_m": [[-0.169, 2.048], [-0.169, 3.048]],
+  "floor_tape_m": [[-2.431, 0.527], [-2.350, 2.794], [-0.892, 2.794], [-0.818, 0.810], [0.514, 0.810], [0.603, 2.868]]
+}

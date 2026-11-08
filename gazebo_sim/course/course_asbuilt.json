@@ -1,62 +1,11 @@
 {
-  "_notes": "AS-BUILT course: course_v3.json (the organisers' temporary plan) with M1, M2, M3, A1 and C1 moved to where the 2026-11-06 phone LiDAR scan puts them, and the floor line, gate A and the wall-bounded checkpoint zones recomputed from them. Made by depthcloud/asbuilt/make_asbuilt.py; don't edit by hand, edit scan_walls.json and re-run. NOT tape-measured. clearances_in below are still the PLAN's. Same frame as course_v3.json: inches, origin = net's south-west corner, x east, y north (OBJ/world metres = (inches - 120) * 0.0254). Origin = south-west corner of the 20x20 ft net. x = east, y = north, inches. Bearings clockwise from north. Extracted from the DroneHacks challenge page (course v3, preliminary). Multiply inches by 0.0254 for metres. Verified against the official dronehacks-course-v3.obj (OBJ origin is the floor centre: subtract 120 in from x and y to convert).",
+  "_notes": "MAZE CHANGED 2026-11-07: M1, M2, M3 removed; walls MN, MD, MT added (depthcloud/asbuilt/maze_2026-11-07.json); floor_line_in removed (the tape is the old maze's: see floor_tape_note); gate A = the maze exit gap. AS-BUILT course: course_v3.json (the organisers' temporary plan) with M1, M2, M3, A1 and C1 moved to where the 2026-11-06 phone LiDAR scan puts them, and the floor line, gate A and the wall-bounded checkpoint zones recomputed from them. Made by depthcloud/asbuilt/make_asbuilt.py; don't edit by hand, edit scan_walls.json and re-run. Walls confirmed against the real course 2026-11-07; the floor line is computed, not observed. clearances_in below are still the PLAN's. Same frame as course_v3.json: inches, origin = net's south-west corner, x east, y north (OBJ/world metres = (inches - 120) * 0.0254). Origin = south-west corner of the 20x20 ft net. x = east, y = north, inches. Bearings clockwise from north. Extracted from the DroneHacks challenge page (course v3, preliminary). Multiply inches by 0.0254 for metres. Verified against the official dronehacks-course-v3.obj (OBJ origin is the floor centre: subtract 120 in from x and y to convert).",
   "net_in": {
     "x": 240,
     "y": 240,
     "height": 120
   },
   "walls": [
-    {
-      "name": "M1",
-      "kind": "maze",
-      "start_in": [
-        38.7,
-        140.0
-      ],
-      "end_in": [
-        49.7,
-        216.7
-      ],
-      "length_in": 77.5,
-      "bearing_deg": 8.2,
-      "thickness_in": 4,
-      "height_in": 68,
-      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), best guess, not tape-measured"
-    },
-    {
-      "name": "M2",
-      "kind": "maze",
-      "start_in": [
-        96.8,
-        180.6
-      ],
-      "end_in": [
-        102.0,
-        240.0
-      ],
-      "length_in": 59.6,
-      "bearing_deg": 5.0,
-      "thickness_in": 4,
-      "height_in": 68,
-      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), best guess, not tape-measured"
-    },
-    {
-      "name": "M3",
-      "kind": "maze",
-      "start_in": [
-        160.1,
-        140.0
-      ],
-      "end_in": [
-        162.4,
-        215.7
-      ],
-      "length_in": 75.7,
-      "bearing_deg": 1.7,
-      "thickness_in": 4,
-      "height_in": 68,
-      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), best guess, not tape-measured"
-    },
     {
       "name": "Barrier1",
       "kind": "barrier",
@@ -120,7 +69,7 @@
       "bearing_deg": 13.0,
       "thickness_in": 4,
       "height_in": 68,
-      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), best guess, not tape-measured"
+      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), confirmed against the real course 2026-11-07"
     },
     {
       "name": "C1",
@@ -137,7 +86,7 @@
       "bearing_deg": 347.3,
       "thickness_in": 4,
       "height_in": 68,
-      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), best guess, not tape-measured"
+      "source": "phone scan 2026-11-06 (depthcloud/asbuilt), confirmed against the real course 2026-11-07"
     },
     {
       "name": "C2a",
@@ -181,6 +130,63 @@
       "bearing_deg": 20,
       "thickness_in": 4,
       "height_in": 68
+    },
+    {
+      "name": "MN",
+      "kind": "maze",
+      "start_in": [
+        19.72,
+        237.52
+      ],
+      "end_in": [
+        87.32,
+        237.52
+      ],
+      "length_in": 67.6,
+      "bearing_deg": 90.0,
+      "thickness_in": 4,
+      "height_in": 68,
+      "obj_group": "Maze wall north (new 2026-11-07)",
+      "note": "along the north net, about 5 cm off it",
+      "source": "organisers' maze change 2026-11-07 (Shining's sketch, 1 m gap measured)"
+    },
+    {
+      "name": "MD",
+      "kind": "maze",
+      "start_in": [
+        41.42,
+        140.0
+      ],
+      "end_in": [
+        113.35,
+        200.63
+      ],
+      "length_in": 94.1,
+      "bearing_deg": 49.9,
+      "thickness_in": 4,
+      "height_in": 68,
+      "obj_group": "Maze wall long diagonal (new 2026-11-07)",
+      "note": "from the barrier line's north face up to a tip 1.000 m from the north net (3.048 m)",
+      "source": "organisers' maze change 2026-11-07 (Shining's sketch, 1 m gap measured)"
+    },
+    {
+      "name": "MT",
+      "kind": "maze",
+      "start_in": [
+        112.83,
+        140.0
+      ],
+      "end_in": [
+        180.43,
+        173.23
+      ],
+      "length_in": 75.3,
+      "bearing_deg": 63.8,
+      "thickness_in": 4,
+      "height_in": 68,
+      "obj_group": "Maze wall to tube (new 2026-11-07)",
+      "note": "from the barrier line's north face to near the tube's north-west corner",
+      "source": "organisers' maze change 2026-11-07 (Shining's sketch, 1 m gap measured)"
     }
   ],
   "tunnel": {
@@ -267,49 +273,19 @@
     21,
     156
   ],
-  "floor_line_in": [
-    [
-      21,
-      156
-    ],
-    [
-      24.68,
-      228.35
-    ],
-    [
-      76.18,
-      228.35
-    ],
-    [
-      68.32,
-      160.3
-    ],
-    [
-      127.87,
-      160.3
-    ],
-    [
-      131.86,
-      227.85
-    ],
-    [
-      162.4,
-      227.85
-    ]
-  ],
   "gates_in": {
     "gate_A": {
       "between": [
         [
-          162.4,
-          215.7
+          113.35,
+          200.63
         ],
         [
-          162.4,
+          113.35,
           240.0
         ]
       ],
-      "note": "maze exit, end of floor line (checkpoint 2)"
+      "note": "maze exit since 2026-11-07: the 1 m gap between the long diagonal's (MD) tip and the north net"
     },
     "gate_B": {
       "between": [
@@ -336,16 +312,16 @@
           140.0
         ],
         [
-          38.7,
+          41.42,
           140.0
         ],
         [
-          51.4,
-          228.35
+          113.35,
+          200.63
         ],
         [
           0,
-          228.35
+          200.63
         ]
       ]
     },
@@ -356,22 +332,14 @@
       "area_in": [
         [
           0,
-          228.35
+          200.63
         ],
         [
-          51.4,
-          228.35
+          113.35,
+          200.63
         ],
         [
-          38.7,
-          140.0
-        ],
-        [
-          160.1,
-          140.0
-        ],
-        [
-          163.1,
+          113.35,
           240.0
         ],
         [
@@ -386,7 +354,7 @@
       "points": 10,
       "area_in": [
         [
-          160.1,
+          113.35,
           140.0
         ],
         [
@@ -406,7 +374,7 @@
           240
         ],
         [
-          163.1,
+          113.35,
           240.0
         ]
       ]
@@ -454,5 +422,50 @@
     "prop_diameter_in_model_in": 6.1,
     "battery": "OVONIC 4S 5000 mAh",
     "motors": "DYS X2807 1500KV"
-  }
+  },
+  "removed_walls": [
+    {
+      "name": "M1",
+      "obj_group": "M1 maze divider",
+      "removed": "organisers' maze change 2026-11-07"
+    },
+    {
+      "name": "M2",
+      "obj_group": "M2 maze divider",
+      "removed": "organisers' maze change 2026-11-07"
+    },
+    {
+      "name": "M3",
+      "obj_group": "M3 maze divider",
+      "removed": "organisers' maze change 2026-11-07"
+    }
+  ],
+  "floor_tape_in": [
+    [
+      24.29,
+      140.75
+    ],
+    [
+      27.48,
+      230.0
+    ],
+    [
+      84.88,
+      230.0
+    ],
+    [
+      87.8,
+      151.89
+    ],
+    [
+      140.24,
+      151.89
+    ],
+    [
+      143.74,
+      232.91
+    ]
+  ],
+  "floor_tape_note": "The old maze's tape, still on the floor after the 2026-11-07 maze change. DO NOT FOLLOW: it runs under the new long diagonal (MD) at about (-0.85, 1.47) m and within ~14 cm of the new north wall (MN). Plan the maze path from the walls.",
+  "checkpoint_zones_note": "First corridor / Maze / Tunnel zones redrawn roughly around the 2026-11-07 maze"
 }
