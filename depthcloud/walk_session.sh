@@ -18,7 +18,13 @@
 set -uo pipefail
 STACK=skybeta-stack
 HERE_HOST="$(cd "$(dirname "$0")" && pwd)"
-DIR_C=/root/team_ws/src/dronehacks                     # scripts + course files, as the container sees them
+# The team repo checkout (what the course launch runs), as the container sees it. Was ~/team_ws/src/dronehacks.
+REPO_C=/root/team_ws/src/Navless
+DIR_C=$REPO_C/depthcloud                                 # stereo_cloud, cloud_localize, walk_* scripts
+OBJ_C=$REPO_C/dronehacks-course-asbuilt.obj
+COURSE_C=$REPO_C/gazebo_sim/course/course_asbuilt.json
+ROT_MODE="${ROT_MODE:-yaw}"          # cloud_localize rotation source: yaw (course launch default) | free | none
+STRIDE="${STRIDE:-2}"                # stereo_cloud cloud_stride: 2 = its default; the course launch uses 3
 SESS_HOST="$HOME/team_ws/walk_sessions"
 SESS_C=/root/team_ws/walk_sessions
 ENV='export SKYBETA_UNDERLAY_ONLY=1; source skybeta_env.sh >/dev/null 2>&1'
@@ -37,18 +43,21 @@ case "${1:-}" in
     if [ -n "$(newest)" ] && [ ! -f "$(newest)/stopped" ] && ls "$(newest)"/*.pid >/dev/null 2>&1; then
       echo "a session is still running: $(newest). Run: bash $0 stop"; exit 1
     fi
-    for f in stereo_cloud.py cloud_localize.py walk_recorder.py dronehacks-course-asbuilt.obj course_asbuilt.json; do
-      [ -f "$HOME/team_ws/src/dronehacks/$f" ] || { echo "missing ~/team_ws/src/dronehacks/$f"; exit 1; }
+    for f in depthcloud/stereo_cloud.py depthcloud/cloud_localize.py depthcloud/walk_recorder.py \
+             dronehacks-course-asbuilt.obj gazebo_sim/course/course_asbuilt.json; do
+      [ -f "$HOME/team_ws/src/Navless/$f" ] || { echo "missing ~/team_ws/src/Navless/$f"; exit 1; }
     done
-    if docker exec "$STACK" pgrep -f "cloud_localize.py|stereo_cloud.py" >/dev/null; then
-      echo "stereo_cloud / cloud_localize already running (not from this script?):"
-      docker exec "$STACK" pgrep -af "cloud_localize.py|stereo_cloud.py" | cut -c1-120; exit 1
+    if docker exec "$STACK" pgrep -f "cloud_localize.py|stereo_cloud.py|course_mission" >/dev/null; then
+      echo "stereo_cloud / cloud_localize / the course program already running: idle the competitor window first"
+      echo "  (bash ~/fly_course.sh stop):"
+      docker exec "$STACK" pgrep -af "cloud_localize.py|stereo_cloud.py|course_mission" | cut -c1-120; exit 1
     fi
     name="$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$SESS_HOST/$name/frames"
     SC="$SESS_C/$name"
-    start_one stereo   "python3 -u $DIR_C/stereo_cloud.py --ros-args -p rate_hz:=3.0"
-    start_one localize "python3 -u $DIR_C/cloud_localize.py --ros-args -p obj:=$DIR_C/dronehacks-course-asbuilt.obj -p dump_dir:=$SC/frames -p dump_every:=5"
+    start_one stereo   "python3 -u $DIR_C/stereo_cloud.py --ros-args -p rate_hz:=3.0 -p cloud_stride:=$STRIDE"
+    start_one localize "python3 -u $DIR_C/cloud_localize.py --ros-args -p obj:=$OBJ_C -p rot_mode:=$ROT_MODE -p dump_dir:=$SC/frames -p dump_every:=5"
+    echo "localizer: rot_mode $ROT_MODE, stereo cloud_stride $STRIDE (override: ROT_MODE=free STRIDE=3 bash $0 start)"
     start_one recorder "python3 -u $DIR_C/walk_recorder.py --ros-args -p out:=$SC/track.csv"
     echo "session $SESS_HOST/$name started; waiting for the localizer to load the course (~10 s)..."
     sleep 15
@@ -89,7 +98,7 @@ case "${1:-}" in
     ;;
   summary)
     d="${2:-$(newest)}"; [ -n "$d" ] || { echo "no session"; exit 1; }
-    docker exec "$STACK" python3 "$DIR_C/walk_summary.py" "$SESS_C/$(basename "$d")" "$DIR_C/course_asbuilt.json"
+    docker exec "$STACK" python3 "$DIR_C/walk_summary.py" "$SESS_C/$(basename "$d")" "$COURSE_C"
     echo "copy to a laptop:  scp -r dronehacks@<drone>:team_ws/walk_sessions/$(basename "$d") ."
     ;;
   *)
