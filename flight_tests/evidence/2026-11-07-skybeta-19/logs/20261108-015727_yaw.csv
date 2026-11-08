@@ -1,0 +1,3 @@
+wall_time,t,test,mode,step,note,offboard,armed,landed,clamped,px4_x,px4_y,px4_z,px4_yaw_deg,px4_vx,px4_vy,px4_vz,px4_age_s,px4_xy_resets,px4_z_resets,px4_heading_resets,px4_delta_xy,odom_x,odom_y,odom_z,odom_yaw_deg,odom_age_s,vo_state,off_x,off_y,off_z,off_yaw_deg,sp_kind,sp_x,sp_y,sp_z,sp_yaw_deg,sp_vx,sp_vy,sp_vz,carrot_err_xy,carrot_err_z,ekf_ev_pos,ekf_ev_yaw,ekf_ev_hgt,ekf_rng_hgt,ekf_mag_hdg,ekf_mag_3d,ekf_yaw_align
+1794103047.527,1794103047.5267,yaw,WAIT,,no valid PX4 position/heading (/fmu/out/vehicle_local_position) yet: nothing is commanded.,0,0,0,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+1794103047.556,1794103047.5558,yaw,WAIT,,,0,0,1,,0.0,0.0,0.07,90.0,0.0,0.0,-0.0,0.0106,0,0,0,0.0,0.0,0.0,0.07,90.0,0.0115,,0.0,0.0,0.0,0.0,pose,0.0,0.0,0.07,,,,,,,,,,,,,

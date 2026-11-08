@@ -85,4 +85,4 @@ Make sure there's room: about 2.5 m ahead of the drone along its heading for `fo
 - forward flew 2 m along a 30° heading and back to the start;
 - when the pilot took over mid-hover, the node stopped and didn't take back control.
 
-**Not yet flown on a real drone.**
+The [Skybeta-19 flight recordings and plots](evidence/2026-11-07-skybeta-19/README.md) cover the November 7 hardware tests, including the completed hover, the yaw and descent sequence, and the forward attempt that stayed in WAIT.
