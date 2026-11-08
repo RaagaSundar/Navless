@@ -22,6 +22,11 @@
 </p>
 
 <p align="center">
+  <b>Live pitch site:</b> <a href="https://navless-pitch.vercel.app">navless-pitch.vercel.app</a> ·
+  <a href="pitch/">source</a>
+</p>
+
+<p align="center">
   <a href="#the-course">Course</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#how-we-test">Testing</a> ·

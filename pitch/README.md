@@ -3,6 +3,8 @@
 A scroll-driven 3D pitch deck for **skybeta-19**, the GPS-denied indoor UAV we are flying at DroneHacks.
 Next.js 16 (App Router) · React Three Fiber 9 · drei · `@react-three/postprocessing` · Framer Motion · Tailwind 4.
 
+**Live: [navless-pitch.vercel.app](https://navless-pitch.vercel.app)** (the deck) · [/tech](https://navless-pitch.vercel.app/tech) (the technical companion for the other laptops). How it is deployed is under "Deploy (Vercel)" below.
+
 Three scenes on one timeline, plus a 2-minute auto-demo and a judge-interactive finale:
 
 | # | Scene | What happens |
