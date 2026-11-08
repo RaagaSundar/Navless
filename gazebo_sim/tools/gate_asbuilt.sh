@@ -13,6 +13,7 @@
 # real course. Needs the Linux Gazebo + PX4 SITL setup run_sim.sh uses. One line per lap, a verdict, then the
 # minimum clearance per wall (tools/gate_per_wall.py).
 N="${1:-3}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRANCH="${BRANCH:-main}"
 SRC="${SRC:-https://github.com/RaagaSundar/Navless.git}"
 DIR="${DIR:-$HOME/navless-asbuilt-gate}"
@@ -55,4 +56,6 @@ DH_INSTANCE=1 ./stop_sim.sh > /dev/null 2>&1
 landed=$(grep -c "LANDED" "$OUT/results.txt")
 contacts=$(grep -c "COLLISION" "$OUT/results.txt")
 echo "VERDICT: $landed/$N landed, $contacts with contacts" | tee -a "$OUT/results.txt"
-python3 tools/gate_per_wall.py "runs/*navless-asb[0-9]*" | tee -a "$OUT/results.txt"
+PER_WALL=tools/gate_per_wall.py
+[[ -f "$PER_WALL" ]] || PER_WALL="$HERE/gate_per_wall.py"        # branches without it (drone19/flight)
+python3 "$PER_WALL" "runs/*navless-asb[0-9]*" | tee -a "$OUT/results.txt"
