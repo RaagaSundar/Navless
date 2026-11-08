@@ -195,8 +195,8 @@ trajectory gaps over 1s are not joined. The height plot uses registered course
 metres. Origin, units, status, source/cursor age and validity remain visible.
 Unknown/unregistered frames and rejected/ambiguous map results retain diagnostics
 but cannot place a marker on the course. Raw scan poses remain withheld without
-a qualified transform. Default raw VO trail is off to reduce clutter; source
-checkboxes select comparisons. Map studies are labelled offline/non-controller.
+a qualified transform. Raw VO, admitted VO, PX4 and truth are visible by default; source
+checkboxes control each comparison. Map studies are labelled offline/non-controller.
 
 Live latest updates actual track/source snapshots in place every3s, retaining
 video elements and replay selection. Playing video suspends cursor movement and
@@ -220,3 +220,69 @@ poses, invalid estimator flags/unregistered frames, and video/cursor continuity.
 Actual local review additionally checked the 215942/215630/221438 source archives
 and rendered the two demo links in headless Chrome. No real recording, private
 absolute path, binary asset, or credentials are included in this feature.
+
+## All saved tests in the common picker
+
+The normal homepage now has one searchable, paginated picker for flight archives,
+ungraded native trajectories, interrupted setup, passive benches, offline sensor
+and map replays, and saved unit/planner checks. Selecting any item stays in the
+same viewer and produces a stable `?run=test:<id>` link. Existing flight and
+localization views remain separate from generic artifact details. The optional
+`/tests` index uses the same inventory; it is not another site.
+
+`test_index.py` scans only its explicit evidence-root allowlist, with bounded
+nesting, 128 KiB receipt parsing, an 18,000-file cap and a 15-second cache. It does
+not execute tests or crawl vendor/build/source/binary trees. File-modification
+only dates and unknown outcomes stay labelled; conflicting receipts show mixed
+checks. Capture complete means capture complete, not a flight pass. Administrative
+source inventories and code-only files are not completed experiment cards.
+Derived analyses link their parent flight and do not create another flight count.
+
+The server accepts `--test-evidence-root /path/to/workspace` for the allowlisted
+workspace layout, in addition to its existing run-root options. Evidence is
+served read-only from exact catalogued paths; traversal, hidden files, credentials,
+symlinks and unsupported binaries are excluded. Views above 16 MiB are withheld.
+No recordings, model assets, source data or private paths ship with this feature.
+
+## One map for actual and preloaded geometry
+
+The optional archived M3 bench appears only when its experiment artifacts exist
+under `--wall-tests`. Its one shared map overlays actual orange and preloaded
+purple geometry, with labelled recorded baseline localization or camera-rig
+reference. Paired camera media is explicitly passive, never a flown trajectory.
+No side-by-side map mode is provided.
+
+A genuine flight may archive `map-comparison.json` schema_version 1 with ENU metre
+poses, baseline/actual model hashes, changed wall geometry, unchanged onboard map
+and run-relative `fixture_provenance`. The viewer verifies the fixture SHA256 and
+exact dimensions/poses, then requires a separately hashed, verified renderer
+receipt matching the actual model/profile before calling it actual scene geometry.
+Prepared options without a renderer receipt are withheld. Existing truth and
+measured estimator trajectories keep their own sources, colours and time cursor.
+Missing change metadata means one baseline map with equivalence unknown; it does
+not prove the world matched. No fabricated scan or scene pose is introduced.
+
+Portable checks (synthetic fixtures only):
+
+```bash
+python3 -m unittest discover -s split_sim/preview -p test_test_index.py -v
+node split_sim/preview/all_tests_picker_test.cjs
+node split_sim/preview/map_geometry_test.cjs
+node split_sim/preview/test_comparison_ui.cjs
+python3 split_sim/preview/smoke.py
+```
+
+The four core localization sources are visible by default with distinct co-located
+glyphs (truth dot, raw ring, admitted diamond, PX4 cross). `?t=48.6` selects
+recorded simulation seconds and disables live latest; the airborne comparison
+button selects only an actual armed, airborne sample with fresh joint coverage.
+Live latest can use a jointly covered snapshot up to 15 simulated seconds behind
+truth publication, labelled explicitly; it never bridges a source outage or
+unknown registration. Turning trails off also suppresses preceding split segments.
+
+Sealed `m3-capture-result.json` and `m3-physical-clearance.json` expose bounded
+experiment goals independently from the original full-course grade. A bounded
+capture pass never increments course-pass totals. Offline shadow results remain
+offline evidence, not a flight-control claim. Non-finite numeric evidence is
+returned as null in API catalogs so strict browsers can read other runs; original
+files and grading booleans remain unchanged.
