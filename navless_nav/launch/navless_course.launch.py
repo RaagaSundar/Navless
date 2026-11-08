@@ -79,17 +79,20 @@ ARGUMENTS = [
     # fusion left only 3.9 cm clearance; with EKF2_MAG_TYPE=5, 4/4 passed with >=40 cm. Frozen
     # odometry must first be stopped by the PX4 odometry gate; blind carry never carries a frozen feed.
     ('blind_carry', 'true', 'dark tube: keep moving on PX4 estimate through a VIO loss (tube only)'),
-    ('tof', 'true', 'run the side ToF driver'),
-    ('tube', 'true', 'run tube_node (needs tof)'),
+    ('tof', 'false', 'run the side ToF driver'),
+    ('tube', 'false', 'run tube_node (needs tof)'),
     # The prop tips reach 0.1625 m past each sensor face (0.475 m wide with props, sensors 0.075 m
     # out): anything closer is the drone's own prop, or a wall the props already touch.
     ('tof_min_range_m', '0.18', 'tube_node: reject closer readings (raise until a hand-spun prop never shows)'),
     ('relay', 'false', 'run the read-only dashboard relay (TCP 8775)'),
     ('relay_img_hz', '0.0', 'relay camera thumbnails per second; keep 0 in flight'),
     ('stereo_tube_centering', 'false', 'experimental stereo centering; simulation validation only'),
-    ('tof_tube_centering', 'true',
+    ('tof_tube_centering', 'false',
      'steer toward the side ToF tube centre (needs tof and tube; check the sensors first)'),
     ('stereo_tube_cloud_topic', '/team/stereo/points', 'qualified calibrated stereo cloud'),
+    ('stereo_cloud', 'true',
+     'run depthcloud/stereo_cloud.py to publish /team/stereo/points for live stereo obstacle replanning'),
+    ('stereo_cloud_rate_hz', '3.0', 'stereo_cloud rate_hz (keep <= 3 Hz in flight to preserve cuVSLAM CPU)'),
     ('replan_on_obstacles', 'true',
      'replan around live stereo depth discrepancies on the as-built 3D occupancy map'),
 ]
@@ -127,8 +130,15 @@ def generate_launch_description():
              # its stamps are checked against course_mission's clock
              '-p', ['use_sim_time:=', LaunchConfiguration('use_sim_time')]],
         output='screen', name='tube_node', condition=IfCondition(LaunchConfiguration('tube')))
+    stereo_cloud = ExecuteProcess(
+        cmd=['python3', os.path.join(REPO_ROOT, 'depthcloud', 'stereo_cloud.py'), '--ros-args',
+             '-p', ['rate_hz:=', LaunchConfiguration('stereo_cloud_rate_hz')],
+             '-p', 'scale:=0.5',
+             '-p', 'cloud_stride:=3',
+             '-p', ['use_sim_time:=', LaunchConfiguration('use_sim_time')]],
+        output='screen', name='stereo_cloud', condition=IfCondition(LaunchConfiguration('stereo_cloud')))
     relay = Node(
         package='navless_nav', executable='mirror_relay', name='navless_mirror_relay',
         output='screen', parameters=[{'img_hz': LaunchConfiguration('relay_img_hz')}],
         condition=IfCondition(LaunchConfiguration('relay')))
-    return LaunchDescription(declared + [navless, tof, tube, relay])
+    return LaunchDescription(declared + [navless, tof, tube, stereo_cloud, relay])

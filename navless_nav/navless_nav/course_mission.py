@@ -76,6 +76,7 @@ net_margin_m: flight_interface clamps altitude only, never x/y.
 """
 import json
 import math
+import threading
 import time
 
 import numpy as np
@@ -574,10 +575,24 @@ class CourseMission(Node):
         self.planner_cfg, self.planner_grid, self.planner_router = create_live_course_planner()
         self.live_grid_updated = False
         self.last_replan_at = 0.0
+        self.cloud_rx_count = 0
+        self.route_kind = 'DYNAMIC_3D_ASTAR_BSPLINE'
+        self.initial_route_kind = self.route_kind
+        self._planner_lock = threading.Lock()
+        self._bg_worker_enabled = False
+        self._bg_stop = threading.Event()
+        self._bg_wake = threading.Event()
+        self._bg_cloud_batch = []
+        self._bg_replan_req = None
+        self._bg_replan_result = None
+        self._bg_replanning = False
+        self._bg_thread = None
+        self.map_viz = None
         self.frame = None          # (launch mark xy, start bearing) once known
         self.route = self.load_route(
             str(self.get_parameter('route_file').value),
             self.start_bearing, self.start_height)
+        self.initial_route_odom = list(self.route or [])
         self.carrot = None
         self.last_tick = None
         self.progress_at = None
@@ -608,8 +623,15 @@ class CourseMission(Node):
             self.create_subscription(
                 VisualSlamStatus, '/visual_slam/status', self.status_cb, 10)
         if PointCloud2 is not None and not hasattr(PointCloud2, '__getattr__'):
-            self.create_subscription(
-                PointCloud2, '/team/stereo/points', self.pointcloud_cb, 10)
+            try:
+                from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+                self._cloud_cb_group = MutuallyExclusiveCallbackGroup()
+                self.create_subscription(
+                    PointCloud2, '/team/stereo/points', self.pointcloud_cb, 10,
+                    callback_group=self._cloud_cb_group)
+            except (ImportError, TypeError):
+                self.create_subscription(
+                    PointCloud2, '/team/stereo/points', self.pointcloud_cb, 10)
         if VehicleLocalPosition is not None:
             # PX4's uXRCE-DDS publishers: best effort, transient local (the
             # QoS navless_flight_tests reads this topic with on 19).
@@ -665,6 +687,8 @@ class CourseMission(Node):
                     f'route file not loaded ({exc}); will take off and hover only.')
                 return None
             kind = f'file {name} ({kind})'
+            self.route_kind = kind
+            self.initial_route_kind = kind
             odom = [course_to_odom(p, launch, bearing_deg, height_m) for p in waypoints]
             self.frame = (launch, bearing_deg)
             self.get_logger().info(
@@ -682,6 +706,8 @@ class CourseMission(Node):
             self.get_logger().error(
                 f'route not loaded ({exc}); will take off and hover only.')
             return None
+        self.route_kind = kind
+        self.initial_route_kind = kind
         odom = [course_to_odom(p, launch, bearing_deg, height_m)
                 for p in waypoints]
         self.frame = (launch, bearing_deg)
@@ -691,11 +717,111 @@ class CourseMission(Node):
             f'({odom[-1][0]:.2f}, {odom[-1][1]:.2f}, {odom[-1][2]:.2f})')
         return odom
 
+    def start_background_planner(self, start_http=False, viz_port=8082):
+        """Start permanent dedicated worker threads for 3D pointcloud mapping and 3D A* + B-spline replanning."""
+        if not self._bg_worker_enabled:
+            self._bg_stop.clear()
+            self._bg_worker_enabled = True
+            self._cloud_wake = threading.Event()
+            self._cloud_thread = threading.Thread(
+                target=self._bg_cloud_loop, name='navless_cloud_mapper', daemon=True)
+            self._bg_thread = threading.Thread(
+                target=self._bg_replan_loop, name='navless_ego_replanner', daemon=True)
+            self._cloud_thread.start()
+            self._bg_thread.start()
+        if start_http and self.map_viz is None:
+            try:
+                from navless_nav.live_map_viz import LiveMapVisualizer
+                self.map_viz = LiveMapVisualizer(self, port=viz_port)
+                self.map_viz.start()
+            except ImportError:
+                pass
+
+    def stop_background_planner(self):
+        """Stop the dedicated mapping and replanning worker threads cleanly."""
+        if self.map_viz is not None:
+            self.map_viz.stop()
+            self.map_viz = None
+        if not self._bg_worker_enabled:
+            return
+        self._bg_worker_enabled = False
+        self._bg_stop.set()
+        if getattr(self, '_cloud_wake', None) is not None:
+            self._cloud_wake.set()
+        self._bg_wake.set()
+        for t in (getattr(self, '_cloud_thread', None), self._bg_thread):
+            if t is not None and t.is_alive():
+                t.join(timeout=1.0)
+
+    def _bg_cloud_loop(self):
+        """Permanent dedicated thread: decode & insert stereo pointclouds into the 3D occupancy grid."""
+        from planner.px4_bridge_node import decode_ros_pointcloud2_optical
+        while not self._bg_stop.is_set():
+            self._cloud_wake.wait(timeout=0.1)
+            self._cloud_wake.clear()
+            if self._bg_stop.is_set():
+                break
+            with self._planner_lock:
+                if not self._bg_cloud_batch:
+                    continue
+                # Process the freshest stereo cloud frame
+                item = self._bg_cloud_batch[-1]
+                self._bg_cloud_batch.clear()
+            msg, cur_course, yaw_enu = item
+            pts_world = drop_floor_points(decode_ros_pointcloud2_optical(
+                msg, cur_course, yaw_enu, max_depth_m=2.80), self.obstacle_min_height)
+            if pts_world.size > 0:
+                with self._planner_lock:
+                    n_added = self.planner_grid.insert_point_cloud(
+                        pts_world, sensor_origin_m=cur_course, min_live_hits=2)
+                    if n_added > 0:
+                        self.live_grid_updated = True
+                if n_added > 0:
+                    self._bg_wake.set()
+
+    def _bg_replan_loop(self):
+        """Permanent dedicated thread: check route clearance and run 3D A* + EGO B-spline replanning."""
+        while not self._bg_stop.is_set():
+            self._bg_wake.wait(timeout=0.1)
+            self._bg_wake.clear()
+            if self._bg_stop.is_set():
+                break
+            with self._planner_lock:
+                req = self._bg_replan_req
+                self._bg_replan_req = None
+            if req is None:
+                continue
+            now, cur_course, rem_enu, launch_xy, bearing_deg = req
+            self._bg_replanning = True
+            try:
+                with self._planner_lock:
+                    blocked = any(
+                        self.planner_grid.is_discrepancy_occupied(
+                            c_pt, clearance_m=self.planner_cfg.obstacle_inflation_m)
+                        for c_pt in rem_enu
+                    )
+                    if not blocked:
+                        continue
+                    wps_enu, launch, kind = plan_dynamic_course_route(
+                        branch=self.preferred_branch,
+                        start_enu=cur_course,
+                        router=self.planner_router,
+                        remaining_enu=rem_enu,
+                    )
+                new_odom = [course_to_odom(p, launch, bearing_deg, self.start_height)
+                            for p in wps_enu]
+                with self._planner_lock:
+                    self._bg_replan_result = (now, new_odom, kind)
+            except (ValueError, RuntimeError) as exc:
+                self.get_logger().warn(f'Online replan skipped ({exc}).')
+            finally:
+                self._bg_replanning = False
+
     def pointcloud_cb(self, msg):
         """Insert live stereo pointcloud obstacles into the 3D occupancy grid for online replanning."""
+        self.cloud_rx_count += 1
         if not self.replan_on_obstacles or self.static_asbuilt_route or self.position is None or self.frame is None:
             return
-        from planner.px4_bridge_node import decode_ros_pointcloud2_optical
         # Where the walls say the drone is (the wall correction's frame; plain
         # odometry when it is off), so live obstacles land on the right map cells.
         cur_course = odom_to_course(
@@ -706,52 +832,112 @@ class CourseMission(Node):
         yaw_enu = 0.5 * math.pi - math.radians(self.frame[1])
         if self.yaw is not None:
             yaw_enu = wrap_pi(yaw_enu + self.yaw - self.corr[2])
+        if self._bg_worker_enabled:
+            with self._planner_lock:
+                self._bg_cloud_batch.append((msg, cur_course, yaw_enu))
+            self._cloud_wake.set()
+            return
+        from planner.px4_bridge_node import decode_ros_pointcloud2_optical
         pts_world = drop_floor_points(decode_ros_pointcloud2_optical(
             msg, cur_course, yaw_enu, max_depth_m=2.80), self.obstacle_min_height)
         if pts_world.size > 0:
-            n_added = self.planner_grid.insert_point_cloud(
-                pts_world, sensor_origin_m=cur_course, min_live_hits=2)
-            if n_added > 0:
-                self.live_grid_updated = True
+            with self._planner_lock:
+                n_added = self.planner_grid.insert_point_cloud(
+                    pts_world, sensor_origin_m=cur_course, min_live_hits=2)
+                if n_added > 0:
+                    self.live_grid_updated = True
+
+    def _apply_replanned_route(self, now, new_odom, kind):
+        """Swap in a newly planned route and align the carrot to the drone's current progress."""
+        self.route = new_odom
+        self.route_kind = kind
+        if self.carrot is not None:
+            effective_sagitta = self.max_sagitta if self.max_sagitta > 0.0 else 0.04
+            self.carrot = Carrot(
+                self.route, self.cruise_speed, self.max_lead,
+                self.max_lat_accel, effective_sagitta)
+            if self.position is not None:
+                self.carrot.catch_up(self.corr_to_route(self.position))
+        self.last_replan_at = now
+        self.replans += 1
+        self.get_logger().info(
+            f'Online 3D A* + B-spline replan ({kind}): {len(new_odom)} waypoints around obstacle.')
 
     def maybe_replan_for_discrepancies(self, now):
         """Replan remaining route via 3D A* + B-spline if live stereo depth reveals a map discrepancy."""
-        if (not self.replan_on_obstacles or self.static_asbuilt_route or not self.live_grid_updated
-                or self.going_home or self.frame is None or self.carrot is None
-                or (now - self.last_replan_at) < 0.5):
+        if not self.replan_on_obstacles or self.static_asbuilt_route or self.going_home or self.frame is None or not self.route:
+            return
+        if self._bg_worker_enabled:
+            with self._planner_lock:
+                res = self._bg_replan_result
+                self._bg_replan_result = None
+            if res is not None:
+                r_now, new_odom, kind = res
+                self._apply_replanned_route(r_now, new_odom, kind)
+            if not self.live_grid_updated or (now - self.last_replan_at) < 0.35 or self._bg_replanning:
+                return
+            self.live_grid_updated = False
+            start_idx = self.carrot.index if self.carrot is not None else 0
+            rem_odom = self.route[start_idx:]
+            rem_enu = [odom_to_course(q, self.frame[0], self.frame[1], self.start_height) for q in rem_odom]
+            if self.carrot is not None and self.position is not None:
+                cur_course = odom_to_course(
+                    self.corr_to_route(self.position), self.frame[0], self.frame[1], self.start_height)
+            else:
+                cur_course = rem_enu[0]
+            with self._planner_lock:
+                self._bg_replan_req = (now, cur_course, rem_enu, self.frame[0], self.frame[1])
+            self._bg_wake.set()
+            return
+
+        if not self.live_grid_updated or (now - self.last_replan_at) < 0.5:
             return
         self.live_grid_updated = False
-        rem_odom = self.route[self.carrot.index:]
+        start_idx = self.carrot.index if self.carrot is not None else 0
+        rem_odom = self.route[start_idx:]
+        rem_enu = [odom_to_course(q, self.frame[0], self.frame[1], self.start_height) for q in rem_odom]
         blocked = False
-        for q in rem_odom:
-            c_pt = odom_to_course(q, self.frame[0], self.frame[1], self.start_height)
-            if self.planner_grid.is_discrepancy_occupied(c_pt, clearance_m=self.planner_cfg.obstacle_inflation_m):
-                blocked = True
-                break
+        with self._planner_lock:
+            for c_pt in rem_enu:
+                if self.planner_grid.is_discrepancy_occupied(c_pt, clearance_m=self.planner_cfg.obstacle_inflation_m):
+                    blocked = True
+                    break
         if not blocked:
             return
         # Re-plan from where the walls say the drone is: the route lives in
         # that frame (the wall correction's; plain odometry when it is off).
-        cur_course = odom_to_course(
-            self.corr_to_route(self.position), self.frame[0], self.frame[1], self.start_height)
+        if self.carrot is not None and self.position is not None:
+            cur_course = odom_to_course(
+                self.corr_to_route(self.position), self.frame[0], self.frame[1], self.start_height)
+        else:
+            cur_course = rem_enu[0]
         try:
-            wps_enu, launch, kind = plan_dynamic_course_route(
-                branch=self.preferred_branch,
-                start_enu=cur_course,
-                router=self.planner_router,
-            )
+            with self._planner_lock:
+                wps_enu, launch, kind = plan_dynamic_course_route(
+                    branch=self.preferred_branch,
+                    start_enu=cur_course,
+                    router=self.planner_router,
+                    remaining_enu=rem_enu,
+                )
             new_odom = [course_to_odom(p, launch, self.frame[1], self.start_height)
                         for p in wps_enu]
-            self.route = new_odom
-            self.carrot = Carrot(
-                self.route, self.cruise_speed, self.max_lead,
-                self.max_lat_accel, self.max_sagitta)
-            self.last_replan_at = now
-            self.replans += 1
-            self.get_logger().info(
-                f'Online 3D A* + B-spline replan ({kind}): {len(new_odom)} waypoints around obstacle.')
+            self._apply_replanned_route(now, new_odom, kind)
         except (ValueError, RuntimeError) as exc:
             self.get_logger().warn(f'Online replan skipped ({exc}).')
+
+    def live_obstacle_speed_scale(self, pos):
+        """Slow the carrot when a newly discovered live stereo obstacle is close ahead or replanning is in flight."""
+        if (not self.replan_on_obstacles or self.static_asbuilt_route or self.carrot is None
+                or self.frame is None or not getattr(self.planner_grid, 'has_live_discrepancies', False)):
+            return 1.0
+        if self._bg_replanning:
+            return 0.30
+        probe = self.route_point_ahead(self.carrot, 0.45)
+        c_probe = odom_to_course(probe, self.frame[0], self.frame[1], self.start_height)
+        with self._planner_lock:
+            near_obs = self.planner_grid.is_discrepancy_occupied(
+                c_probe, clearance_m=self.planner_cfg.obstacle_inflation_m + 0.12)
+        return 0.35 if near_obs else 1.0
 
     # -- inputs ----------------------------------------------------------
     def odometry_cb(self, msg):
@@ -1151,8 +1337,9 @@ class CourseMission(Node):
         (None, False) when there is nothing to aim along (route end)."""
         if carrot is None or self.frame is None:
             return None, False
-        if self.in_blind_zone(carrot.point) or self.in_blind_zone(
-                self.route_point_ahead(carrot, self.tube_look)):
+        if (self.tof_tube or self.static_asbuilt_route) and (
+                self.in_blind_zone(carrot.point)
+                or self.in_blind_zone(self.route_point_ahead(carrot, self.tube_look))):
             # Course north in odom: odom +x points along the start bearing
             # (degrees clockwise from north), so north is +bearing from it.
             return wrap_pi(math.radians(self.frame[1])), True
@@ -1498,6 +1685,8 @@ class CourseMission(Node):
         ready = self.heights_agree()
         ready = self.headings_agree() and ready
         if not self.offboard_active:
+            if self.position is not None:
+                self.maybe_replan_for_discrepancies(self.now_s())
             if ready:
                 self.send(*self.position, fence=False)
             return
@@ -1662,7 +1851,8 @@ class CourseMission(Node):
             if self.wait_to_face_tube():
                 point = self.carrot.point       # hover at the mouth while the nose turns north
             else:
-                point = self.carrot.step(pos, dt)
+                dt_eff = dt * self.live_obstacle_speed_scale(pos)
+                point = self.carrot.step(pos, dt_eff)
             ref = self.position     # where the drone is, in the flown (odom) frame
         else:
             # With no trustworthy position, do not move the target: PX4
@@ -2065,11 +2255,19 @@ class CourseMission(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = CourseMission()
+    node.start_background_planner(start_http=True)
     try:
-        rclpy.spin(node)
+        try:
+            from rclpy.executors import MultiThreadedExecutor
+            executor = MultiThreadedExecutor(num_threads=4)
+            executor.add_node(node)
+            executor.spin()
+        except (ImportError, AttributeError):
+            rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
+        node.stop_background_planner()
         if node.flog is not None:
             node.flog.close()
         node.destroy_node()

@@ -107,7 +107,8 @@ def create_live_course_planner():
     return cfg, grid, router
 
 
-def plan_dynamic_course_route(branch='window', start_enu=None, router=None):
+def plan_dynamic_course_route(branch='window', start_enu=None, router=None,
+                              remaining_enu=None, local_horizon_m=2.8):
     """Plan a collision-free 3D A* + EGO B-spline route dynamically from the 3D occupancy grid."""
     use_win = str(branch).lower() != 'gate_b'
     cache_key = ('window' if use_win else 'gate_b')
@@ -148,6 +149,48 @@ def plan_dynamic_course_route(branch='window', start_enu=None, router=None):
         features = router.grid.discover_course_features(standoff_distance_m=router.config.window_inspect_distance_m)
         win_center = getattr(features, 'window_center_m', None) or cp.window_aperture
         avoid_main = [(win_center, 0.55)]
+
+    # Fast local sliding-horizon B-spline replan along the A* path when a clear rejoin point exists ahead
+    if remaining_enu and len(remaining_enu) >= 4 and local_horizon_m > 0.0:
+        inf_r = router.config.obstacle_inflation_m
+        rem_pts = [tuple(float(v) for v in p) for p in remaining_enu]
+        last_blocked = -1
+        for idx, pt in enumerate(rem_pts):
+            if router.grid.is_discrepancy_occupied(pt, clearance_m=inf_r):
+                last_blocked = idx
+        if 0 <= last_blocked < len(rem_pts) - 2:
+            rejoin_idx = None
+            cum_d = 0.0
+            for idx in range(1, len(rem_pts)):
+                cum_d += math.dist(rem_pts[idx - 1], rem_pts[idx])
+                if idx <= last_blocked:
+                    continue
+                dist_past_obs = math.dist(rem_pts[last_blocked], rem_pts[idx])
+                if dist_past_obs >= 0.65 and 1.20 <= cum_d <= local_horizon_m + 1.0:
+                    tail_clear = all(
+                        not router.grid.is_discrepancy_occupied(tp, clearance_m=inf_r)
+                        and not router.grid.is_occupied(tp, inflated=True)
+                        for tp in rem_pts[idx:]
+                    )
+                    if tail_clear:
+                        rejoin_idx = idx
+                        break
+            if rejoin_idx is not None:
+                rejoin_pt = rem_pts[rejoin_idx]
+                local_spline, _ = router.optimizer.plan_spline(
+                    s_pt,
+                    rejoin_pt,
+                    prof,
+                    use_clearance_cost=True,
+                    avoid_spheres=avoid_main,
+                )
+                if local_spline is not None:
+                    n_loc = max(16, int(round(local_spline.duration * 6.0)))
+                    loc_wps = [tuple(round(float(v), 4) for v in pt) for pt in local_spline.sample_points(n_loc)]
+                    if all(not router.grid.is_discrepancy_occupied(p, clearance_m=0.22) for p in loc_wps):
+                        stitched = loc_wps + rem_pts[rejoin_idx + 1:]
+                        chosen = 'WINDOW' if use_win else 'GATE_B'
+                        return stitched, launch, f'DYNAMIC_LOCAL_REPLAN_{chosen}'
 
     spline, _ = router.optimizer.plan_spline(
         s_pt,
