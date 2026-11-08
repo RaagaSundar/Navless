@@ -18,7 +18,7 @@
   <img alt="Gazebo Harmonic" src="https://img.shields.io/badge/Gazebo-Harmonic-F58113">
   <br>
   <img alt="Gazebo gate: 3 of 3 laps on the new maze" src="https://img.shields.io/badge/Gazebo_gate-3%2F3_laps,_new_maze-3ddc97">
-  <img alt="Real flights: hover, yaw, first course runs" src="https://img.shields.io/badge/real_flights-hover_·_yaw_·_course_runs-38bdf8">
+  <img alt="Real flights: hover, yaw, first course runs" src="https://img.shields.io/badge/real_flights-hover,_yaw,_course_runs-38bdf8">
 </p>
 
 <p align="center">
@@ -82,7 +82,7 @@ A 20 × 20 ft netted room with five checkpoints worth 35 points. Our drone, **sk
 </table>
 
 <p align="center">
-  <a href="docs/media/course_newmaze.stl"><img alt="Open the course in 3D" src="https://img.shields.io/badge/🧊_Spin_the_course_in_3D-new_maze_+_route-0b0f14?style=for-the-badge"></a>
+  🧊 <a href="docs/media/course_newmaze.stl"><img alt="Spin the course in 3D" src="https://img.shields.io/badge/Spin_the_course_in_3D-new_maze_%2B_route-0b0f14?style=for-the-badge"></a>
 </p>
 
 <details>
@@ -123,7 +123,7 @@ flowchart LR
   CAM -.-> LOC -.->|drift correction, off| NAV
   CAM -.-> PAD -.->|pad centre, off| NAV
   EKF -->|height, heading| NAV
-  NAV -->|/skybeta/setpoint| FI -->|Offboard| CTRL
+  NAV -->|"/skybeta/setpoint/*"| FI -->|Offboard| CTRL
   EKF --> CTRL
 ```
 
