@@ -9,6 +9,22 @@ next round of changes.
   hold drift correction, flight recorder).
 - Logs: [`flight_logs/2026-11-08_skybeta19_course/`](flight_logs/2026-11-08_skybeta19_course/) (with its own README).
 
+## Changed after the flights (next run)
+
+Team decision (2026-11-08): fly **Favour's planner with localization on**. `navless_course.launch.py` now
+defaults to `route_source planner` (it always did; the flights overrode it with `route_source:=file`),
+`wall_correction true`, and `localizer true`, which starts `depthcloud/stereo_cloud.py` (3 Hz) and
+`depthcloud/cloud_localize.py` (as-built course). Its depth also feeds the planner's live re-planning, and its
+drift correction keeps the route on the real walls. So the next run is simply:
+
+```
+ros2 launch navless_nav navless_course_slow.launch.py
+```
+
+`localizer:=false wall_correction:=false route_source:=file` reproduces the flights below. The localizer is not
+yet validated on the real course (walk test) or gated with the planner; watch cuVSLAM's rate with it running
+(~1 extra core on the Jetson).
+
 ## What ran on the drone
 
 One command in the stack's `competitor` tmux window:

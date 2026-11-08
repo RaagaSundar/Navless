@@ -46,9 +46,18 @@ ARGUMENTS = [
     ('drift_apply_in_route', 'true', 'keep cancelling the learned (body-fixed) push along the route'),
     ('flight_log', 'true', 'write the flight recorder CSV to ~/team_ws/flight_logs'),
     ('route_source', 'planner', "'planner' (EGO planner) or 'file' (fly route_file as exported: the gated drone19 routes)"),
-    # Off until it is gated: cloud_localize (depthcloud/) must be running with the as-built .obj.
-    ('wall_correction', 'false',
+    # Team decision (Shining, 2026-11-08): fly Favour's planner (route_source planner, above) with the
+    # localization on. The launch starts depthcloud's stereo_cloud + cloud_localize (localizer, below):
+    # their /team/stereo/points also feed the planner's live re-planning, and cloud_localize's
+    # /team/localize/odom_correction keeps the route on the real walls (wall_correction). Not yet
+    # validated on the real course or gated with the localizer; localizer:=false wall_correction:=false
+    # route_source:=file is the setup flown on 2026-11-08.
+    ('wall_correction', 'true',
      "fly the route in the frame cloud_localize's drift correction keeps on the walls"),
+    ('localizer', 'true',
+     'run depthcloud/stereo_cloud.py + depthcloud/cloud_localize.py (as-built course): live depth for '
+     're-planning and the wall correction (~1 core of Jetson CPU)'),
+    ('stereo_rate_hz', '3.0', 'stereo_cloud point clouds per second (CPU: lower is cheaper)'),
     ('start_bearing_deg', '0.0', 'nose bearing on the launch mark at power-up (0 = north)'),
     # Speed, tuned for the centreline window route above (Gazebo + PX4 SITL, drone profile, real pilot
     # sequence). Arm to touchdown took 32.6 s on 3 of 3 laps, against 42.9 s at navless.launch.py's
@@ -131,4 +140,17 @@ def generate_launch_description():
         package='navless_nav', executable='mirror_relay', name='navless_mirror_relay',
         output='screen', parameters=[{'img_hz': LaunchConfiguration('relay_img_hz')}],
         condition=IfCondition(LaunchConfiguration('relay')))
-    return LaunchDescription(declared + [navless, tof, tube, relay])
+    # Localization (depthcloud/): stereo depth -> /team/stereo/points (also the planner's live input),
+    # and the course match -> /team/localize/{base_pose,status,odom_correction}. Viewers on the
+    # Jetson: :8081 (camera/depth), :8082 (estimate on the course model).
+    stereo = ExecuteProcess(
+        cmd=['python3', '-u', os.path.join(REPO_ROOT, 'depthcloud', 'stereo_cloud.py'), '--ros-args',
+             '-p', ['rate_hz:=', LaunchConfiguration('stereo_rate_hz')],
+             '-p', ['use_sim_time:=', LaunchConfiguration('use_sim_time')]],
+        output='screen', name='stereo_cloud', condition=IfCondition(LaunchConfiguration('localizer')))
+    localize = ExecuteProcess(
+        cmd=['python3', '-u', os.path.join(REPO_ROOT, 'depthcloud', 'cloud_localize.py'), '--ros-args',
+             '-p', 'course:=asbuilt',
+             '-p', ['use_sim_time:=', LaunchConfiguration('use_sim_time')]],
+        output='screen', name='cloud_localize', condition=IfCondition(LaunchConfiguration('localizer')))
+    return LaunchDescription(declared + [navless, tof, tube, relay, stereo, localize])
