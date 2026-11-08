@@ -27,6 +27,10 @@ States (10 Hz timer):
                        terrain estimate, and with EV_CTRL 9 nothing pulls it
                        back); flight_interface passes odom z to PX4 unchanged,
                        so every setpoint would then be flown that far off.
+                       A steady offset within prearm_height_tol_m (19: ~0.19
+                       m) is measured here and added to every height sent
+                       (match_px4_height). Both PX4's heading and the
+                       camera's must agree too (prearm_heading_tol_deg).
                        With no stream, flight_interface refuses the takeover
                        and the pilot keeps Position.
     REFUSED            Offboard came anyway while the heights disagreed (the
@@ -203,12 +207,12 @@ PARAMETERS = (
     # Bonus return leg after the pad landing. Off by default. When on, the
     # pilot's next arming climbs to home_altitude_m (above the floor; the
     # walls are 1.727 m), flies straight over the wall to the launch mark and
-    # lands there. At 2.2 m the feet clear the wall by ~0.38 m (~0.18 m if
-    # PX4 flies 0.20 m low, the most the pre-arm check holds a pass for:
-    # prearm_height_tol_m 0.15 + PREARM_HYSTERESIS_M 0.05). The ceiling is
+    # lands there. At 2.2 m the feet clear the wall by ~0.38 m; PX4's floor
+    # offset is flown out (match_px4_height), so that holds. The ceiling is
     # navless.launch.py's max_altitude_m 2.5 m above the odom origin (2.57 m
     # above the floor; flight_interface's own default is 3.0): the 2.13 m
-    # odom setpoint stays 0.37 m under it. Lower that clamp and this too.
+    # odom setpoint plus PX4's offset (~0.19 m on 19) stays under it. Lower
+    # that clamp and this too.
     ('fly_home', False),
     ('home_altitude_m', 2.2),
     # The hop's horizontal leg starts only once odom z, or PX4's own height,
@@ -222,11 +226,21 @@ PARAMETERS = (
     ('home_arrival_radius_m', 0.10),
     # Pre-arm height check (see WAIT_FOR_OFFBOARD). Largest |PX4 z - odom z|
     # we will take off with, m; 0 = off. Assumes flight_interface's
-    # anchor_setpoints is false (its default, and navless.launch.py's). The
-    # Gazebo stand-in reports PX4's height in world z, start_height_m above
-    # odom, hence the margin over the 0.07 m stand-in offset.
-    ('prearm_height_tol_m', 0.15),
+    # anchor_setpoints is false (its default, and navless.launch.py's): odom
+    # z goes to PX4 unchanged. It refuses the ~0.6 m boot error (EKF2 parking
+    # it in its terrain estimate). It was 0.15, but on skybeta-19 PX4 read
+    # 0.185-0.198 m above odom on the floor in all three 2026-11-07 test
+    # logs, so the course mission would never have taken over; with
+    # match_px4_height that steady offset is measured and flown out.
+    ('prearm_height_tol_m', 0.30),
     ('prearm_settle_s', 2.0),     # ...and for this long without a break
+    # Add PX4's height minus odom's, measured on the floor (median of the last
+    # 2 s of the pre-arm check, latched at takeoff), to every height sent.
+    # PX4 holds its own z at the setpoint, so without this the whole flight is
+    # flown that far off the route's heights (19: ~0.19 m low). 19 is only
+    # 0.116 m tall, so its PX4 z of ~0.19 m on the floor is an offset, not a
+    # height; odom (start_height_m above the floor) is the reference.
+    ('match_px4_height', True),
     # The tube is dark inside, so cuVSLAM may lose tracking there. Off: a VIO
     # loss freezes the carrot, which in the tube means hovering blind until
     # PX4's dead reckoning times out (EKF2_NOAID_TOUT, 5 s on the fleet) and
@@ -314,6 +328,10 @@ class CourseMission(Node):
         self.going_home = False
         self.prearm_tol = param('prearm_height_tol_m')
         self.prearm_settle = param('prearm_settle_s')
+        self.match_height = str(self.get_parameter('match_px4_height').value
+                                ).lower() in ('true', '1')
+        self.z_samples = []         # PX4 z - odom z on the floor, last 2 s
+        self.z_offset = 0.0         # added to every height sent (see send)
         self.px4_z = None           # PX4's last valid height (local_enu z)
         self.px4_z_at = None
         self.px4_pos = None         # PX4's position (local_enu), odom-comparable
@@ -495,6 +513,8 @@ class CourseMission(Node):
                 self.info_once(
                     'fenced', f'setpoint pulled inside the net (margin '
                     f'{self.net_margin:.2f} m); route or start bearing wrong?')
+        # PX4 holds its own z at the setpoint: send heights in PX4's frame.
+        z = z + self.z_offset
         self.last_pose = (x, y, z)
         self.publish_pose(x, y, z, self.heading_cmd())
 
@@ -636,9 +656,12 @@ class CourseMission(Node):
         if state in IDLE_STATES:
             self.release_heading()      # every takeoff latches its own
         if state == 'WAIT_FOR_OFFBOARD':
-            # Every arming (the fly_home re-arm on the pad too) re-checks.
+            # Every arming (the fly_home re-arm on the pad too) re-checks,
+            # and re-measures PX4's floor offset.
             self.heights_agree_since = None
             self.prearm_passed = False
+            self.z_samples = []
+            self.z_offset = 0.0
 
     def headings_agree(self):
         """Pre-arm check: PX4's heading matches the camera's (PX4 is not on
@@ -677,6 +700,15 @@ class CourseMission(Node):
         fresh = (self.px4_z is not None
                  and now - self.px4_z_at <= PREARM_PX4_TIMEOUT_S)
         dz = abs(self.px4_z - self.position[2]) if fresh else None
+        # PX4's floor offset: the median of the last 2 s (20 ticks), so one
+        # noisy sample does not set it. It stops updating at takeoff (this
+        # runs only while waiting), which latches it.
+        if fresh:
+            self.z_samples = (self.z_samples + [self.px4_z - self.position[2]])[-20:]
+            if self.match_height:
+                self.z_offset = sorted(self.z_samples)[len(self.z_samples) // 2]
+        else:
+            self.z_samples = []
         # Hysteresis: pass at prearm_height_tol_m held for prearm_settle_s;
         # once passed, only a clear disagreement (PREARM_HYSTERESIS_M more)
         # or no PX4 height for PREARM_PX4_TIMEOUT_S revokes it. Otherwise
@@ -765,6 +797,11 @@ class CourseMission(Node):
             return
         self.goto('TAKEOFF', self.takeoff_target())
         self.latch_heading()
+        if self.match_height:
+            self.get_logger().info(
+                f'PX4 reads {self.z_offset * 100:+.1f} cm from odom on the floor '
+                f'(median of {len(self.z_samples)} samples): added to every '
+                'height sent, so the route\'s heights are flown as planned.')
         self._state_takeoff()       # climb on this tick, not the next one
 
     def takeoff_target(self):
@@ -839,7 +876,7 @@ class CourseMission(Node):
         return (self.position[2] >= need
                 or (self.px4_z is not None
                     and self.now_s() - self.px4_z_at <= PREARM_PX4_TIMEOUT_S
-                    and self.px4_z >= need))
+                    and self.px4_z - self.z_offset >= need))
 
     def start_route(self):
         if not self.route:
