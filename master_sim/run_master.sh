@@ -8,6 +8,7 @@
 #   master_sim/run_master.sh --route route_gate_b.json --gui
 #   master_sim/run_master.sh -- -p fly_home:=true    # extra ROS params for the brain (fly_home: pilot re-arms)
 #   DH_TUBE_BLACKOUT=stop master_sim/run_master.sh   # dark tube: PX4's vision and the brain both go blind
+#   master_sim/run_master.sh -- -p pad_vision:=true  # land on the camera's pad fix (starts pad_observer too)
 #
 # Runs until the vehicle is back on the ground (or the timeout), prints the score, then stops everything.
 # Logs: ~/dh_sim_logs/master/*.log. Run summary: gazebo_sim/runs/<time>-master-<brain>/summary.json.
@@ -77,6 +78,10 @@ elif [[ "$BRAIN" == navless ]]; then
   start brain env PYTHONPATH="$REPO/navless_nav:$PYTHONPATH" python3 -c \
     'from navless_nav.course_mission import main; main()' "${SIMTIME[@]}" "${MISSION[@]}" "${EXTRA[@]}"
   [[ " ${EXTRA[*]-} " == *"fly_home:=true"* ]] && REARM=1     # the pilot re-arms for the home leg
+  if [[ " ${EXTRA[*]-} " == *"pad_vision:=true"* ]]; then     # camera pad landing: its observer too
+    start pad_observer env PYTHONPATH="$REPO/navless_nav:$PYTHONPATH" python3 -c \
+      'from navless_nav.pad_observer import main; main()' "${SIMTIME[@]}"       ${DH_PAD_DEBUG_DIR:+-p debug_dir:="$DH_PAD_DEBUG_DIR"}       # frames' floor points, for tuning
+  fi
 else
   ros2 interface show px4_msgs/msg/TrajectorySetpoint >/dev/null 2>&1 \
     || { echo "px4_msgs not built: colcon build it in ~/ros2_ws first"; exit 1; }

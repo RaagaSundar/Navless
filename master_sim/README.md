@@ -49,6 +49,32 @@ keeps what it has, and `table.md` at the end.
 **While it runs:** http://localhost:8081 (stereo depth and cloud), http://localhost:8082 (localization).
 Logs: `~/dh_sim_logs/master/*.log`.
 
+**Camera pad landing** (`navless_nav`'s `pad_vision`, off by default). The forward camera finds the
+landing pad wherever it is and lands on it: see `pad_reference.py` (ring detector), `pad_observer.py`
+(the node) and `PAD_FIND` in `course_mission.py`. Opt-in test knobs, all off by default:
+
+```bash
+master_sim/run_master.sh -- -p pad_vision:=true                       # + pad_observer
+DH_PAD_SHIFT=1.14,0.0 master_sim/run_master.sh -- -p pad_vision:=true  # the course changed: pad moved (world m)
+DH_PAD_DRIFT=0.25,-0.2,0 master_sim/run_master.sh -- -p pad_vision:=true   # VIO drift at the pad (odom m)
+DH_PAD_DEBUG_DIR=~/pad_frames master_sim/run_master.sh -- -p pad_vision:=true  # save frames for tuning
+```
+
+- `DH_PAD_SHIFT` moves the pad's meshes in the world; the score (`from_pad_cm`) uses the moved pad.
+- `DH_PAD_DRIFT` ramps that error into PX4's vision and the node's odometry together, once the drone is
+  back within 2 m of the pad (past the window).
+- `PAD_FIND` turns the drone with the pose quaternion's yaw, which the sim's flight interface forwards
+  to PX4 as the drone's does.
+
+| Case (2026-11-07, one lap each) | `pad_vision` off | on |
+|---|---|---|
+| pad where the map says, 32 cm drift | 29.4 cm | 4.6, 6.4, 8.0, 9.1 cm |
+| pad moved 1.14 m | 113.5 cm | 2.4 cm |
+| pad moved 1.14 m + 32 cm drift | | 4.2 cm |
+
+The sim's pad is the organisers' mesh (dark rings on white, speckle-textured). The real mat has thin
+white strips; check the detector on recorded frames of it before trusting these numbers.
+
 ## What runs, and how faithful it is
 
 | On the drone | In the master sim |

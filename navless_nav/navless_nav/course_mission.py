@@ -77,6 +77,8 @@ net_margin_m: flight_interface clamps altitude only, never x/y.
 import json
 import math
 
+import numpy as np
+
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -91,6 +93,7 @@ from navless_nav.route import (Carrot, clamp_to_net, course_to_odom,
                                odom_to_course, plan_dynamic_course_route,
                                resolve_route_path)
 from navless_nav.tube_guidance import TubeGuidance
+from navless_nav.pad_tracker import PadTracker
 
 try:
     from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
@@ -321,6 +324,34 @@ PARAMETERS = (
     ('wall_correction_rate_dps', 4.5),
     ('wall_correction_max_m', 3.0),       # messages beyond these are ignored
     ('wall_correction_max_deg', 40.0),
+    # Camera pad landing, off by default. The course (and the pad's place on
+    # it) can change, so the pad is found by camera, not taken from the map:
+    # pad_observer.py publishes every pad fix it sees (/team/pad/center, raw
+    # odom) and pad_tracker.py clusters the whole flight's fixes (the pad:
+    # pad_vision_confirm agreeing ones). At the route's end, PAD_FIND:
+    #   search    not confirmed yet: turn on the spot in pad_vision_search_step_deg
+    #             steps (the forward camera sees ~1-3 m ahead from 0.50 m); still
+    #             not confirmed but glimpsed (fewer fixes, e.g. past a wall end):
+    #             approach that sighting's look point instead, and land only if
+    #             it is confirmed there
+    #   approach  fly to a look point pad_vision_look_dist_m from the pad on
+    #             whichever side the planner's map shows clear (nearest first),
+    #             facing it; straight if clear, else the planner's path
+    #   look      wait up to pad_vision_look_s there for fresh fixes
+    #   over      walk over the pad at pad_vision_speed_mps, then LAND on it.
+    # Nothing found after a full turn (the pad isn't 1-3 m around), or no clear
+    # way to it: land on the route's end as before. Look height: 0.50 m, the
+    # planner's own landing-stage floor; lower, live stereo floor points
+    # (inflated) block it on the map (master sim).
+    ('pad_vision', False),
+    ('pad_vision_timeout_s', 0.5),
+    ('pad_vision_confirm', 3),
+    ('pad_vision_look_dist_m', 1.0),
+    ('pad_vision_look_height_m', 0.50),
+    ('pad_vision_look_s', 3.0),
+    ('pad_vision_search_step_deg', 45.0),
+    ('pad_vision_search_dwell_s', 1.0),
+    ('pad_vision_speed_mps', 0.3),
 )
 
 
@@ -363,6 +394,7 @@ class CourseMission(Node):
         self.heading_warned_at = None
         self.last_pose = None       # the last pose setpoint, after the fence
         rate_hz = param('publish_rate_hz')
+        self.rate_hz = rate_hz
         self.cruise_speed = param('cruise_speed_mps')
         self.max_lead = param('max_lead_m')
         self.max_sagitta = param('max_turn_sagitta_m')
@@ -454,6 +486,17 @@ class CourseMission(Node):
         self.static_asbuilt_route = source == 'file'
         self.replan_on_obstacles = str(self.get_parameter('replan_on_obstacles').value).lower() in ('true', '1')
         self.obstacle_min_height = param('obstacle_min_height_m')
+        self.pad_vision = str(self.get_parameter('pad_vision').value).lower() in ('true', '1')
+        self.pad_timeout = param('pad_vision_timeout_s')
+        self.pad_tracker = PadTracker(confirm=int(param('pad_vision_confirm')))
+        self.pad_look_dist = param('pad_vision_look_dist_m')
+        self.pad_look_z = param('pad_vision_look_height_m') - param('start_height_m')  # odom z
+        self.pad_look_s = param('pad_vision_look_s')
+        self.pad_search_step = math.radians(param('pad_vision_search_step_deg'))
+        self.pad_search_dwell = param('pad_vision_search_dwell_s')
+        self.pad_speed = param('pad_vision_speed_mps')
+        self.pad_step = self.pad_speed / rate_hz  # m per tick
+        self.pad = {}               # PAD_FIND working state (see _state_pad_find)
         self.planner_cfg, self.planner_grid, self.planner_router = create_live_course_planner()
         self.live_grid_updated = False
         self.last_replan_at = 0.0
@@ -485,6 +528,8 @@ class CourseMission(Node):
             self.create_subscription(
                 PoseStamped, str(self.get_parameter('wall_correction_topic').value),
                 self.odom_correction_cb, 10)
+        if self.pad_vision:
+            self.create_subscription(PointStamped, '/team/pad/center', self.pad_center_cb, 10)
         if VisualSlamStatus is not None:
             self.create_subscription(
                 VisualSlamStatus, '/visual_slam/status', self.status_cb, 10)
@@ -800,6 +845,20 @@ class CourseMission(Node):
         """The held heading in odom: hold_yaw (route frame) turned by D's dyaw."""
         dyaw = self.corr[2]
         return self.hold_yaw if dyaw == 0.0 else wrap_pi(self.hold_yaw + dyaw)
+    def pad_center_cb(self, msg):
+        """pad_observer's /team/pad/center: one pad fix in raw odom, anywhere."""
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        x = float(msg.point.x) - self.odom_zero_offset[0]
+        y = float(msg.point.y) - self.odom_zero_offset[1]
+        if (msg.header.frame_id != 'odom' or not (math.isfinite(x) and math.isfinite(y))
+                or not 0.0 <= self.now_s() - stamp <= self.pad_timeout or self.going_home):
+            return
+        had = self.pad_tracker.best()
+        self.pad_tracker.add(self.now_s(), x, y)
+        best = self.pad_tracker.best()
+        if had is None and best is not None:
+            self.get_logger().info(f'pad confirmed at odom ({best[0]:.2f}, {best[1]:.2f}) '
+                                   f'by {best[2]} camera fixes.')
 
     def vio_ok(self):
         fresh = (self.odom_at is not None
@@ -840,10 +899,11 @@ class CourseMission(Node):
                 f'{state.get("envelope")}')
 
     # -- outputs ---------------------------------------------------------
-    def send(self, x, y, z, fence=True):
+    def send(self, x, y, z, fence=True, yaw=None):
         """One ENU pose setpoint in odom, with the held heading (heading_cmd);
         a zero quaternion (yaw NaN: PX4 does not steer the heading) when
-        there is none to hold."""
+        there is none to hold. `yaw` (ENU, odom) commands that heading instead:
+        PAD_FIND turning on purpose to look at the pad (no heading guard)."""
         if fence and self.frame is not None:
             # The net is fixed to the walls: clamp in the route's frame
             # (odom through the wall correction; the same frame when it is off).
@@ -857,7 +917,7 @@ class CourseMission(Node):
         # PX4 holds its own z at the setpoint: send heights in PX4's frame.
         z = z + self.z_offset
         self.last_pose = (x, y, z)
-        self.publish_pose(x, y, z, self.heading_cmd())
+        self.publish_pose(x, y, z, self.heading_cmd() if yaw is None else yaw)
 
     def publish_pose(self, x, y, z, yaw):
         msg = PoseStamped()
@@ -1369,6 +1429,9 @@ class CourseMission(Node):
         else:
             arrived = self.carrot.done(pos, self.arrival_radius)
         if vio_ok and arrived:
+            if self.land_at_end and self.pad_vision and not self.going_home:
+                self.start_pad_find()
+                return
             if self.land_at_end:
                 self.get_logger().info('route complete; landing on its end.')
                 self.goto('LAND', point)
@@ -1470,12 +1533,215 @@ class CourseMission(Node):
         else:
             self.get_logger().warn(f'blind carry ended ({why}).')
 
+    # -- camera pad landing (pad_vision) ---------------------------------
+    def start_pad_find(self):
+        x, y, _ = self.position
+        self.get_logger().info('route complete; finding the landing pad by camera.')
+        self.pad = {'phase': 'search', 'goal': (x, y, self.pad_look_z), 'goal_at': None,
+                    'yaw0': self.yaw or 0.0, 'k': 0, 'since': self.now_s()}
+        self.goto('PAD_FIND', tuple(self.position))
+        self._state_pad_find()
+
+    def pad_land(self, target):
+        """PAD_FIND -> LAND on `target`, holding the nose where PAD_FIND turned it (the
+        descent's twist would otherwise steer it back to the takeoff heading)."""
+        self.latch_heading()
+        self.goto('LAND', target)
+        self._state_land()
+
+    def pad_clear(self, a, b):
+        """The straight odom segment a -> b is inside the net, with no obstacle on the planner's
+        RAW map within 0.30 m across (the drone is 0.475 m wide) from 0.25 m above the floor up to
+        0.4 m over the segment. Lower is ignored: inflation spreads anything near the floor up to
+        ~0.3-0.4 m (the live insertion drops points under obstacle_min_height_m, the prior map's
+        floor-level geometry stays), and the course's low things (boulders: 0.53 m) still block."""
+        if self.frame is None:
+            return True
+        n = max(1, int(math.dist(a, b) / 0.1))
+        qs = [[u + (v - u) * i / n for u, v in zip(a, b)] for i in range(n + 1)]
+        if any(clamp_to_net(q, self.frame[0], self.frame[1], self.net_margin)[1] for q in qs):
+            return False
+        g = self.planner_grid
+        c = np.array([odom_to_course(self.corr_to_route(q), self.frame[0], self.frame[1],
+                                     self.start_height) for q in qs])
+        top = float(c[:, 2].max()) + 0.4
+        offs = np.array([(dx, dy, z) for dx in np.arange(-0.3, 0.301, 0.1)
+                         for dy in np.arange(-0.3, 0.301, 0.1) if math.hypot(dx, dy) <= 0.301
+                         for z in np.arange(0.25, top + 1e-6, 0.1)])
+        pts = np.stack([c[:, None, 0] + offs[None, :, 0], c[:, None, 1] + offs[None, :, 1],
+                        np.broadcast_to(offs[None, :, 2], (len(c), len(offs)))], axis=-1).reshape(-1, 3)
+        idx = np.floor((pts - g.bounds_min) / g.resolution).astype(int)
+        inside = np.all((idx >= 0) & (idx < np.array(g.shape)), axis=1)
+        if not inside.all():
+            return False
+        return not g.raw_grid[idx[:, 0], idx[:, 1], idx[:, 2]].any()
+
+    def pad_path(self, start, goal):
+        """Odom waypoints start -> goal: straight if clear, else the planner's A* + B-spline."""
+        if self.pad_clear(start, goal):
+            return [tuple(start), tuple(goal)]
+        if self.frame is None:
+            return None
+        try:
+            from planner.fsm_router import CourseStage
+            to_c = lambda q: odom_to_course(q, self.frame[0], self.frame[1], self.start_height)  # noqa: E731
+            spline, _ = self.planner_router.optimizer.plan_spline(
+                to_c(start), to_c(goal),
+                self.planner_router.profile_for_stage(CourseStage.STAGE_5_LANDING_PAD))
+        except (ValueError, RuntimeError, AttributeError) as exc:
+            self.get_logger().warn(f'pad approach not planned ({exc}).')
+            return None
+        if spline is None:
+            return None
+        pts = [course_to_odom(tuple(p), self.frame[0], self.frame[1], self.start_height)
+               for p in spline.sample_points(40)]
+        if not self.pad_clear(pts[-1], goal):
+            return None
+        return [tuple(start)] + [tuple(p) for p in pts] + [tuple(goal)]
+
+    def plan_pad_approach(self, pad):
+        """Look point + path: pad_vision_look_dist_m (then other distances) from the pad, every
+        30 deg around it, nearest the drone first; it and its line to the mat must be clear."""
+        px, py = pad
+        cands = []
+        for d in (self.pad_look_dist, self.pad_look_dist + 0.3, self.pad_look_dist - 0.2,
+                  self.pad_look_dist + 0.6):
+            for k in range(12):
+                b = math.radians(30 * k)
+                look = (px + d * math.cos(b), py + d * math.sin(b), self.pad_look_z)
+                cands.append((math.dist(self.position[:2], look[:2]), look))
+        seen = 0
+        for _, look in sorted(cands):
+            # Line of sight to the mat's edge only: nothing stands on the mat (0.76 m
+            # radius), and VIO drift can put the pad itself near a wall on the map.
+            d = math.dist(look[:2], pad)
+            edge = (px + (look[0] - px) * 0.6 / d, py + (look[1] - py) * 0.6 / d, self.pad_look_z)
+            if not self.pad_clear(look, edge):
+                continue
+            seen += 1
+            path = self.pad_path(tuple(self.position), look)
+            if path:
+                return look, path
+        self.get_logger().warn(f'pad approach: {seen} of {len(cands)} look points see the pad '
+                               'on the map, none reachable.')
+        return None, None
+
+    def pad_walk(self, goal, yaw):
+        """Move the commanded point toward goal at pad_vision_speed_mps, facing `yaw`. True once
+        there: the drone within 10 cm across, or 2 s after the commanded point arrived (PX4 can
+        hold a few cm off odom, more while its estimate absorbs drift)."""
+        now = self.now_s()
+        d = math.dist(self.target, goal)
+        f = 1.0 if d <= self.pad_step else self.pad_step / d
+        self.target = tuple(a + (b - a) * f for a, b in zip(self.target, goal))
+        self.send(*self.target, yaw=yaw)
+        if f < 1.0:
+            self.pad['goal_at'] = None
+            return False
+        if self.pad['goal_at'] is None:
+            self.pad['goal_at'] = now
+        return (math.dist(self.position[:2], goal[:2]) <= 0.10
+                or now - self.pad['goal_at'] >= 2.0)
+
+    def facing(self, xy):
+        return math.atan2(xy[1] - self.position[1], xy[0] - self.position[0])
+
+    def _state_pad_find(self):
+        pd, now = self.pad, self.now_s()
+        best = self.pad_tracker.best()
+        if pd['phase'] == 'search':
+            if best is not None:
+                look, path = self.plan_pad_approach(best[:2])
+                if look is None:            # no look point: fly over it as it stands, then land
+                    over = (best[0], best[1], self.pad_look_z)
+                    path = self.pad_path(tuple(self.position), over)
+                    if path is None:
+                        self.get_logger().warn('pad seen, but no clear way to it: landing on the route end.')
+                        return self.pad_land(tuple(self.route[-1]))
+                    self.get_logger().warn('pad seen, but no clear look point around it: flying over it.')
+                    look = over
+                self.get_logger().info(
+                    f'pad at ({best[0]:.2f}, {best[1]:.2f}): approaching the look point '
+                    f'({look[0]:.2f}, {look[1]:.2f}) over {len(path)} waypoints.')
+                pd.update(phase='approach', look=look, goal_at=None,
+                          carrot=Carrot(path, self.pad_speed, self.max_lead, self.max_lat_accel,
+                                        self.max_sagitta))
+                return self._state_pad_find()
+            if pd['k'] * self.pad_search_step >= 2 * math.pi:
+                cand = self.pad_tracker.candidate()
+                if cand is not None and cand[2] < 2:        # one glimpse: noise as often as not
+                    cand = None
+                look, path = self.plan_pad_approach(cand[:2]) if cand else (None, None)
+                if look is None:
+                    self.get_logger().warn('no pad confirmed in a full turn: landing on the route end.')
+                    return self.pad_land(tuple(self.route[-1]))
+                self.get_logger().info(
+                    f'pad glimpsed ({cand[2]} fix{"es" if cand[2] > 1 else ""}) at ({cand[0]:.2f}, '
+                    f'{cand[1]:.2f}), not confirmed: going to look from ({look[0]:.2f}, {look[1]:.2f}).')
+                pd.update(phase='approach', look=look, goal_at=None, sighting=cand[:2],
+                          carrot=Carrot(path, self.pad_speed, self.max_lead, self.max_lat_accel,
+                                        self.max_sagitta))
+                return self._state_pad_find()
+            yaw = pd['yaw0'] + pd['k'] * self.pad_search_step
+            if not self.pad_walk(pd['goal'], yaw):
+                pd['since'] = now                   # not at the search spot yet
+                return
+            turned = abs(math.remainder((self.yaw or 0.0) - yaw, 2 * math.pi)) <= math.radians(10)
+            if not turned and now - pd['since'] < 4.0:
+                pd['turned_at'] = None
+                return                              # still turning (4 s cap)
+            pd['turned_at'] = pd.get('turned_at') or now
+            if now - pd['turned_at'] >= self.pad_search_dwell:
+                pd.update(k=pd['k'] + 1, since=now, turned_at=None)
+        elif pd['phase'] == 'approach':
+            point = pd['carrot'].step(self.position, 1.0 / max(1e-3, self.rate_hz))
+            self.target = point
+            self.send(*point, yaw=self.facing(best[:2] if best else pd['sighting']))
+            if pd['carrot'].at_end and math.dist(self.position[:2], pd['look'][:2]) <= 0.15:
+                pd.update(phase='look', since=now, goal_at=None)
+        elif pd['phase'] == 'look':
+            self.pad_walk(pd['look'], self.facing(best[:2] if best else pd['sighting']))
+            if best is None:                            # a sighting, not confirmed (yet)
+                if now - pd['since'] > self.pad_look_s:
+                    end = self.route[-1]
+                    path = self.pad_path(tuple(self.position), (end[0], end[1], self.pad_look_z))
+                    self.get_logger().warn('the sighting was not confirmed from its look point: '
+                                           'back to the route end to land.')
+                    if path is None:
+                        return self.pad_land(tuple(self.position))
+                    pd.update(phase='return', goal_at=None,
+                              carrot=Carrot(path, self.pad_speed, self.max_lead, self.max_lat_accel,
+                                            self.max_sagitta))
+                return
+            fresh = best[3] > pd['since'] + 0.5
+            if (fresh and now - pd['since'] >= 1.0) or now - pd['since'] > self.pad_look_s:
+                self.get_logger().info(
+                    ('fresh pad fixes' if fresh else 'no fresh pad fix') + ' from the look point: '
+                    f'flying over ({best[0]:.2f}, {best[1]:.2f}).')
+                pd.update(phase='over', yaw=self.facing(best[:2]), goal_at=None)
+        elif pd['phase'] == 'return':
+            point = pd['carrot'].step(self.position, 1.0 / max(1e-3, self.rate_hz))
+            self.target = point
+            self.send(*point)
+            if pd['carrot'].at_end and math.dist(self.position[:2], self.route[-1][:2]) <= 0.15:
+                self.pad_land(tuple(self.route[-1]))
+        elif pd['phase'] == 'over':
+            over = (best[0], best[1], self.pad_look_z)
+            if self.pad_walk(over, pd['yaw']):
+                self.pad_land(over)
+
     def _state_land(self):
         # Straight down at land_speed, nudged back over the pad. Keep pushing
         # down after touchdown: PX4's land detector needs it, and it disarms
         # COM_DISARM_LAND (2 s) later, which ends Offboard -> DONE in tick().
-        ex = self.target[0] - self.position[0]
-        ey = self.target[1] - self.position[1]
+        tx, ty = self.target[0], self.target[1]
+        best = (self.pad_tracker.best() if self.pad_vision and not self.going_home
+                and self.pad.get('phase') == 'over' else None)    # only once flown over it
+        if best is not None:
+            tx, ty = best[0], best[1]   # where the camera saw the pad (pad_tracker)
+            self.info_once('pad_land', f'landing on the camera pad fix ({tx:.2f}, {ty:.2f}).')
+        ex = tx - self.position[0]
+        ey = ty - self.position[1]
         norm = math.hypot(ex, ey)
         scale = min(1.0, self.land_xy_max / norm) if norm > 0.0 else 0.0
         self.send_twist(ex * scale, ey * scale, -self.land_speed)
