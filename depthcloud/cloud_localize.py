@@ -477,24 +477,32 @@ ICP_OPTS = {"schedule": (0.3, 0.2, 0.12, 0.08), "kernel": "tukey", "c": 0.06, "k
 # single-frame test (PASS 23 / BAD 1 vs PASS 17 / BAD 2 of 40).
 
 
+ALL_DOF = (0, 1, 2, 3, 4, 5)        # [rot x, rot y, rot z (heading), x, y, z], world frame
+ROT_MODES = {"free": ALL_DOF,        # the match corrects rotation and position (the original)
+             "yaw": (2, 3, 4, 5),    # roll/pitch purely from odometry; heading trimmed slowly
+             "none": (3, 4, 5)}      # all rotation from odometry (cuVSLAM); the walls fix position only
+
+
 def icp(src, T0, model, schedule=None, iters=5, huber=None, min_pts=150,
-        lever=2.0, keep_ratio=None):
+        lever=2.0, keep_ratio=None, dof=ALL_DOF):
     """Point-to-plane ICP of camera-frame points `src` onto the model, starting at T0.
 
     Degeneracy-aware: each step only moves along directions the visible surfaces actually pin down
     (eigenvalues of the scaled Hessian above keep_ratio x the largest). A view of just floor, or of
     floor plus table tops, can't fix horizontal position, so those directions keep the starting
     value instead of drifting on noise. `lever` (m) puts rotations and translations on one scale.
-    Returns (T, info). info['ok'] is False if there weren't enough matches; info['free'] is how many
-    of the 6 directions were left unconstrained."""
+    `dof` lists the directions the match may move at all (see ROT_MODES): the others keep T0's value,
+    i.e. what odometry predicted. Returns (T, info). info['ok'] is False if there weren't enough
+    matches; info['free'] is how many of the allowed directions were left unconstrained."""
     schedule = ICP_OPTS["schedule"] if schedule is None else schedule
     c_k = ICP_OPTS["c"] if huber is None else huber
     weight = tukey_w if ICP_OPTS["kernel"] == "tukey" else huber_w
     keep_ratio = ICP_OPTS["keep"] if keep_ratio is None else keep_ratio
     T = T0.copy()
     nn, mn = model.nn, model.normals
-    Dinv = np.diag([1.0 / lever] * 3 + [1.0] * 3)
-    free, ratio, Vk = 6, 0.0, np.zeros((6, 0))
+    dof = tuple(dof)
+    Dinv = np.diag([1.0 / lever if i < 3 else 1.0 for i in dof])
+    free, ratio, Vk = len(dof), 0.0, np.zeros((6, 0))
     for max_d in schedule:
         for _ in range(iters):
             p = transform(T, src)
@@ -507,15 +515,18 @@ def icp(src, T0, model, schedule=None, iters=5, huber=None, min_pts=150,
             # swing the camera sideways, and holding an unconstrained direction really holds it.
             c = T[:3, 3].copy()
             r = np.einsum("ij,ij->i", N, P - Q)                       # r = n.(p - q)
-            J = np.hstack([np.cross(P - c, N), N])                     # d r / d[rot, trans]
+            J = np.hstack([np.cross(P - c, N), N])[:, dof]             # d r / d[allowed rot, trans]
             w = weight(r, max(c_k, ICP_OPTS["anneal"] * max_d))
             Hs = Dinv @ (J.T @ (J * w[:, None])) @ Dinv                # scaled Hessian / gradient
             gs = Dinv @ (J.T @ (w * r))
             lam, V = np.linalg.eigh(Hs)
             keep = lam > keep_ratio * lam[-1]
             free, ratio = int((~keep).sum()), float(lam[0] / max(lam[-1], 1e-12))
-            Vk = V[:, keep]
-            delta = Dinv @ (-Vk @ ((Vk.T @ gs) / lam[keep]))
+            Vk = np.zeros((6, int(keep.sum())))
+            Vk[list(dof), :] = V[:, keep]                              # back to the 6 world directions
+            d_sub = Dinv @ (-V[:, keep] @ ((V[:, keep].T @ gs) / lam[keep]))
+            delta = np.zeros(6)
+            delta[list(dof)] = d_sub
             R = cv2.Rodrigues(delta[:3].reshape(3, 1))[0]
             dT = np.eye(4)
             dT[:3, :3] = R
@@ -563,7 +574,7 @@ class Localizer:
         all_measured keeps the stricter old meaning (every direction measured) for anyone who wants it."""
         proj = info.get("proj", {})
         self.all_measured = info.get("free", 6) == 0
-        horizontal = all(proj.get(k, 0.0) > 0.9 for k in TRACK_DIRECTIONS)
+        horizontal = all(proj.get(k, 0.0) > 0.9 for k in self.track_dirs)
         ok = horizontal and settled and info.get("matches", 0) >= self.min_matches
         return "tracking" if ok else "weak"
 
@@ -576,7 +587,7 @@ class Localizer:
     def __init__(self, model, T0, max_range=5.0, voxel=0.05, max_points=1500,
                  min_fitness=0.35, min_matches=300, max_rmse=0.06, max_jump=0.6, max_turn_deg=30.0,
                  max_speed=3.0, max_turn_rate=360.0, crop_margin=0.5, max_corr_m=0.05, max_corr_deg=1.5,
-                 min_neighbors=5):
+                 min_neighbors=5, rot_mode='free', yaw_corr_deg=0.3):
         """A frame is accepted if its matched points fit tightly (rmse) AND there are enough of them:
         either min_fitness of the cloud, or at least min_matches points. The absolute count matters in
         a room full of people and chairs that aren't in the model, where most points can't match."""
@@ -599,6 +610,19 @@ class Localizer:
         self.max_corr_m, self.max_corr_deg = max_corr_m, max_corr_deg   # per-frame cap with odometry
         self.min_neighbors, self.neighbor_radius, self.sparse = min_neighbors, 0.12, 0.0
         self.last_T_pred, self.last_src = None, None                # for frame dumps
+        # Rotation source (ROT_MODES). 'free': the match corrects all 6 directions (the original).
+        # 'yaw': roll/pitch only from odometry (cuVSLAM), heading from odometry too but the walls may
+        # trim it by <= yaw_corr_deg per frame (slow: start-heading error and drift still get fixed).
+        # 'none': all rotation from odometry; the walls fix position only. With fewer unknowns the
+        # match needs fewer points, and in 'yaw'/'none' a frame is 'tracking' on x and y alone.
+        if rot_mode not in ROT_MODES:
+            raise ValueError(f'rot_mode {rot_mode!r}: one of {sorted(ROT_MODES)}')
+        self.rot_mode, self.dof = rot_mode, ROT_MODES[rot_mode]
+        self.yaw_corr_deg = float(yaw_corr_deg)
+        # 'yaw': x and y must be measured (heading is cuVSLAM's, trimmed slowly). 'none' never claims
+        # 'tracking': with heading never checked against the walls, cuVSLAM's heading drift goes
+        # unnoticed (sim: 14 deg, 44 cm while 'tracking'), so it reports 'weak' at best.
+        self.track_dirs = {'free': TRACK_DIRECTIONS, 'yaw': ('x', 'y'), 'none': ('x', 'y', 'heading')}[rot_mode]
 
     def reset(self, T, search_heading=False):
         """New start pose. With search_heading, the next frames try every heading from this position
@@ -673,12 +697,13 @@ class Localizer:
             dp *= self.max_corr_m / n
         rv = cv2.Rodrigues(T[:3, :3] @ self.T[:3, :3].T)[0].ravel()      # rotation about the camera
         a = float(np.linalg.norm(rv))
-        if a > math.radians(self.max_corr_deg):
-            rv *= math.radians(self.max_corr_deg) / a
+        cap = self.max_corr_deg if self.rot_mode == 'free' else min(self.max_corr_deg, self.yaw_corr_deg)
+        if a > math.radians(cap):
+            rv *= math.radians(cap) / a
         out = self.T.copy()
         out[:3, :3] = cv2.Rodrigues(rv.reshape(3, 1))[0] @ self.T[:3, :3]
         out[:3, 3] = self.T[:3, 3] + dp
-        self.info["clamped"] = n > self.max_corr_m or a > math.radians(self.max_corr_deg)
+        self.info["clamped"] = n > self.max_corr_m or a > math.radians(cap)
         return out
 
     def odom_plausible(self, delta, dt):
@@ -730,7 +755,7 @@ class Localizer:
             self.status = self.accepted_status(info, settled=False)     # heading just found: not settled
             self.trail.append(self.T[:3, 3].round(3).tolist())
             return True
-        T, info = icp(src, self.T, self.model)
+        T, info = icp(src, self.T, self.model, dof=self.dof)
         self.info = info
         good = (info["ok"] and info["rmse"] <= self.max_rmse
                 and (info["fitness"] >= self.min_fitness or info["matches"] >= self.min_matches))
@@ -1285,7 +1310,7 @@ def selftest(obj_path, up="z", scale=1.0, trials=20, max_range=5.0, perturb=0.4,
 def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutter=0.3, max_range=5.0,
               points=1500, seed=11, every=10, odom=True, odom_scale=0.03, odom_yaw_dps=0.3, odom_only=False,
               view=0, odom_drop=0.0, odom_resets=(), max_speed=3.0, background=0.0, mount=DEFAULT_MOUNT,
-              base_z=0.07, max_corr_m=0.05, min_neighbors=5, on_frame=None):
+              base_z=0.07, max_corr_m=0.05, min_neighbors=5, on_frame=None, rot_mode='free', yaw_corr_deg=0.3):
     """on_frame(i, T_true, T_est, status, cloud_cam, err_m, hdg_err_deg), if given, is called after every
     frame (sim_gif.py uses it to draw frames). Without view it gets one lap.
 
@@ -1332,7 +1357,7 @@ def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutte
                               90 + rng.normal(0, 5)) @ Tbc
     tracker = Tracker(model, start(), max_range=max_range, max_points=points,
                       max_speed=max_speed, max_turn_rate=360.0 if max_speed < 100 else 1e9, max_corr_m=max_corr_m,
-                      min_neighbors=min_neighbors)
+                      min_neighbors=min_neighbors, rot_mode=rot_mode, yaw_corr_deg=yaw_corr_deg)
     loc = tracker.loc
     loc.status = "reset"
     if odom_only:                                                     # baseline: never accept a course match
@@ -1342,7 +1367,7 @@ def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutte
         WebServer(int(view), model, tracker)
         print(f"viewer: http://<this machine>:{int(view)}/  (white = true pose, coloured = estimate; Ctrl+C stops)")
     print(f"route {route_path}: {len(W)} waypoints, {len(P)} frames at {speed} m/s, {rate} Hz "
-          f"({100 * step:.0f} cm/frame), yaw {yawmode}, clutter {clutter}, "
+          f"({100 * step:.0f} cm/frame), yaw {yawmode}, rotation {rot_mode}, clutter {clutter}, "
           + (f"odometry with {100 * odom_scale:.0f}% scale + {odom_yaw_dps}°/s heading drift" if odom else "no odometry"))
     lap = 0
     while True:
@@ -1526,7 +1551,9 @@ def main():
                                    min_fitness=p("min_fitness", 0.35), min_matches=int(p("min_matches", 300)),
                                    max_rmse=p("max_rmse", 0.06), crop_margin=p("crop_margin", 0.5),
                                    max_corr_m=p("max_corr_m", 0.05), max_corr_deg=p("max_corr_deg", 1.5),
-                                   min_neighbors=int(p("min_neighbors", 5)))
+                                   min_neighbors=int(p("min_neighbors", 5)),
+                                   rot_mode=str(p("rot_mode", "free")),
+                                   yaw_corr_deg=p("yaw_corr_deg", 0.3))
             self.tracker.loc.status = "waiting"
             # optional frame dumps for offline debugging: every dump_every-th processed frame
             self.dump_dir, self.dump_every, self.n_frames = p("dump_dir", ""), int(p("dump_every", 5)), 0
@@ -1753,7 +1780,8 @@ if __name__ == "__main__":
                   mount=tuple(float(t) for t in opts.get("mount", ",".join(map(str, DEFAULT_MOUNT))).split(",")),
                   base_z=float(opts.get("base_z", 0.07)),
                   max_corr_m=None if opts.get("max_corr", "0.05") == "off" else float(opts.get("max_corr", "0.05")),
-                  min_neighbors=int(opts.get("min_neighbors", 5)))
+                  min_neighbors=int(opts.get("min_neighbors", 5)),
+                  rot_mode=opts.get("rot", "free"), yaw_corr_deg=float(opts.get("yaw_corr", 0.3)))
         sys.exit(0)
     if len(sys.argv) >= 3 and sys.argv[1] == "--benchtest":
         # --benchtest model.obj [background=0.6] [frames=8] [init=new|old] [crop=0.5|off] [mount=x,y,z] [base_z=0.07]

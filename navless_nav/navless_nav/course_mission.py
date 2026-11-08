@@ -190,8 +190,18 @@ PARAMETERS = (
     ('drift_correction', True),
     ('drift_ki', 0.3),
     ('drift_deadband_m', 0.02),
-    ('drift_max_error_m', 0.30),
-    ('drift_max_m', 0.20),
+    ('drift_max_error_m', 0.40),
+    ('drift_max_m', 0.35),
+    # Takeoff slide pre-compensation: the drift correction starts each first
+    # takeoff already at this BODY-frame value (x forward, y left, m) instead of
+    # zero, so the liftoff is pushed against a slide that happens before the
+    # correction can learn (it only learns above drift_min_height_m). On 19
+    # every liftoff slid 25-40 cm to the drone's LEFT (2026-11-07: 25-33 cm;
+    # 2026-11-08: 21 cm, then 34 cm into the west net on Favour's north-leaning
+    # takeoff), so the course launch seeds (0, -0.28): 28 cm to the right.
+    # Learning refines it from there; 0, 0 = off (the node default).
+    ('drift_seed_body_x_m', 0.0),
+    ('drift_seed_body_y_m', 0.0),
     ('drift_min_height_m', 0.40),
     ('drift_apply_in_route', True),
     # Flight recorder (navless_nav/flight_log.py): a CSV row per tick and per
@@ -453,6 +463,8 @@ class CourseMission(Node):
         self.drift_min_height = param('drift_min_height_m')
         self.drift_in_route = str(self.get_parameter('drift_apply_in_route').value).lower() in ('true', '1')
         self.drift_body = (0.0, 0.0)    # learned correction, body frame (x fwd, y left), m
+        self.drift_seed = (param('drift_seed_body_x_m'), param('drift_seed_body_y_m'))
+        self.drift_seeded = False
         self.drift_at = None            # last learning step
         self.drift_learning = False
         self.last_target = None         # the last setpoint before the drift correction
@@ -1399,6 +1411,23 @@ class CourseMission(Node):
         c, s = math.cos(yaw), math.sin(yaw)
         return c * bx - s * by, s * bx + c * by
 
+    def seed_drift(self):
+        """First takeoff of this node: start the drift correction at the known
+        liftoff slide's compensation (drift_seed_body_*), so the climb is pushed
+        against it from the first instant. Later takeoffs (the fly_home re-arm)
+        keep what was learned."""
+        if self.drift_seeded or not self.drift_on or self.drift_seed == (0.0, 0.0):
+            return
+        self.drift_seeded = True
+        bx, by = self.drift_seed
+        n = math.hypot(bx, by)
+        if n > self.drift_max:
+            bx, by = bx * self.drift_max / n, by * self.drift_max / n
+        self.drift_body = (bx, by)
+        self.get_logger().info(
+            f'takeoff slide pre-compensation: drift correction starts at '
+            f'{bx:+.2f} m forward, {by:+.2f} m left (body); learning refines it after the climb.')
+
     def drift_applies(self):
         """Only with live odometry: when VIO is lost the node holds at the
         last pose (zero error against a frozen estimate) or paces PX4's own
@@ -1702,6 +1731,7 @@ class CourseMission(Node):
             self.zero_launch_origin()
         self.goto('TAKEOFF', self.takeoff_target())
         self.latch_heading()
+        self.seed_drift()
         if self.match_height:
             self.get_logger().info(
                 f'PX4 reads {self.z_offset * 100:+.1f} cm from odom on the floor '

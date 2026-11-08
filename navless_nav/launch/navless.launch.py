@@ -89,6 +89,8 @@ ARGUMENTS = [
     ('drift_correction', 'true', 'learn and cancel a steady push while the target stands still (takeoff settle, hold)'),
     ('drift_apply_in_route', 'true', 'keep cancelling the learned (body-fixed) push along the route'),
     ('flight_log', 'true', 'write the flight recorder CSV to ~/team_ws/flight_logs'),
+    ('drift_seed_body_x_m', '0.0', 'takeoff slide pre-compensation, body forward, m (0 = off)'),
+    ('drift_seed_body_y_m', '0.0', 'takeoff slide pre-compensation, body left, m (0 = off; negative = lean right)'),
     ('route_source', 'planner', "'planner' (EGO planner on the as-built map) or 'file' (fly route_file as exported, no re-planning)"),
     ('wall_correction', 'false',
      "fly the route in the frame cloud_localize's drift correction (/team/localize/odom_correction) "
@@ -113,7 +115,7 @@ MISSION_PARAMS = ('odometry_topic',     # the same source as flight_interface's
                   'tof_tube_centering', 'tof_tube_max_shift_m', 'tof_tube_rate_mps', 'tof_tube_timeout_s',
                   'replan_on_obstacles',
                   'route_source', 'wall_correction', 'heading_mode', 'drift_correction',
-                  'drift_apply_in_route', 'flight_log')
+                  'drift_apply_in_route', 'flight_log', 'drift_seed_body_x_m', 'drift_seed_body_y_m')
 
 
 def generate_launch_description():

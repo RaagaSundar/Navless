@@ -215,3 +215,61 @@ def test_with_a_body_fixed_push_the_route_is_flown_closer_to_its_targets():
         assert on < off - 0.04, (on, off)
     finally:
         h.reset_heading()
+
+
+SEED = dict(drift_seed_body_y_m=-0.28)     # the course launch's value for skybeta-19
+
+
+def climb_error(**kw):
+    """Sideways (north-west/left) error from the true takeoff target near the top of the climb (0.65 m, before the drift
+    correction starts learning),
+    with 19's liftoff slide: a 30 cm body-left push from the instant of liftoff. (Not the distance
+    to the target: that includes the planned takeoff lean, which is flown on purpose.)"""
+    node, px4, pos = start(offset=steady_push(2.7, dy=0.30), **kw)
+    err = [None]
+
+    def until():
+        if node.state == 'TAKEOFF' and err[0] is None and node.position[2] >= 0.65:
+            err[0] = abs(node.position[1] - node.target[1])            # odom y = left, nose north
+        return err[0] is not None or node.state not in ('WAIT_FOR_OFFBOARD', 'TAKEOFF')
+    h.fly(node, px4, pos, until)
+    return node, err[0]
+
+
+def test_seeded_takeoff_holds_against_the_liftoff_slide():
+    try:
+        node, seeded = climb_error(**SEED)
+        assert node.drift_seeded and abs(node.drift_body[1] + 0.28) < 0.02
+        _, bare = climb_error()
+        # without the seed nothing counters the push below 0.4 m: ~30 cm to the left (the west net
+        # from the launch mark); with it, a few cm
+        assert bare > 0.25, bare
+        assert seeded < bare - 0.15, (seeded, bare)
+    finally:
+        h.reset_heading()
+
+
+def test_seed_without_a_slide_is_learned_away_and_still_settles():
+    try:
+        node, px4, pos = start(takeoff_timeout_s=30.0, **SEED)
+        t0 = h.T[0]
+        h.fly(node, px4, pos, lambda: node.state not in ('WAIT_FOR_OFFBOARD', 'TAKEOFF') or h.T[0] - t0 > 31)
+        assert node.state == 'ROUTE' and h.T[0] - t0 < 25.0
+        assert math.hypot(*node.drift_body) < 0.08            # learned back toward zero
+    finally:
+        h.reset_heading()
+
+
+def test_seed_is_off_by_default_and_capped():
+    h.OVERRIDES.clear()
+    h.OVERRIDES.update(route_file=WINDOW, route_source='file')
+    node = cm.CourseMission()
+    node.seed_drift()
+    assert node.drift_body == (0.0, 0.0)
+    h.OVERRIDES.update(drift_seed_body_y_m=-0.9)
+    node = cm.CourseMission()
+    node.seed_drift()
+    assert abs(math.hypot(*node.drift_body) - node.drift_max) < 1e-9
+    node.drift_body = (0.0, 0.05)
+    node.seed_drift()                                          # only the first takeoff is seeded
+    assert node.drift_body == (0.0, 0.05)

@@ -45,6 +45,10 @@ ARGUMENTS = [
     ('drift_correction', 'true', 'learn and cancel a steady push while the target stands still (takeoff settle, hold)'),
     ('drift_apply_in_route', 'true', 'keep cancelling the learned (body-fixed) push along the route'),
     ('flight_log', 'true', 'write the flight recorder CSV to ~/team_ws/flight_logs'),
+    # skybeta-19 slides 25-40 cm to its LEFT at every liftoff (2026-11-07/08 logs): lean 28 cm right
+    # from the start of the climb; the drift correction refines it once above 0.4 m. 0 = off.
+    ('drift_seed_body_x_m', '0.0', 'takeoff slide pre-compensation, body forward, m'),
+    ('drift_seed_body_y_m', '-0.28', 'takeoff slide pre-compensation, body left, m (negative = lean right)'),
     ('route_source', 'planner', "'planner' (EGO planner) or 'file' (fly route_file as exported: the gated drone19 routes)"),
     # Team decision (Shining, 2026-11-08): Favour's planner WITH localization. `localizer` (below) starts
     # depthcloud/cloud_localize.py on the as-built course, fed by stereo_cloud's /team/stereo/points; its
@@ -102,6 +106,11 @@ ARGUMENTS = [
      'run depthcloud/cloud_localize.py (as-built course; needs stereo_cloud): the wall correction source'),
     # course_mission's live map viewer (live_map_viz.py) owns 8082; cloud_localize's 3D viewer moves here.
     ('localizer_http_port', '8083', "cloud_localize's 3D viewer port (8082 is the planner map)"),
+    # Where the localizer's rotation comes from (cloud_localize ROT_MODES): 'yaw' = roll/pitch from
+    # cuVSLAM, heading from cuVSLAM trimmed <= localizer_yaw_corr_deg per frame by the walls; 'none' =
+    # all rotation from cuVSLAM, walls fix position only; 'free' = the original 6-direction match.
+    ('localizer_rot_mode', 'yaw', "cloud_localize rotation source: 'yaw' (default), 'none' or 'free'"),
+    ('localizer_yaw_corr_deg', '0.3', 'cloud_localize: largest heading trim per frame in yaw mode, deg'),
     ('replan_on_obstacles', 'true',
      'replan around live stereo depth discrepancies on the as-built 3D occupancy map'),
 ]
@@ -120,6 +129,7 @@ def generate_launch_description():
                                     'odometry_topic', 'blind_carry', 'net_margin_m', 'stereo_tube_centering',
                                     'stereo_tube_cloud_topic', 'tof_tube_centering', 'replan_on_obstacles', 'route_source', 'wall_correction',
                                     'heading_mode', 'drift_correction', 'drift_apply_in_route', 'flight_log',
+                                    'drift_seed_body_x_m', 'drift_seed_body_y_m',
                                     'use_sim_time')}.items(),
     )
     # VL53L1X: from the team image, or from ~/team_ws/pylibs (pip install --target) if it is there.
@@ -150,6 +160,8 @@ def generate_launch_description():
         cmd=['python3', '-u', os.path.join(REPO_ROOT, 'depthcloud', 'cloud_localize.py'), '--ros-args',
              '-p', 'course:=asbuilt',
              '-p', ['http_port:=', LaunchConfiguration('localizer_http_port')],
+             '-p', ['rot_mode:=', LaunchConfiguration('localizer_rot_mode')],
+             '-p', ['yaw_corr_deg:=', LaunchConfiguration('localizer_yaw_corr_deg')],
              '-p', ['use_sim_time:=', LaunchConfiguration('use_sim_time')]],
         output='screen', name='cloud_localize', condition=IfCondition(LaunchConfiguration('localizer')))
     relay = Node(
