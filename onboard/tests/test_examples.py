@@ -44,7 +44,7 @@ class Node:
         return NS(info=lambda *a: None, error=lambda *a: None, warning=lambda *a: None)
 
 
-@pytest.fixture(params=['hover_yaw_180_land', 'forward_2m_return_land', 'hover_land'])
+@pytest.fixture(params=['hover_yaw_180_land', 'forward_2m_return_land', 'forward_1m_return_land', 'hover_land'])
 def example(request, monkeypatch):
     for name in ['rclpy', 'rclpy.node', 'rclpy.qos', 'px4_msgs', 'px4_msgs.msg', 'nav_msgs', 'nav_msgs.msg', 'std_msgs', 'std_msgs.msg']:
         monkeypatch.setitem(sys.modules, name, ModuleType(name))
@@ -151,7 +151,7 @@ def test_forward_geometry_wait_and_return(example):
         n.advance_maneuver(n.now)
         n.pos.x, n.pos.y = n.x, n.y
     assert n.x == pytest.approx(4.0)
-    assert n.y == pytest.approx(-1.0)
+    assert n.y == pytest.approx(-3.0 + example.DISTANCE)
     assert n.phase == 'FORWARD_HOLD'
     # The hold is based on measured arrival, and restarts after leaving tolerance.
     n.advance_maneuver(107.0)

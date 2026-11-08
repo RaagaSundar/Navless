@@ -248,3 +248,11 @@ still block startup; expired reports still block arming/confirmation. The passiv
 checker records readiness transitions and finishes using wall time while
 rejecting a stopped ROS clock. It permits ROS parameter events and suppresses
 all `/fmu/in/` publishers. No airborne test result is implied by these bench fixes.
+
+## Shorter forward test
+
+`examples/forward_1m_return_land.py` uses the same controller and odometry checks,
+with a **1 m** outbound distance, 10 s measured hold and 1 m return, as requested
+after the 2 m run. Prefer this plan when the available flight area is limited;
+there is no obstacle avoidance. The 2 m script remains available under its
+original name. Flight approval and fresh-world simulation startup still apply.
