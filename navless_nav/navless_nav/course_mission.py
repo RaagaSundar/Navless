@@ -9,6 +9,8 @@ flight interface's topic namespace):
                                                 sensors (tof_tube_centering only)
     subscribe  /fmu/out/vehicle_local_position  PX4's heading, read only (the
                                                 heading guard; never /fmu/in)
+    subscribe  /team/localize/odom_correction   cloud_localize's drift correction
+                                                (wall_correction only)
     publish    FI_NS/setpoint/{pose,twist}      where we want to be (ENU, odom),
                                                 with the takeoff heading held
 
@@ -51,6 +53,8 @@ States (10 Hz timer):
                        a loss inside the dark tube instead keeps the carrot
                        pacing PX4's own estimate for a few seconds, so the
                        drone does not stop where tracking cannot return.
+                       With wall_correction, the route is flown in the frame
+                       cloud_localize's drift correction keeps on the walls.
     LAND               route done: descend onto its end point (the landing
                        pad) with twist setpoints until PX4 detects the
                        touchdown and disarms (COM_DISARM_LAND). The twist
@@ -265,6 +269,29 @@ PARAMETERS = (
     ('tof_tube_max_shift_m', 0.15),
     ('tof_tube_rate_mps', 0.10),
     ('tof_tube_timeout_s', 0.3),
+    # Wall correction, off until it has been gated. depthcloud's cloud_localize
+    # measures how far cuVSLAM's odometry frame has slid against the walls and
+    # publishes /team/localize/odom_correction while that is valid: a planar
+    # transform D in odom (position x/y = dx/dy, orientation = dyaw about z),
+    # with corrected = D * course_to_odom(p). On, ROUTE is flown in D's frame:
+    # the carrot paces the odometry mapped through D^-1 (where the walls say
+    # the drone is), every setpoint goes out as D * target after the net clamp
+    # in that frame, and the held heading turns by dyaw. Odometry stays the
+    # position source. D is the identity until the first message, keeps its
+    # last value when messages stop (the drift doesn't go away), only changes
+    # in ROUTE, and freezes while VIO is lost or the carrot is in the tube
+    # zone. It moves toward each new value with translation and rotation
+    # together, so the drone's own point moves at most wall_correction_rate_mps
+    # and the heading at most wall_correction_rate_dps: a late first message or
+    # the end of a freeze never steps a setpoint (cloud_localize itself ramps D
+    # the same way, at 0.08 m/s and 3 deg/s).
+    ('wall_correction', False),
+    ('wall_correction_topic', '/team/localize/odom_correction'),
+    ('wall_correction_stale_s', 3.0),     # older than this is logged; D stays
+    ('wall_correction_rate_mps', 0.12),
+    ('wall_correction_rate_dps', 4.5),
+    ('wall_correction_max_m', 3.0),       # messages beyond these are ignored
+    ('wall_correction_max_deg', 40.0),
 )
 
 
@@ -349,6 +376,17 @@ class CourseMission(Node):
             param('tof_tube_timeout_s'), clamp=True)
         self.tof_offset = None      # (stamp, metres to the left) from /tube/offset
         self.tof_used_stamp = None
+        self.wall_corr = str(self.get_parameter('wall_correction').value).lower() in ('true', '1')
+        self.corr_stale = param('wall_correction_stale_s')
+        self.corr_rate_m = param('wall_correction_rate_mps')
+        self.corr_rate_rad = math.radians(param('wall_correction_rate_dps'))
+        self.corr_max_m = param('wall_correction_max_m')
+        self.corr_max_rad = math.radians(param('wall_correction_max_deg'))
+        self.corr = (0.0, 0.0, 0.0)     # applied D (dx, dy, dyaw): odom <- route frame
+        self.corr_rx = None             # the last D received (dx, dy, dyaw), and when
+        self.corr_rx_at = None
+        self.corr_at = None             # when the applied D was last stepped
+        self.corr_stale_logged = False
         self.yaw = None             # odometry heading: the offset is along body y
         self.heights_agree_since = None
         self.prearm_passed = False
@@ -374,6 +412,10 @@ class CourseMission(Node):
             # never match it.
             self.create_subscription(PointStamped, '/tube/offset', self.tof_offset_cb,
                                      qos_profile_sensor_data)
+        if self.wall_corr:
+            self.create_subscription(
+                PoseStamped, str(self.get_parameter('wall_correction_topic').value),
+                self.odom_correction_cb, 10)
         if VisualSlamStatus is not None:
             self.create_subscription(
                 VisualSlamStatus, '/visual_slam/status', self.status_cb, 10)
@@ -466,6 +508,97 @@ class CourseMission(Node):
         self.tof_offset = ((stamp, offset) if msg.header.frame_id == 'base_link'
                            and math.isfinite(offset) else None)
 
+    def odom_correction_cb(self, msg):
+        """cloud_localize's drift correction D (see wall_correction): a
+        PoseStamped in odom, position x/y = dx/dy, orientation = dyaw about z.
+        It only arrives while cloud_localize considers it valid."""
+        try:
+            p, q = msg.pose.position, msg.pose.orientation
+            dx, dy = float(p.x), float(p.y)
+            dyaw = math.atan2(2.0 * (float(q.w) * float(q.z) + float(q.x) * float(q.y)),
+                              1.0 - 2.0 * (float(q.y) ** 2 + float(q.z) ** 2))
+        except (AttributeError, TypeError, ValueError):
+            return
+        if msg.header.frame_id != 'odom' or not all(map(math.isfinite, (dx, dy, dyaw))):
+            self.info_once('corr_bad', 'wall correction: ignoring a message that is not '
+                           'in odom or not finite.')
+            return
+        if math.hypot(dx, dy) > self.corr_max_m or abs(dyaw) > self.corr_max_rad:
+            self.info_once('corr_big', f'wall correction: ignoring D ({dx:+.2f}, {dy:+.2f} m, '
+                           f'{math.degrees(dyaw):+.1f} deg), beyond wall_correction_max_*.')
+            return
+        if self.corr_rx is None:
+            self.get_logger().info(
+                f'wall correction: first D ({dx:+.3f}, {dy:+.3f} m, '
+                f'{math.degrees(dyaw):+.2f} deg); it is applied in ROUTE.')
+        self.corr_rx = (dx, dy, dyaw)
+        self.corr_rx_at = self.now_s()
+        self.corr_stale_logged = False
+
+    # -- wall correction (identity unless wall_correction is on) -----------
+    def corr_to_route(self, q):
+        """Odom point -> the route's frame (D^-1: where the walls say it is)."""
+        dx, dy, a = self.corr
+        if dx == 0.0 and dy == 0.0 and a == 0.0:
+            return tuple(q)
+        c, s = math.cos(a), math.sin(a)
+        x, y = q[0] - dx, q[1] - dy
+        return (c * x + s * y, -s * x + c * y, q[2])
+
+    def corr_from_route(self, q):
+        """Route-frame point -> odom (D): the frame setpoints are flown in."""
+        dx, dy, a = self.corr
+        if dx == 0.0 and dy == 0.0 and a == 0.0:
+            return tuple(q)
+        c, s = math.cos(a), math.sin(a)
+        return (c * q[0] - s * q[1] + dx, s * q[0] + c * q[1] + dy, q[2])
+
+    def step_correction(self, frozen, at):
+        """Move the applied D toward the last D received by ONE fraction of the
+        way for its translation and rotation together, so the drone's own
+        point `at` (route frame) moves at most wall_correction_rate_mps per
+        second and the heading at most wall_correction_rate_dps. D rotates
+        about the odometry origin (the launch mark): limited separately, its
+        rotation alone would sweep a point 5 m out sideways at 39 cm/s
+        (cloud_localize ramps the same way since 72a8e01). Held while
+        `frozen`; the last D stays when messages stop."""
+        now = self.now_s()
+        dt = 0.0 if self.corr_at is None else min(max(now - self.corr_at, 0.0), 0.2)
+        self.corr_at = now
+        if not self.wall_corr or self.corr_rx is None or frozen:
+            return
+        if now - self.corr_rx_at > self.corr_stale and not self.corr_stale_logged:
+            self.corr_stale_logged = True
+            self.get_logger().warn(
+                f'wall correction: no message for {now - self.corr_rx_at:.1f} s; keeping '
+                f'the last D ({self.corr_rx[0]:+.3f}, {self.corr_rx[1]:+.3f} m, '
+                f'{math.degrees(self.corr_rx[2]):+.2f} deg).')
+        (tx, ty, ta), (cx, cy, ca) = self.corr_rx, self.corr
+        step = (tx - cx, ty - cy, wrap_pi(ta - ca))
+
+        def moved(f):       # how far `at` moves in odom if D goes f of the way
+            a = ca + f * step[2]
+            c, s = math.cos(a), math.sin(a)
+            c0, s0 = math.cos(ca), math.sin(ca)
+            return math.hypot(c * at[0] - s * at[1] + f * step[0] - (c0 * at[0] - s0 * at[1]),
+                              s * at[0] + c * at[1] + f * step[1] - (s0 * at[0] + c0 * at[1]))
+
+        f, lim = 1.0, self.corr_rate_m * dt
+        full = moved(1.0)
+        if full > lim:
+            f = lim / full
+            part = moved(f)         # the chord of the full step understates a part step
+            if part > lim:
+                f *= lim / part
+        if abs(step[2]) * f > self.corr_rate_rad * dt:
+            f = self.corr_rate_rad * dt / abs(step[2])
+        self.corr = (cx + f * step[0], cy + f * step[1], wrap_pi(ca + f * step[2]))
+
+    def held_yaw(self):
+        """The held heading in odom: hold_yaw (route frame) turned by D's dyaw."""
+        dyaw = self.corr[2]
+        return self.hold_yaw if dyaw == 0.0 else wrap_pi(self.hold_yaw + dyaw)
+
     def status_cb(self, msg):
         self.vo_state = int(msg.vo_state)
 
@@ -507,9 +640,12 @@ class CourseMission(Node):
         a zero quaternion (yaw NaN: PX4 does not steer the heading) when
         there is none to hold."""
         if fence and self.frame is not None:
-            (x, y, z), moved = clamp_to_net(
-                (x, y, z), self.frame[0], self.frame[1], self.net_margin)
+            # The net is fixed to the walls: clamp in the route's frame
+            # (odom through the wall correction; the same frame when it is off).
+            r, moved = clamp_to_net(
+                self.corr_to_route((x, y, z)), self.frame[0], self.frame[1], self.net_margin)
             if moved:
+                x, y, z = self.corr_from_route(r)
                 self.info_once(
                     'fenced', f'setpoint pulled inside the net (margin '
                     f'{self.net_margin:.2f} m); route or start bearing wrong?')
@@ -561,11 +697,13 @@ class CourseMission(Node):
         if not self.hold_heading or self.yaw is None:
             self.hold_yaw = None
             return
-        self.hold_yaw = self.yaw
+        # hold_yaw is in the route's frame (odom until a wall correction has
+        # turned it): the nose is held where it is now, whatever dyaw is.
+        self.hold_yaw = self.yaw if self.corr[2] == 0.0 else wrap_pi(self.yaw - self.corr[2])
         px4 = self.px4_heading()
         self.px4_yaw_ref = wrap_pi(px4 - self.yaw) if px4 is not None else None
         self.get_logger().info(
-            f'holding heading {math.degrees(self.hold_yaw):.1f} deg (odom)'
+            f'holding heading {math.degrees(self.yaw):.1f} deg (odom)'
             + (f'; PX4 agrees to {math.degrees(self.px4_yaw_ref):+.1f} deg'
                if self.px4_yaw_ref is not None else '; no PX4 heading to cross-check'))
 
@@ -605,7 +743,7 @@ class CourseMission(Node):
             return None
         off_px4 = self.px4_heading_off()
         if not self.heading_suspended:
-            pushed = (abs(wrap_pi(self.yaw - self.hold_yaw))
+            pushed = (abs(wrap_pi(self.yaw - self.held_yaw()))
                       if self.yaw is not None else 0.0)
             if off_px4 is not None and off_px4 > self.heading_guard:
                 self.suspend_heading(
@@ -614,7 +752,7 @@ class CourseMission(Node):
                 self.suspend_heading(
                     f'nose {math.degrees(pushed):.0f} deg off the held heading')
             else:
-                return self.hold_yaw
+                return self.held_yaw()
         # Suspended: resume once PX4 and the camera have agreed (within a
         # third of the guard) for heading_guard_s -- or, with no PX4 heading
         # to compare, once heading_guard_s has passed -- holding the nose
@@ -629,11 +767,11 @@ class CourseMission(Node):
         if now - self.heading_agree_since < self.heading_guard_s or self.yaw is None:
             return None
         self.heading_suspended = False
-        self.hold_yaw = self.yaw
+        self.hold_yaw = self.yaw if self.corr[2] == 0.0 else wrap_pi(self.yaw - self.corr[2])
         self.get_logger().info(
             f'heading guard: PX4 and the camera agree again; holding heading '
-            f'{math.degrees(self.hold_yaw):.1f} deg (odom), where the nose is.')
-        return self.hold_yaw
+            f'{math.degrees(self.yaw):.1f} deg (odom), where the nose is.')
+        return self.held_yaw()
 
     # -- helpers ---------------------------------------------------------
     def now_s(self):
@@ -759,7 +897,9 @@ class CourseMission(Node):
                 # mark, which is the odom origin. The route start check
                 # (max_start_offset_m) keeps it from flying from anywhere
                 # but this touchdown.
-                x, y, _ = self.position
+                # In the route's frame (the wall correction's, if any), whose
+                # origin is the launch mark where the walls put it.
+                x, y, _ = self.corr_to_route(self.position)
                 self.route = [(x, y, self.home_z), (0.0, 0.0, self.home_z)]
                 self.going_home = True
                 self.get_logger().info(
@@ -887,7 +1027,7 @@ class CourseMission(Node):
         carrot.advance(self.lead_m())       # never pull back behind the lean
         # Measured from where the route starts after the lean, so the lean
         # does not use up max_start_offset_m.
-        offset = math.dist(self.position[:2], carrot.point[:2])
+        offset = math.dist(self.corr_to_route(self.position)[:2], carrot.point[:2])
         if offset > self.max_start_offset:
             self.get_logger().error(
                 f'{offset:.2f} m from the route start (limit '
@@ -907,13 +1047,19 @@ class CourseMission(Node):
         dt = min(now - self.last_tick, 0.2)
         self.last_tick = now
         vio_ok = self.vio_ok()
+        # The carrot lives in the route's frame: odometry through the wall
+        # correction (wall_correction; the identity when it is off). D holds
+        # still while blind and while the carrot is in the tube zone.
+        self.step_correction(not vio_ok or self.in_blind_zone(self.carrot.point),
+                             self.corr_to_route(self.position))
+        pos = self.corr_to_route(self.position)
         if vio_ok != self.vio_was_ok:
             self.vio_was_ok = vio_ok
             if vio_ok:
                 # If the drone got ahead of the carrot while blind, move the
                 # carrot up to it rather than flying back (in the tube, back
                 # into the dark).
-                moved = self.carrot.catch_up(self.position)
+                moved = self.carrot.catch_up(pos)
                 self.get_logger().info(
                     'VIO back: resuming the route'
                     + (f' ({moved:.2f} m further on, where the drone is).'
@@ -925,8 +1071,8 @@ class CourseMission(Node):
         if vio_ok:
             self.blind_since = None
             self.set_carrying(False, 'VIO back')
-            point = self.carrot.step(self.position, dt)
-            ref = self.position     # where the drone is, in the target's frame
+            point = self.carrot.step(pos, dt)
+            ref = self.position     # where the drone is, in the flown (odom) frame
         else:
             # With no trustworthy position, do not move the target: PX4
             # falls back on its own estimate and holds the last point. In
@@ -939,7 +1085,7 @@ class CourseMission(Node):
             if px4 is not None:
                 # at the route's own speed: a faster carry (1.0 m/s, 1.2 m
                 # lead) drifted 49 cm and touched the tube in Gazebo
-                point = self.carrot.step(px4, dt)
+                point = self.carrot.step(self.corr_to_route(px4), dt)
             elif self.odom_arriving():
                 # cuVSLAM reports lost but keeps publishing (a frozen pose,
                 # or worse), and the stack's px4_odom_bridge forwards every
@@ -950,9 +1096,10 @@ class CourseMission(Node):
                 self.info_once(f'odom-during-loss:{self.blind_since}',
                                'VIO lost but odometry still arriving (frozen '
                                'or unreliable): holding at its latest pose.')
-                point = self.position
+                point = pos
             else:
                 point = self.carrot.point
+        point = self.corr_from_route(point)     # the target, in odom
         if self.tof_tube:
             point = self.tof_tube_point(point, ref, now)
         self.send(*point)
@@ -961,10 +1108,10 @@ class CourseMission(Node):
             # few cm off odom (7 cm in SITL), which a 3D 0.10 m test could
             # never meet.
             arrived = (self.carrot.at_end and math.dist(
-                self.position[:2], self.carrot.point[:2])
+                pos[:2], self.carrot.point[:2])
                 <= self.home_arrival_radius)
         else:
-            arrived = self.carrot.done(self.position, self.arrival_radius)
+            arrived = self.carrot.done(pos, self.arrival_radius)
         if vio_ok and arrived:
             if self.land_at_end:
                 self.get_logger().info('route complete; landing on its end.')
@@ -989,8 +1136,9 @@ class CourseMission(Node):
         height, and not on the fly_home hop."""
         if self.frame is None or self.going_home:
             return False
-        x, y, _ = odom_to_course(position, self.frame[0], self.frame[1])
-        gx, gy, _ = odom_to_course(point, self.frame[0], self.frame[1])
+        # odom points: through the wall correction to where the walls are
+        x, y, _ = odom_to_course(self.corr_to_route(position), self.frame[0], self.frame[1])
+        gx, gy, _ = odom_to_course(self.corr_to_route(point), self.frame[0], self.frame[1])
         height = position[2] + self.start_height
         return (TUBE_X[0] < x < TUBE_X[1] and TUBE_Y[0] < y < TUBE_Y[1]
                 and TUBE_X[0] < gx < TUBE_X[1] and TUBE_Y[0] < gy < TUBE_Y[1]

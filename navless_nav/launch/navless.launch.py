@@ -74,6 +74,9 @@ ARGUMENTS = [
     ('tof_tube_max_shift_m', '0.15', 'largest ToF correction away from the route, m'),
     ('tof_tube_rate_mps', '0.10', 'how fast the ToF correction may change, m/s'),
     ('tof_tube_timeout_s', '0.3', 'drop the ToF correction once /tube/offset is this old, s'),
+    ('wall_correction', 'false',
+     "fly the route in the frame cloud_localize's drift correction (/team/localize/odom_correction) "
+     'keeps on the walls; off until gated'),
     ('competitor', 'true', 'also start the course node'),
 ]
 
@@ -91,7 +94,8 @@ MISSION_PARAMS = ('odometry_topic',     # the same source as flight_interface's
                   'home_altitude_m', 'home_climb_tol_m', 'home_arrival_radius_m',
                   'prearm_height_tol_m', 'prearm_settle_s',
                   'blind_carry', 'blind_carry_max_s', 'blind_zone_margin_m',
-                  'tof_tube_centering', 'tof_tube_max_shift_m', 'tof_tube_rate_mps', 'tof_tube_timeout_s')
+                  'tof_tube_centering', 'tof_tube_max_shift_m', 'tof_tube_rate_mps', 'tof_tube_timeout_s',
+                  'wall_correction')
 
 
 def generate_launch_description():
