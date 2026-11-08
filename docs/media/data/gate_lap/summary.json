@@ -1,0 +1,44 @@
+{
+  "result": "LANDED",
+  "route": "gazebo_sim/course/route_centreline_window_asbuilt.json",
+  "overrides": {
+    "net_margin_m": 0.25
+  },
+  "odometry": {
+    "noise_m": 0.005,
+    "delay_s": 0.05,
+    "vio_dropout": null
+  },
+  "px4_frame": "start",
+  "px4_profile": "drone",
+  "liftoff_after_arm_s": 2.92,
+  "touchdown_time_from_arm_s": 46.98,
+  "touchdown_offset_from_pad_cm": 6.6,
+  "checkpoints_s": {
+    "corridor_done": 8.09,
+    "gate_a": 21.28,
+    "tube_in": 28.57,
+    "tube_out": 31.58,
+    "window": 40.79,
+    "window_offset_along_cm": 1.7,
+    "window_height_m": 0.82
+  },
+  "min_clearance_cm": 6.4,
+  "min_clearance_at": "net_north",
+  "setpoint_lead_m": {
+    "mean": 0.489,
+    "max": 0.613
+  },
+  "max_tilt_deg": 2.0,
+  "max_speed_mps": 0.54,
+  "contacts": [],
+  "node_errors": [],
+  "pilot": "direct",
+  "takeovers_after_first_s": [
+    0.0
+  ],
+  "landings": 1,
+  "home_leg": null,
+  "tube_blackout": null,
+  "source": "gazebo_sim/tools/gate_asbuilt.sh lap 1, BRANCH=drone19/flight (0b9afee), 2026-11-07"
+}
