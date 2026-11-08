@@ -74,9 +74,38 @@ class Trajectory:
 
 
 # ---------------------------------------------------------------------------------------- the route
+def maze_2026_11_07(d, z_maze=0.94, maze_y_in=None, r_corner=0.57):
+    """The maze leg since the organisers' 2026-11-07 change: M1-M3 replaced by MN (along the north net), MD (the
+    long diagonal, tip 1 m from the net) and MT (barrier line to the tube's NW corner). The floor tape is the
+    old maze's and runs under MD, so nothing here follows it (the map has no floor_line_in any more).
+
+    North from the launch mark up corridor 1, turn east, and fly along y = maze_y_in (map inches) through
+    Gate A, the gap between MD's tip and the north net, to the window route's tube turn. By default maze_y_in
+    leaves the drone equal room to MN's south face and to MD's tip: nose north it reaches 0.1575 m ahead of
+    its centre and 0.2275 m behind it (DRONE_PARTS), so the line sits south of midway.
+    """
+    W = lambda x, y, z: (*map_to_world(x, y), z)
+    lx, ly = d["launch_mark_in"]
+    walls = {w["name"]: w for w in d["walls"]}
+    gate_x = d["gates_in"]["gate_A"]["between"][0][0]
+    if maze_y_in is None:
+        mn, md = walls["MN"], walls["MD"]
+        y_mn = mn["start_in"][1] - mn["thickness_in"] / 2                                   # MN's south face
+        y_tip = md["end_in"][1] + abs(math.sin(math.radians(md["bearing_deg"]))) * md["thickness_in"] / 2
+        maze_y_in = (y_mn - 0.1575 / IN + y_tip + 0.2275 / IN) / 2                          # 220.2 in
+    return [
+        Waypoint("corridor_end", W(lx, maze_y_in, z_maze), r_corner),
+        Waypoint("gate_a_out", W(gate_x + 18, maze_y_in, z_maze), 1.0),                     # past MD's tip
+    ]
+
+
 def window_route(course_path=COURSE_JSON, z_maze=0.94, z_window=0.85, window_shift_m=0.0,
-                 tube_exit_drop_in=26.0, pad_from_south_in=0.0, maze_top_north_m=0.0, window_via_in=None):
+                 tube_exit_drop_in=26.0, pad_from_south_in=0.0, maze_top_north_m=0.0, window_via_in=None,
+                 maze_y_in=None):
     """Launch -> corridor -> maze -> Gate A -> tube -> window -> pad. Every point comes from the map.
+
+    A map without floor_line_in has the organisers' 2026-11-07 maze: maze_2026_11_07 plans that leg from
+    its walls (maze_y_in: the east leg's y, map inches) and maze_top_north_m does not apply.
 
     window_shift_m moves the window crossing along the wall (+ = towards the wall's north-east end, C2a_b).
     A carrot follower cuts the turn before the window, so it crosses off-centre towards C2a_a, and
@@ -97,7 +126,6 @@ def window_route(course_path=COURSE_JSON, z_maze=0.94, z_window=0.85, window_shi
     d = json.load(open(course_path))
     W = lambda x, y, z: (*map_to_world(x, y), z)
     lx, ly = d["launch_mark_in"]
-    line = d["floor_line_in"]                      # corridor + maze centreline, ends at Gate A
     tube = d["tunnel"]["footprint_in"]
     tube_x = (tube["x_min"] + tube["x_max"]) / 2
     win_wall = next(w for w in d["walls"] if "window" in w)
@@ -110,17 +138,24 @@ def window_route(course_path=COURSE_JSON, z_maze=0.94, z_window=0.85, window_shi
     pad = d["landing_pad_in"]["center"]
     U = 0.57                                        # maze U-turn radius: half the 45 in corridor spacing
     top = maze_top_north_m / IN                     # inches: the map's unit
+    if "floor_line_in" in d:                        # the maze before 2026-11-07 (M1-M3)
+        line = d["floor_line_in"]                   # corridor + maze centreline, ends at Gate A
+        maze = [
+            Waypoint("corridor_end", W(line[1][0], line[1][1] + top, z_maze), U),     # (21, 221.75)
+            Waypoint("m1_top", W(line[2][0], line[2][1] + top, z_maze), U),           # (66, 221.75)
+            Waypoint("m2_bottom_w", W(line[3][0], line[3][1], z_maze), U),            # (66, 158.25)
+            Waypoint("m2_bottom_e", W(line[4][0], line[4][1], z_maze), U),            # (110, 158.25)
+            Waypoint("m3_top", W(line[5][0], line[5][1] + top, z_maze), 0.50),        # (110, 221.75)
+            Waypoint("gate_a_out", W(line[6][0] + 18, line[6][1] + top, z_maze), 1.0),  # past Gate A (132, 221.75)
+        ]
+    else:
+        maze = maze_2026_11_07(d, z_maze, maze_y_in, r_corner=U)
 
     wps = [
         Waypoint("launch", W(lx, ly, GROUND_Z), 0.0, yaw=0.0),
         Waypoint("liftoff", W(lx, ly, 0.45), 0.25),
         Waypoint("climb", W(lx, ly + 30, z_maze), 0.30),
-        Waypoint("corridor_end", W(line[1][0], line[1][1] + top, z_maze), U),     # (21, 221.75)
-        Waypoint("m1_top", W(line[2][0], line[2][1] + top, z_maze), U),           # (66, 221.75)
-        Waypoint("m2_bottom_w", W(line[3][0], line[3][1], z_maze), U),            # (66, 158.25)
-        Waypoint("m2_bottom_e", W(line[4][0], line[4][1], z_maze), U),            # (110, 158.25)
-        Waypoint("m3_top", W(line[5][0], line[5][1] + top, z_maze), 0.50),        # (110, 221.75)
-        Waypoint("gate_a_out", W(line[6][0] + 18, line[6][1] + top, z_maze), 1.0),  # past Gate A (132, 221.75)
+    ] + maze + [
         Waypoint("tube_turn", W(tube_x, 200, z_maze), 0.60),
         Waypoint("tube_exit", W(tube_x - 3, tube["y_min"] - tube_exit_drop_in, z_maze), 0.80, yaw=0.0),
     ] + ([Waypoint("window_via", W(window_via_in[0], window_via_in[1], (z_maze + z_win) / 2), 0.50)]
@@ -139,7 +174,8 @@ def window_route(course_path=COURSE_JSON, z_maze=0.94, z_window=0.85, window_shi
     return wps, zones
 
 
-def gate_b_turns_route(course_path, turns_in, z_maze=0.94, maze_top_north_m=0.0, pad_from_south_in=26.0, r=0.45):
+def gate_b_turns_route(course_path, turns_in, z_maze=0.94, maze_top_north_m=0.0, pad_from_south_in=26.0, r=0.45,
+                       maze_y_in=None):
     """The Gate B route from explicit turns, for maps where gate_b_route's parallel-chicane geometry does not
     hold (the as-built course: C1 leans 347 deg against C2b's 20 deg, and A1's ends are recorded the other way).
 
@@ -149,7 +185,7 @@ def gate_b_turns_route(course_path, turns_in, z_maze=0.94, maze_top_north_m=0.0,
     the as-built window route does. The window route's head is reused as far as the tube turn.
     """
     d = json.load(open(course_path))
-    head, zones = window_route(course_path, z_maze, maze_top_north_m=maze_top_north_m)
+    head, zones = window_route(course_path, z_maze, maze_top_north_m=maze_top_north_m, maze_y_in=maze_y_in)
     head = head[:[w.name for w in head].index("tube_turn") + 1]
     tube = d["tunnel"]["footprint_in"]
     tube_x = (tube["x_min"] + tube["x_max"]) / 2 - 3                   # the window route's tube line

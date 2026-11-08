@@ -42,13 +42,13 @@ The drone has no compass: `navless_nav` assumes the nose points exactly north at
 degree off moves the far end of the route about 9 cm sideways. The old plan route's placement
 results do not qualify the as-built route; use the as-built Gazebo gate and pilot review.
 
-Line up on **Barrier 1**, not M1. M1 (the east side of corridor 1) is not square on the real course:
-the as-built scan has it leaning about 8 deg off north, which would put the far end of the route about
-70 cm off. The taped guideline isn't a check either: the scan couldn't see it. Barrier 1 is the wall just
-behind the launch mark. It runs east–west, and in the scan the barriers sit where the plan has them
-(within 0.3–6 cm, like the net, the window wall and the tube).
-- Hold a straight edge across the airframe, square to its centreline. Corridor 1 is only about 0.99 m
-  wide at the mark (net to M1), so use one of about 0.8 m.
+Line up on **Barrier 1**. The maze walls are no reference: since the organisers' 2026-11-07 change, the
+wall east of corridor 1 is MD, a diagonal about 50 deg off north (and M1, which it replaced, leaned about
+8 deg). The taped guideline isn't a check either: it is the old maze's tape, it runs under MD, and the scan
+couldn't see it. Barrier 1 is the wall just behind the launch mark. It runs east–west, and in the scan the
+barriers sit where the plan has them (within 0.3–6 cm, like the net, the window wall and the tube).
+- Hold a straight edge across the airframe, square to its centreline. MD's foot meets Barrier 1 only
+  about 1.0 m from the west net, and both tapes have to reach Barrier 1 west of it, so use one of about 0.8 m.
 - Measure from both of its ends straight back to Barrier 1's north face, about 41 cm behind the mark.
 - The two readings must agree within **17 mm per metre of straight edge for 1 deg** (14 mm on 0.8 m),
   or **9 mm per metre for 0.5 deg** (7 mm on 0.8 m).
@@ -109,8 +109,8 @@ in the FlyX lab have flown the bridge so far.
 |---|---|---|
 | `blind_carry` in the dark tube | On for course launches; stopped-feed tests passed at 0.5 m/s. At 0.7 m/s, late recovery with magnetometer fusion left 3.9 cm; `EKF2_MAG_TYPE=5` gave 4/4 passes with >=40 cm (plan-course simulation) | Off-course covered-camera check and review of the as-built gate |
 | PX4 vision through Koji's gate | With the stock bridge, a frozen pose is fused and PX4 coasts blind | Same test: does odometry stop or freeze while `vo_state` is 2? |
-| Window vs Gate B route | Window: about 15 cm worst wall (slow). Gate B: about 10–11 cm at A1 | Organisers: does the window earn the chicane's 7 points? |
-| Slow vs fast launch | As-built slow-launch Gazebo gate: 3/3 landed; north-net clearance 5.9–6.5 cm. Old plan-course speed margins do not apply | Practice flight with the pilot ready to take over |
+| Window vs Gate B route | New-maze Gazebo gate (slow, 3 laps each): window route 3/3, closest wall 17.7 cm (MN); Gate B with the 0.08 turn cap 3/3, closest 19.0 cm (boulder 2) | Organisers: does the window earn the chicane's 7 points? |
+| Slow vs fast launch | New-maze slow-launch Gazebo gate (`drone19/flight` `f75e3ae`, heading hold + window route): 3/3 landed, no contacts, closest wall 17.7 cm. The fast launch is not gated on the new maze | Practice flight with the pilot ready to take over |
 
 **Off-course dark bench check**: drone stationary off the course, VIO running, props off. Cover both
 lenses for 3–5 s or use a dark box. Nobody walks through the course. Watch

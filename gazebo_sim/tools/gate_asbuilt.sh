@@ -7,8 +7,9 @@
 #                                                                    # another route (repo-relative), more params
 #
 # Each lap uses the drone estimator profile, the as-built window route (or ROUTE) and course_mission's default speeds
-# (= navless_course_slow's 0.5 / 0.6 / 0.25), with net_margin_m 0.25 (the as-built route crosses M1's and
-# M3's north ends 0.256 m from the net) and 5 mm odometry noise. The clone's Gazebo course model is rebuilt
+# (= navless_course_slow's 0.5 / 0.6 / 0.25), with the course launch's net_margin_m 0.25 (the old maze's route
+# crossed M1's and M3's north ends 0.256 m from the net; the 2026-11-07 maze's routes keep >= 0.5 m) and 5 mm
+# odometry noise. PARAMS go to fly_navless.py after it. The clone's Gazebo course model is rebuilt
 # from the as-built .obj + course_asbuilt.json, so the walls, boulders and the rangefinder's raycast are the
 # real course. Needs the Linux Gazebo + PX4 SITL setup run_sim.sh uses. One line per lap, a verdict, then the
 # minimum clearance per wall (tools/gate_per_wall.py).
@@ -34,7 +35,8 @@ python3 tools/build_course_model.py "$OBJ" course/course_asbuilt.json | tee -a "
 for lap in $(seq 1 "$N"); do
   DH_INSTANCE=1 DH_PX4_PROFILE=drone ./run_sim.sh > "$OUT/sim_$lap.log" 2>&1
   sleep 3
-  DH_PX4_PROFILE=drone timeout 300 python3 fly_navless.py --instance 1 --route "$ROUTE" -p net_margin_m=0.25 \
+  # PARAMS unquoted on purpose: it is a list of "-p NAME=VALUE" words
+  DH_PX4_PROFILE=drone timeout 300 python3 fly_navless.py --instance 1 --route "$ROUTE" -p net_margin_m=0.25 $PARAMS \
       --noise 0.005 --tag asb$lap > "$OUT/fly_$lap.log" 2>&1
   run=$(ls -d runs/*navless-asb$lap 2>/dev/null | tail -1)
   if [[ -z "$run" ]]; then
