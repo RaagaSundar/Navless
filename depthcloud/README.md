@@ -159,7 +159,37 @@ Start it with `docker exec -d ...` or in its own shell: a background `&` inside 
 |---|---|---|
 | `/team/localize/pose` | `PoseStamped`, `frame_id: course` | the left camera's pose; orientation = camera forward/left/up |
 | `/team/localize/base_pose` | `PoseStamped`, `frame_id: course` | `base_link` (drone centre), via the static TF `base_link` → camera; use this one for planning |
-| `/team/localize/status` | `std_msgs/String` (JSON) | `status` (`tracking` / `weak` / `odometry` / `holding` / `lost` / ...), `measured` (fraction of x / y / height / heading the frame measured), `all_measured` (every direction measured), `age` (s since the last course match), `odom_source`, `odom_rejects` |
+| `/team/localize/status` | `std_msgs/String` (JSON) | `status` (`tracking` / `weak` / `odometry` / `holding` / `lost` / ...), `measured` (fraction of x / y / height / heading the frame measured), `all_measured` (every direction measured), `age` (s since the last course match), `odom_source`, `odom_rejects`, `odom_correction` (see below) |
+| `/team/localize/odom_correction` | `PoseStamped`, `frame_id: odom` | drift correction for odometry-frame flight (navless_nav): planar transform D, with `position.x/y` = dx/dy and `orientation` = dyaw about z. Published only while valid. |
+
+**Drift correction for navless_nav (`odom_correction`).** navless_nav maps course points into cuVSLAM's odometry frame once, from the launch mark and the start bearing (`route.course_to_odom`). As cuVSLAM drifts, or if the drone was placed slightly off the mark, the route slides relative to the real walls. The localizer measures that slide, comparing its course-matched pose with odometry at the same instant, and publishes the correction:
+
+```
+corrected_odom_point = D * course_to_odom(p)       # x, y and heading; z unchanged
+D = (dx, dy, dyaw) from /team/localize/odom_correction
+```
+
+- **Fed by:** frames with a course match (`tracking` or `weak`), never `odometry`.
+- **Guards:**
+  - a jump of more than 15 cm / 3° is only accepted once 3 frames in a row agree;
+  - anything over 3 m / 40° in total is rejected;
+  - it's low-passed (1.5 s), and its output moves at most 8 cm/s and 3°/s, so setpoints never jump.
+- **Valid** while the last accepted update is under 3 s old. The status JSON's `odom_correction` has `valid`, `dx`, `dy`, `dyaw_deg`, `age`, `accepted` and `rejected`.
+- **Consumer rules:**
+  - keep the last valid D while it's stale; the drift doesn't go away;
+  - use zero until the first valid one;
+  - freeze it inside the tube, where the camera sees little.
+- **Tuning:** `corr_*` parameters.
+
+**Simulated results** (new as-built maze, a simulation-only test route through it, generated camera data, the odometry error navless_nav would fly with):
+
+| Simulated drift | Without | With `odom_correction` |
+|---|---|---|
+| 3 % distance + 0.3°/s heading (2 seeds) | median 61–65 cm, max 1.4–1.5 m | **median 5–9 cm, max 13–22 cm**, valid 100 % |
+| double that | median 1.34 m, max 2.5 m | median 25 cm, but falls behind late (max 1.35 m) |
+| 1.5 m VSLAM reset jumps + 15 % dropouts | metres | not handled: the jumps are rejected |
+
+Real cuVSLAM drift on 19 hasn't been measured yet. The two real flights show PX4 and cuVSLAM agreeing to within 6 cm, but neither is an absolute reference.
 
 The two pose topics are published only while status is `tracking`, `weak` or `odometry`.
 

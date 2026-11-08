@@ -283,6 +283,136 @@ def pose_angles(T):
     return math.degrees(yaw), math.degrees(pitch), math.degrees(math.atan2(Rr[2, 1], Rr[1, 1]))
 
 
+# ----------------------------------------------------------------------------------------------
+# Drift correction for odometry-frame flight (navless_nav): how far cuVSLAM's frame has slid
+# ----------------------------------------------------------------------------------------------
+
+# Localizer statuses whose pose feeds the drift correction: both carry a course match (weak = some directions
+# held at the odometry prediction, so they simply keep the last correction there). Not "odometry" (no match).
+CORR_STATUSES = ("tracking", "weak")
+
+
+def se2(x, y, yaw):
+    c, s = math.cos(yaw), math.sin(yaw)
+    return np.array([[c, -s, x], [s, c, y], [0.0, 0.0, 1.0]])
+
+
+def se2_of(T):
+    """Planar part (x, y, yaw rad) of a 4x4 pose whose x axis is the body's forward (base_link, FLU)."""
+    return float(T[0, 3]), float(T[1, 3]), math.atan2(T[1, 0], T[0, 0])
+
+
+def se2_params(M):
+    return float(M[0, 2]), float(M[1, 2]), math.atan2(M[1, 0], M[0, 0])
+
+
+class OdomCorrection:
+    """The correction navless_nav applies to its odometry-frame setpoints, so the route stays put relative
+    to the WALLS while cuVSLAM drifts.
+
+    navless_nav turns course points into odometry coordinates once, from the launch mark and the start
+    bearing (route.course_to_odom): that is the NOMINAL course<-odom transform T_nom. As cuVSLAM drifts (or
+    if the drone was placed slightly off the mark / off north), the true course<-odom transform T_meas
+    differs. Our course-matched frames (CORR_STATUSES: tracking, weak) measure it: T_meas = (base_link in the
+    course, from the localizer) * inverse(base_link in odom, from odometry at the same instant).
+
+    The correction is the planar transform D (in the odometry frame) with
+        corrected_odom_point = D * nominal_odom_point,   D = inverse(T_meas) * T_nom,
+    i.e. apply it to every route point after course_to_odom (x, y, and heading; z unchanged).
+
+    Safety:
+      - only frames with a course match feed it (not `odometry`);
+      - consistency: a measurement more than jump_m / jump_deg away from the running estimate is only
+        accepted once confirm_n frames in a row agree on it (one bad match can't move it); measurements
+        implying more than max_m / max_deg in total are always rejected;
+      - accepted measurements are low-passed (tau_s), and the output moves towards them at most max_rate_mps /
+        max_rate_dps, so a setpoint can never jump;
+      - valid only while the last accepted update is younger than stale_s. Consumers should keep the last
+        valid correction while stale (the drift doesn't go away) and treat "never valid" as zero.
+    Simulated (as-built new maze, generated camera data, 3 % / 0.3 deg/s odometry drift): the odometry-frame
+    error navless_nav would fly with drops from median 61-65 cm / max 1.4-1.5 m to median 5-9 cm / max
+    13-22 cm. Double that drift: median 25 cm but it falls behind late (max 1.35 m). It does not handle VSLAM
+    reset jumps (1.5 m): those are rejected."""
+
+    def __init__(self, T_nom_se2, tau_s=1.5, max_rate_mps=0.08, max_rate_dps=3.0, max_m=3.0, max_deg=40.0,
+                 stale_s=3.0, jump_m=0.15, jump_deg=3.0, confirm_n=3):
+        self.T_nom = se2(*T_nom_se2)
+        self.tau, self.rate_m, self.rate_rad = tau_s, max_rate_mps, math.radians(max_rate_dps)
+        self.max_m, self.max_rad, self.stale = max_m, math.radians(max_deg), stale_s
+        self.jump_m, self.jump_rad, self.confirm_n = jump_m, math.radians(jump_deg), confirm_n
+        self.d = None                       # output (dx, dy, dyaw): rate-limited towards self.target
+        self.target = None                  # low-passed accepted measurements
+        self.cand, self.cand_n = None, 0    # a jump waiting for confirmation
+        self.t_last = None                  # time of the last accepted update
+        self.t_prev = None                  # time of the last call (for rate limiting)
+        self.accepted = self.rejected = 0
+
+    @staticmethod
+    def _diff(a, b):
+        return math.hypot(a[0] - b[0], a[1] - b[1]), abs((a[2] - b[2] + math.pi) % (2 * math.pi) - math.pi)
+
+    def measured(self, base_course_se2, base_odom_se2):
+        """D implied by one frame (no filtering)."""
+        T_meas = se2(*base_course_se2) @ np.linalg.inv(se2(*base_odom_se2))
+        return se2_params(np.linalg.inv(T_meas) @ self.T_nom)
+
+    def update(self, base_course_se2, base_odom_se2, t):
+        """One `tracking` frame. Accepted if consistent with the running estimate; a sudden jump (e.g. a VSLAM
+        reset, or one bad match) only counts once confirm_n frames in a row agree on it."""
+        m = self.measured(base_course_se2, base_odom_se2)
+        if math.hypot(m[0], m[1]) > self.max_m or abs(m[2]) > self.max_rad:
+            self.rejected += 1                 # beyond any believable drift
+            return False
+        if self.target is None:
+            self.target = m                    # first fix
+            self.d, self.t_prev = (0.0, 0.0, 0.0), t   # output starts at zero and ramps in (rate limit)
+        else:
+            dm, da = self._diff(m, self.target)
+            if dm > self.jump_m or da > self.jump_rad:
+                if self.cand is not None and self._diff(m, self.cand)[0] <= self.jump_m / 2 \
+                        and self._diff(m, self.cand)[1] <= self.jump_rad / 2:
+                    self.cand_n += 1
+                else:
+                    self.cand, self.cand_n = m, 1
+                if self.cand_n < self.confirm_n:
+                    self.rejected += 1
+                    return False
+                self.target, self.cand, self.cand_n = m, None, 0   # confirmed: re-anchor (output still ramps)
+            else:
+                self.cand, self.cand_n = None, 0
+                a = 1.0 - math.exp(-max(1e-3, t - (self.t_last or t)) / self.tau)
+                self.target = (self.target[0] + a * (m[0] - self.target[0]),
+                               self.target[1] + a * (m[1] - self.target[1]),
+                               self.target[2] + a * ((m[2] - self.target[2] + math.pi) % (2 * math.pi) - math.pi))
+        dt = max(1e-3, t - self.t_prev)
+        step = [self.target[0] - self.d[0], self.target[1] - self.d[1],
+                (self.target[2] - self.d[2] + math.pi) % (2 * math.pi) - math.pi]
+        n, lim = math.hypot(step[0], step[1]), self.rate_m * dt
+        if n > lim:
+            step[0], step[1] = step[0] * lim / n, step[1] * lim / n
+        step[2] = max(-self.rate_rad * dt, min(self.rate_rad * dt, step[2]))
+        self.d = (self.d[0] + step[0], self.d[1] + step[1], self.d[2] + step[2])
+        self.t_prev = self.t_last = t
+        self.accepted += 1
+        return True
+
+    def state(self, t):
+        if self.d is None:
+            return {"valid": False, "dx": 0.0, "dy": 0.0, "dyaw_deg": 0.0, "age": None,
+                    "accepted": self.accepted, "rejected": self.rejected}
+        age = t - self.t_last
+        return {"valid": age <= self.stale, "dx": round(self.d[0], 4), "dy": round(self.d[1], 4),
+                "dyaw_deg": round(math.degrees(self.d[2]), 3), "age": round(age, 2),
+                "accepted": self.accepted, "rejected": self.rejected}
+
+    def apply(self, odom_xy_yaw):
+        """Corrected odometry-frame (x, y, yaw) for a nominal one (identity until the first fix)."""
+        if self.d is None:
+            return odom_xy_yaw
+        M = se2(*self.d) @ se2(*odom_xy_yaw)
+        return se2_params(M)
+
+
 def quat_to_mat(x, y, z, w):
     return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
                      [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
@@ -1205,6 +1335,14 @@ def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutte
         print("   t(s)  true x,y,h        est x,y,h         pos err  hdg err  status    measured x/y/h/hdg")
         perr, herr, stat, trk = [], [], {}, []
         T_prev, gap, odt = None, 1, 1.0 / rate
+        # navless_nav's view: the odometry frame starts at the drone's start pose; course points are mapped
+        # into it with the NOMINAL launch-mark/north transform. Track the drifting odometry chain and the
+        # OdomCorrection, and compare where each puts the drone in the course with the truth.
+        inv_bc = np.linalg.inv(Tbc)
+        T_nom2 = se2_of(base_pose(lm[0], lm[1], base_z, 90.0))
+        corr = OdomCorrection(T_nom2)
+        O_cam = None
+        drift_nom, drift_cor, corr_valid = [], [], 0
         for i, (p, yw) in enumerate(zip(P, yaws)):
             t_frame = time.monotonic()
             T_true = base_pose(p[0], p[1], p[2], yw, rng.normal(0, 2), rng.normal(0, 2)) @ Tbc
@@ -1234,6 +1372,25 @@ def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutte
             tracker.process(cloud, delta, odt if delta is not None else 1.0 / rate)
             e = np.linalg.norm(loc.T[:3, 3] - T_true[:3, 3])
             h = abs((pose_angles(loc.T)[0] - yw + 180) % 360 - 180)
+            if O_cam is None:
+                O_cam = Tbc.copy()                                    # odometry starts at the true start pose
+            elif delta is not None:
+                O_cam = O_cam @ delta                                 # the same drifting deltas the tracker got
+            if delta is not None or i == 0:
+                ob = se2_of(O_cam @ inv_bc)
+                if loc.status in CORR_STATUSES:
+                    corr.update(se2_of(loc.T @ inv_bc), ob, i / rate)
+                st_c = corr.state(i / rate)
+                tb = se2_of(T_true @ inv_bc)
+                nom = se2_params(se2(*T_nom2) @ se2(*ob))             # where the nominal map puts the drone
+                drift_nom.append(math.hypot(nom[0] - tb[0], nom[1] - tb[1]))
+                if st_c["valid"] or corr.d is not None:
+                    D = se2(corr.d[0], corr.d[1], corr.d[2])
+                    cor = se2_params(se2(*T_nom2) @ np.linalg.inv(D) @ se2(*ob))
+                    corr_valid += int(st_c["valid"])
+                else:
+                    cor = nom
+                drift_cor.append(math.hypot(cor[0] - tb[0], cor[1] - tb[1]))
             if on_frame is not None:
                 on_frame(i, T_true, loc.T.copy(), loc.status, cloud, e, h)
             perr.append(e)
@@ -1261,6 +1418,13 @@ def simflight(obj_path, route_path, speed=0.3, rate=3.0, yawmode="fixed", clutte
                   f"max {100 * tx.max():.0f} cm; heading max {th.max():.1f}°", flush=True)
         else:
             print("tracking frames: none", flush=True)
+        if drift_nom:
+            a, b = np.asarray(drift_nom), np.asarray(drift_cor)
+            print(f"odometry-frame drift for navless_nav: nominal median {100 * np.median(a):.0f} cm, "
+                  f"max {100 * a.max():.0f} cm, final {100 * a[-1]:.0f} cm | WITH odom_correction median "
+                  f"{100 * np.median(b):.0f} cm, max {100 * b.max():.0f} cm, final {100 * b[-1]:.0f} cm "
+                  f"(valid {100 * corr_valid / len(a):.0f}% of frames, accepted {corr.accepted}, rejected {corr.rejected})",
+                  flush=True)
         if not view:
             return perr, herr
 
@@ -1378,6 +1542,15 @@ def main():
             self.pub = self.create_publisher(PoseStamped, "/team/localize/pose", 5)          # camera
             self.pub_base = self.create_publisher(PoseStamped, "/team/localize/base_pose", 5)  # base_link
             self.pub_status = self.create_publisher(String, "/team/localize/status", 5)
+            # Drift correction for navless_nav (see OdomCorrection): planar transform D in the odometry frame,
+            # corrected = D * nominal for every route point after course_to_odom. Published only while valid.
+            self.pub_corr = self.create_publisher(PoseStamped, "/team/localize/odom_correction", 5)
+            self.odom_corr = OdomCorrection(
+                se2_of(self.T_base0), tau_s=p("corr_tau_s", 1.5), max_rate_mps=p("corr_max_rate_mps", 0.08),
+                max_rate_dps=p("corr_max_rate_dps", 3.0), max_m=p("corr_max_m", 3.0),
+                max_deg=p("corr_max_deg", 40.0), stale_s=p("corr_stale_s", 3.0),
+                jump_m=p("corr_jump_m", 0.15), jump_deg=p("corr_jump_deg", 3.0), confirm_n=int(p("corr_confirm_n", 3)))
+            self.corr_statuses = tuple(s.strip() for s in str(p("corr_statuses", ",".join(CORR_STATUSES))).split(",") if s.strip())
             self.create_subscription(PointCloud2, p("cloud_topic", "/team/stereo/points"), self.on_cloud, 2)
             self.get_logger().info("Waiting for /team/stereo/points (is stereo_cloud.py running?) ... "
                                    f"view at http://<jetson>:{port}")
@@ -1483,6 +1656,7 @@ def main():
             if not self.started and not self.start_tracking(msg):
                 return
             delta, dt = None, None
+            O = None
             st = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
             if self.use_odom:
                 O, src = self.odom_pose(msg)
@@ -1504,10 +1678,24 @@ def main():
                     self.dump(msg, pts, delta, dt)
                 except Exception as e:                               # never let debugging break tracking
                     self.get_logger().warn(f"frame dump failed: {e}")
+            # Drift correction for odometry-frame flight: only from frames whose x, y and heading were measured
+            # against the walls (`tracking`), paired with odometry at the same instant.
+            if status in self.corr_statuses and O is not None and self.T_base_cam is not None:
+                inv_bc = np.linalg.inv(self.T_base_cam)
+                self.odom_corr.update(se2_of(T @ inv_bc), se2_of(O @ inv_bc), now)
+            corr = self.odom_corr.state(now)
             s = self.tracker.state()
             s.pop("trail", None)
             s.pop("truth", None)
+            s["odom_correction"] = corr
             self.pub_status.publish(String(data=json.dumps(s)))
+            if corr["valid"]:
+                cm = PoseStamped()
+                cm.header.stamp, cm.header.frame_id = msg.header.stamp, self.odom_frame
+                cm.pose.position.x, cm.pose.position.y = float(corr["dx"]), float(corr["dy"])
+                yaw = math.radians(corr["dyaw_deg"])
+                cm.pose.orientation.z, cm.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
+                self.pub_corr.publish(cm)
             if status not in ("tracking", "weak", "odometry"):
                 return                                               # fail closed: no pose
             self.pub.publish(self.pose_msg(msg.header.stamp, T, T[:3, :3] @ R_OPT_TO_FLU.T))
