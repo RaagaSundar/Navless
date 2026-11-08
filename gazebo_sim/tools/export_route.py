@@ -63,11 +63,15 @@ ap.add_argument("--window-via-in", type=float, nargs=2, default=None, metavar=("
 ap.add_argument("--gate-b-turns-in", type=float, nargs=4, default=None, metavar=("Y_W", "X_CH", "Y_G", "X_S"),
                 help="gate_b route from explicit turns, map inches (dh/route.py gate_b_turns_route): leg west "
                      "from the tube at Y_W, chicane leg north at X_CH, through Gate B at Y_G, leg south at X_S")
-# The organisers' 2026-11-07 maze (a map without floor_line_in): north up corridor 1, then east through Gate A
-# along this y. The default balances MN's south face against MD's tip for the drone's reach (dh/route.py
-# maze_2026_11_07).
-ap.add_argument("--maze-y-in", type=float, default=None,
-                help="2026-11-07 maze: the east leg's y through Gate A, map inches (default: balanced MN / MD tip)")
+# The organisers' 2026-11-07 maze (a map without floor_line_in), dh/route.py maze_2026_11_07: north-east up
+# corridor 1 beside MD, round MD's tip through Gate A on an arc centred on the tip, then south into the tube.
+# 0.585 m balances MD (25.2 cm planned, nose north) against the north net at the top of the arc (25.8 cm); the
+# first leg leaves the west net at once (the take-off leans along it). Turning into the tube at 208 in leaves
+# the path straight 0.27 m before the drone's back reaches the mouth.
+ap.add_argument("--tip-radius-m", type=float, default=0.585,
+                help="2026-11-07 maze: radius of the turn round MD's tip, centred on the tip, m")
+ap.add_argument("--tube-turn-y-in", type=float, default=208.0,
+                help="2026-11-07 maze: where the path turns south into the tube, map inches")
 a = ap.parse_args()
 course = os.path.basename(a.course)
 plan = os.path.samefile(a.course, COURSE_JSON)
@@ -78,10 +82,11 @@ a.out = a.out or os.path.join(HERE, "..", "course", f"route_centreline_{a.route}
 
 wps, _ = (window_route(a.course, window_shift_m=a.window_shift_m, tube_exit_drop_in=a.tube_exit_drop_in,
                        pad_from_south_in=a.pad_from_south_in, maze_top_north_m=a.maze_top_north_m,
-                       window_via_in=a.window_via_in, maze_y_in=a.maze_y_in)
+                       window_via_in=a.window_via_in, tip_radius_m=a.tip_radius_m, tube_turn_y_in=a.tube_turn_y_in)
           if a.route == "window" else
           gate_b_turns_route(a.course, a.gate_b_turns_in, maze_top_north_m=a.maze_top_north_m,
-                             pad_from_south_in=a.pad_from_south_in or 26.0, maze_y_in=a.maze_y_in)
+                             pad_from_south_in=a.pad_from_south_in or 26.0, tip_radius_m=a.tip_radius_m,
+                             tube_turn_y_in=a.tube_turn_y_in)
           if a.gate_b_turns_in else gate_b_route(a.course))
 launch = wps[0].p
 # navless_nav climbs vertically to its takeoff height first, so start the route there; stop above the pad.
@@ -122,11 +127,18 @@ if a.route == "gate_b" and a.gate_b_turns_in:
                 "maze_top_north_m": a.maze_top_north_m})
 if not plan:
     out["course_file"] = f"gazebo_sim/course/{course}"
-if "floor_line_in" not in json.load(open(a.course)):
-    y_e = next(w for w in wps if w.name == "corridor_end").p[1]
-    out.update({"maze": "2026-11-07: MN, MD, MT (dh/route.py maze_2026_11_07); the old floor tape is not followed",
-                "maze_y_in": round((y_e + 3.048) / 0.0254, 2)})
+new_maze = "floor_line_in" not in json.load(open(a.course))
+if new_maze:
+    out.update({"maze": "2026-11-07: MN, MD, MT (dh/route.py maze_2026_11_07): north-east beside MD, round its tip "
+                        "through Gate A; the old floor tape is not followed",
+                "tip_radius_m": a.tip_radius_m, "tube_turn_y_in": a.tube_turn_y_in})
 if a.route == "window":
+    if new_maze:
+        tight = {}
+        for ci, ni, f in zip(c0, n0, flying):
+            if f:
+                tight[ni] = min(tight.get(ni, 9.0), float(ci))
+        out["tight_spots_m_nose_north"] = {k: round(v, 3) for k, v in sorted(tight.items(), key=lambda kv: kv[1])[:5]}
     out.update({
         "min_clearance_m_nose_20deg_after_tube": round(float(c20[k20]), 3),
         "min_clearance_at_nose_20deg_after_tube": n20[k20],
@@ -150,5 +162,6 @@ with open(a.out, "w") as f:
     json.dump(out, f, indent=1)
 print(f"{len(pts)} waypoints, {s[-1]:.2f} m -> {os.path.normpath(a.out)}")
 print(f"min clearance nose north: {c0[k0] * 100:.1f} cm ({n0[k0]})"
-      + (f"; nose 20 deg after tube: {c20[k20] * 100:.1f} cm ({n20[k20]})" if a.route == "window" else
-         "; tight spots: " + ", ".join(f"{k} {v * 100:.1f}" for k, v in out["tight_spots_m_nose_north"].items())))
+      + (f"; nose 20 deg after tube: {c20[k20] * 100:.1f} cm ({n20[k20]})" if a.route == "window" else "")
+      + ("; tight spots: " + ", ".join(f"{k} {v * 100:.1f}" for k, v in out["tight_spots_m_nose_north"].items())
+         if "tight_spots_m_nose_north" in out else ""))

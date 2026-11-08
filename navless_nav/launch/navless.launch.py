@@ -83,6 +83,7 @@ ARGUMENTS = [
     ('tof_tube_timeout_s', '0.3', 'drop the ToF correction once /tube/offset is this old, s'),
     ('replan_on_obstacles', 'true',
      'replan around live stereo depth discrepancies on the as-built 3D occupancy map'),
+    ('route_source', 'planner', "'planner' (EGO planner on the as-built map) or 'file' (fly route_file as exported, no re-planning)"),
     ('wall_correction', 'false',
      "fly the route in the frame cloud_localize's drift correction (/team/localize/odom_correction) "
      'keeps on the walls; off until gated'),
@@ -105,7 +106,7 @@ MISSION_PARAMS = ('odometry_topic',     # the same source as flight_interface's
                   'stereo_tube_centering', 'stereo_tube_max_shift_m', 'stereo_tube_rate_mps', 'stereo_tube_hold_s',
                   'tof_tube_centering', 'tof_tube_max_shift_m', 'tof_tube_rate_mps', 'tof_tube_timeout_s',
                   'replan_on_obstacles',
-                  'wall_correction')
+                  'route_source', 'wall_correction')
 
 
 def generate_launch_description():

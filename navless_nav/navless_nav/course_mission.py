@@ -267,6 +267,9 @@ PARAMETERS = (
     ('tof_tube_rate_mps', 0.10),
     ('tof_tube_timeout_s', 0.3),
     ('replan_on_obstacles', True),
+    # 'planner' (Favour's EGO planner, default) or 'file' (fly route_file as
+    # exported: Raaga's gated routes; no planning, no re-planning).
+    ('route_source', 'planner'),
     # Wall correction, off until it has been gated. depthcloud's cloud_localize
     # measures how far cuVSLAM's odometry frame has slid against the walls and
     # publishes /team/localize/odom_correction while that is valid: a planar
@@ -405,8 +408,16 @@ class CourseMission(Node):
             'gate_b' if 'gate_b' in str(self.get_parameter('route_file').value).lower()
             else 'window'
         )
-        # Always use the active 3D occupancy grid + EGO B-spline planner backed by the as-built course map.
-        self.static_asbuilt_route = False
+        # route_source 'planner' (default): the active 3D occupancy grid + EGO
+        # B-spline planner on the as-built course map, with live re-planning.
+        # 'file': fly route_file's waypoints as exported (Raaga's gated
+        # drone19 routes, gazebo_sim/course/route_centreline_*_asbuilt.json),
+        # with no planning and no re-planning: the fallback.
+        source = str(self.get_parameter('route_source').value).strip().lower()
+        if source not in ('planner', 'file'):
+            self.get_logger().error(f"route_source {source!r} is not 'planner' or 'file'; using 'planner'.")
+            source = 'planner'
+        self.static_asbuilt_route = source == 'file'
         self.replan_on_obstacles = str(self.get_parameter('replan_on_obstacles').value).lower() in ('true', '1')
         self.planner_cfg, self.planner_grid, self.planner_router = create_live_course_planner()
         self.live_grid_updated = False
@@ -482,7 +493,22 @@ class CourseMission(Node):
             'then switch to Position...')
 
     def load_route(self, name, bearing_deg, height_m):
-        """Plan dynamically via the active 3D A* + EGO B-spline planner against the as-built course prior."""
+        """Plan dynamically via the active 3D A* + EGO B-spline planner against
+        the as-built course prior, or (route_source 'file') read route_file."""
+        if self.static_asbuilt_route:
+            try:
+                waypoints, launch, kind = load_route(resolve_route_path(name))
+            except (OSError, ValueError, KeyError) as exc:
+                self.get_logger().error(
+                    f'route file not loaded ({exc}); will take off and hover only.')
+                return None
+            kind = f'file {name} ({kind})'
+            odom = [course_to_odom(p, launch, bearing_deg, height_m) for p in waypoints]
+            self.frame = (launch, bearing_deg)
+            self.get_logger().info(
+                f'route {kind}: {len(odom)} waypoints, launch mark {launch}, start bearing '
+                f'{bearing_deg:.1f} deg; no planning or re-planning (route_source file).')
+            return odom
         try:
             low = str(name).lower()
             if not any(k in low for k in ('window', 'gate_b', 'dynamic', 'route.json')):

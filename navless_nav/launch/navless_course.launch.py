@@ -41,6 +41,7 @@ ARGUMENTS = [
      'route to fly (repo-relative): the window route on the confirmed as-built course'),
     # The as-built M1/M3 gaps require this margin: 0.4 m pulls their route points into wall ends.
     ('net_margin_m', '0.25', 'keep setpoints this far inside the net, m'),
+    ('route_source', 'planner', "'planner' (EGO planner) or 'file' (fly route_file as exported: the gated drone19 routes)"),
     # Off until it is gated: cloud_localize (depthcloud/) must be running with the as-built .obj.
     ('wall_correction', 'false',
      "fly the route in the frame cloud_localize's drift correction keeps on the walls"),
@@ -101,7 +102,7 @@ def generate_launch_description():
                           for n in ('route_file', 'start_bearing_deg', 'cruise_speed_mps',
                                     'max_lead_m', 'max_lat_accel_mps2', 'max_turn_sagitta_m',
                                     'odometry_topic', 'blind_carry', 'net_margin_m', 'stereo_tube_centering',
-                                    'stereo_tube_cloud_topic', 'tof_tube_centering', 'replan_on_obstacles', 'wall_correction',
+                                    'stereo_tube_cloud_topic', 'tof_tube_centering', 'replan_on_obstacles', 'route_source', 'wall_correction',
                                     'use_sim_time')}.items(),
     )
     # VL53L1X: from the team image, or from ~/team_ws/pylibs (pip install --target) if it is there.
