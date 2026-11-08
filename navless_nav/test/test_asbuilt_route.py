@@ -1,8 +1,10 @@
 """19 flies the window route planned on the as-built course map, and its launch settings let it.
 
-The plan's route passes 3.6 cm from a real wall (Shining's phone scan, 2026-11-06). The as-built route
-crosses the ~0.6 m gaps between M1's and M3's north ends and the north net 0.256 m from the net. With
-navless.launch.py's 0.4 m net margin, course_mission would pull those setpoints into the wall ends.
+The plan's route passes 3.6 cm from a real wall (Shining's phone scan, 2026-11-06), and the organisers
+replaced the plan's maze on 2026-11-07. The as-built route on the new maze (MN, MD, MT) keeps >= 0.5 m
+from the net, so course_mission's net clamp leaves it alone at the course launch's margin and at
+navless.launch.py's 0.4 m. (On the old maze it crossed M1's and M3's north ends 0.256 m from the net,
+which is why the course launch's margin is 0.25.)
 """
 import json
 import os
@@ -61,9 +63,12 @@ def fly(**params):
 
 
 def test_flies_the_whole_route_without_a_setpoint_pulled_off_it():
-    node = fly(net_margin_m=float(ARGS['net_margin_m']))
-    assert node.state == 'LAND' and 'fenced' not in node.log_once
-    assert 'fenced' in fly(net_margin_m=0.4).log_once      # navless.launch.py's margin would have
+    # Neither the course launch's margin nor navless.launch.py's 0.4 m touches the new maze's route
+    # (>= 0.502 m from the net); a margin wider than that gap still does, so the fence is live.
+    for margin in (float(ARGS['net_margin_m']), 0.4):
+        node = fly(net_margin_m=margin)
+        assert node.state == 'LAND' and 'fenced' not in node.log_once, margin
+    assert 'fenced' in fly(net_margin_m=0.55).log_once
 
 
 def test_gate_b_backup_flies_the_whole_route_at_its_launch_settings():
