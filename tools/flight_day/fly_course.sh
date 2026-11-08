@@ -63,6 +63,18 @@ checks() {   # checks PROFILE START_EPOCH
   done
   if [ -n "$passed" ]; then ok "pre-arm passed (PX4 and the camera agree)"
   else bad "pre-arm: ${last:-no pre-arm line yet} (heading: PX4 vs camera; height: cuVSLAM lost? -> redo prep)"; fi
+  # The height check is one of several: the node streams (and flight_interface can take over) only
+  # once height, PX4 heading, VIO and (loc) the wall-correction registration all pass.
+  local ready=""
+  for i in $(seq 1 15); do
+    [ -n "$f" ] && ready=$(grep -a "ready for takeover" "$f" | tail -1 | cut -d, -f5 | tr -d '"' | cut -c1-150)
+    case "$ready" in "ready for takeover"*) break ;; esac
+    sleep 2; f=$(newest_log)
+  done
+  case "$ready" in
+    "ready for takeover"*) ok "streaming: all takeover checks pass" ;;
+    *) bad "${ready:-not ready for takeover (no line yet)} (status: ros2 topic echo /team/navigation/status)" ;;
+  esac
 
   if [ "$prof" = loc ]; then
     say "localizer"
