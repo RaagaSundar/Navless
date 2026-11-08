@@ -6,6 +6,7 @@
 
 ```bash
 ssh dronehacks@skybeta-19.local
+hostname                                             # must print skybeta-19; if not, log out and tell the team
 sudo systemctl disable --now handheld-slam.service   # else the competitor window is 'sleep infinity'
 cd ~/team_ws/src/Navless && git pull                 # main; then rebuild the team workspace as usual
 sudoedit /etc/skybeta/drone.env                      # COMPETITOR_PKG=navless_nav
@@ -40,10 +41,18 @@ cuVSLAM tracking, the odometry rate, and the PX4 link. Each FAIL prints its fix.
 The drone has no compass: `navless_nav` assumes the nose points exactly north at power-up, and every
 degree off moves the far end of the route about 9 cm sideways. The old plan route's placement
 results do not qualify the as-built route; use the as-built Gazebo gate and pilot review.
-- Hold a straight edge of at least 1 m along the airframe's centreline. Measure from both of its ends
-  to the M1 wall face (the east side of corridor 1, which runs north–south).
-- The two readings must agree within **17 mm per metre of straight edge for 1 deg**, or **9 mm for 0.5 deg**.
-- First check that M1 is square to the course on the day: the layout may differ from the model.
+
+Line up on **Barrier 1**, not M1. M1 (the east side of corridor 1) is not square on the real course:
+the as-built scan has it leaning about 8 deg off north, which would put the far end of the route about
+70 cm off. The taped guideline isn't a check either: the scan couldn't see it. Barrier 1 is the wall just
+behind the launch mark. It runs east–west, and in the scan the barriers sit where the plan has them
+(within 0.3–6 cm, like the net, the window wall and the tube).
+- Hold a straight edge across the airframe, square to its centreline. Corridor 1 is only about 0.99 m
+  wide at the mark (net to M1), so use one of about 0.8 m.
+- Measure from both of its ends straight back to Barrier 1's north face, about 41 cm behind the mark.
+- The two readings must agree within **17 mm per metre of straight edge for 1 deg** (14 mm on 0.8 m),
+  or **9 mm per metre for 0.5 deg** (7 mm on 0.8 m).
+- First sight along Barrier 1 to check it's straight: the layout may differ from the model.
 - After any handling or placement, restart the stack and keep the drone still: the odometry frame
   is fixed at startup. Never restart it in flight.
 
