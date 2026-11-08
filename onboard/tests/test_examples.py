@@ -417,6 +417,10 @@ def test_passive_checker_has_no_control_publishers(example):
         assert isinstance(publisher, checker.NoPublish)
         with pytest.raises(RuntimeError, match='Passive checker'):
             publisher.publish(Message())
+    events = node.create_publisher(Message, '/parameter_events', 10)
+    events.publish(Message())
+    assert len(events.messages) == 1  # ROS node construction must remain usable.
+    assert isinstance(node.create_publisher(Message, '/fmu/in/vehicle_visual_odometry', 10), checker.NoPublish)
     assert node.problem() == 'PX4 telemetry missing'
     node.tick()
     assert node.phase == 'WAIT'

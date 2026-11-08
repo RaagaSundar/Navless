@@ -18,9 +18,12 @@ class NoPublish:
 
 
 class OdometryCheck(TestFlight):
-    def create_publisher(self, *args, **kwargs):
-        # TestFlight's three control publishers are inert objects: no DDS writers.
-        return NoPublish()
+    def create_publisher(self, msg_type, topic, qos_profile, **kwargs):
+        # Suppress every PX4 input writer, including TestFlight's three controls.
+        # ROS Node construction still needs its ordinary parameter-event writer.
+        if topic.startswith('/fmu/in/'):
+            return NoPublish()
+        return super().create_publisher(msg_type, topic, qos_profile, **kwargs)
 
     def __init__(self, seconds):
         super().__init__()
