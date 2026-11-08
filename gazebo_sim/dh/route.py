@@ -139,6 +139,37 @@ def window_route(course_path=COURSE_JSON, z_maze=0.94, z_window=0.85, window_shi
     return wps, zones
 
 
+def gate_b_turns_route(course_path, turns_in, z_maze=0.94, maze_top_north_m=0.0, pad_from_south_in=26.0, r=0.45):
+    """The Gate B route from explicit turns, for maps where gate_b_route's parallel-chicane geometry does not
+    hold (the as-built course: C1 leans 347 deg against C2b's 20 deg, and A1's ends are recorded the other way).
+
+    turns_in = (y_w, x_ch, y_g, x_s), map inches: the leg west from the tube at y_w (south of C1's end), the
+    chicane leg north at x_ch, the leg west through Gate B at y_g, and the leg south at x_s (east of A1). The
+    descent then passes under A1's south end and comes onto the pad from pad_from_south_in south of it, as
+    the as-built window route does. The window route's head is reused as far as the tube turn.
+    """
+    d = json.load(open(course_path))
+    head, zones = window_route(course_path, z_maze, maze_top_north_m=maze_top_north_m)
+    head = head[:[w.name for w in head].index("tube_turn") + 1]
+    tube = d["tunnel"]["footprint_in"]
+    tube_x = (tube["x_min"] + tube["x_max"]) / 2 - 3                   # the window route's tube line
+    y_w, x_ch, y_g, x_s = turns_in
+    px, py = d["landing_pad_in"]["center"]
+    W = lambda x, y, z: (*map_to_world(x, y), z)
+    wps = head + [
+        Waypoint("tube_south", W(tube_x, y_w, z_maze), r, yaw=0.0),
+        Waypoint("c1_south", W(x_ch, y_w, z_maze), r),
+        Waypoint("gate_b", W(x_ch, y_g, z_maze), r),
+        Waypoint("room_east", W(x_s, y_g, z_maze), r),
+        Waypoint("a1_south", W(x_s, py - pad_from_south_in, 0.75), r),
+        Waypoint("pad_south", W(px, py - pad_from_south_in, 0.60), 0.35),
+        Waypoint("pad_above", W(px, py, 0.35), 0.25),
+        Waypoint("pad", W(px, py, GROUND_Z + 0.05), 0.0),
+    ]
+    zones = dict(zones, window=(W(x_ch, y_g, z_maze), 0.55))        # cap speed at the Gate B turn
+    return wps, zones
+
+
 def gate_b_route(course_path=COURSE_JSON, z_maze=0.94, rho_c1=0.485, rho_a1=0.475, r_tube=None, r_room=None):
     """Launch -> corridor -> maze -> Gate A -> tube -> round C1's south end -> chicane -> Gate B -> pad.
 
