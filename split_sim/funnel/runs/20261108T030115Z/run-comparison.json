@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "run_id": "20261108T030115Z",
+  "name": "Jetson funnel bearing at fixed yaw",
+  "kind": "bench",
+  "baseline_id": null,
+  "changes": [
+    {
+      "field": "simulation fixture",
+      "before": "no paired baseline",
+      "after": "two matte panels and fixed stereo rig",
+      "evidence": [
+        "bench.sdf",
+        "observations.jsonl",
+        "aim.png"
+      ],
+      "provenance": "human annotation; inspect evidence"
+    }
+  ],
+  "notes": [
+    "First funnel benchmark. No equivalent prior run was identified. The static camera fixture and stereo settings are archived in bench.sdf. Per-frame image bearings and cuVSLAM tracking are in observations.jsonl."
+  ],
+  "confounds": [
+    "A static camera fixture is pitched level at 0.9 m with -6 degrees world yaw. OpenCV uses dark wall boundaries against bright sky. No motion, occlusion, or onboard flight authority was tested.",
+    "The sensor bridge reported a segmentation fault during process teardown after the observation interval. See container.log and bridge.log."
+  ],
+  "evidence": [
+    "renderer-source.json"
+  ],
+  "source_sha256": {
+    "renderer-source.json": "f366bff90f9491273eb22bf0cc3491900d463a2bd095e06cefa6f7db877a5bbd"
+  },
+  "telemetry": {
+    "state": "arm/landed telemetry not archived",
+    "observed_flight": false,
+    "source": null,
+    "sample_count": 0
+  },
+  "snapshot": {
+    "renderer-source.json:world_sha256": "4a0f3528180fc5ae179fd25e8e26812ba2c85b36c39e979eb4667b74cb2ed26b"
+  },
+  "comparison_state": "recorded differences with annotations"
+}

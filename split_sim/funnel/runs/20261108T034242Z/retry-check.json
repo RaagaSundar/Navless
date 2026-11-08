@@ -1,0 +1,21 @@
+{
+  "baseline": "20261108T032239Z",
+  "pilot_files_match": true,
+  "pilot_files_sha256": {
+    "startup.py": "1f7a100a3291236873cfd1848a3a67e174b32b4acc4b39c838303ba25635b376",
+    "split_frame.py": "564489051c6afd92d93029bbbee722108b0326cdb95e838e583194eb56c78a62",
+    "passage.py": "e087646fd1a71511f918b327506dd45b57f334c2831e636b00d113d4d9153d69",
+    "opening.py": "1aa801a639b5e85352b14b7030fe6866f7e9b85a53eb56894173657ad1d6fd40",
+    "launch_datum.py": "5ef46eafe3998cc5c43dfff730fce047e572ca00deb5fef84dc9c37b6c248a7d",
+    "traverse.py": "0bda9ad469050ebbbf19b6196428bb957942f9ac643945c2dd72e87b31ccccfd",
+    "observe.py": "021eae978ddb610af5f1e900eaf1d36435102ee981258d5c3c040c7c4ce60f8a",
+    "frames.py": "1d4904033bd1e44fd9b889b108d43e5fbe4079cf9fd253eff0429c2174cf3d84",
+    "mission.py": "eb87e25b5842aa653065ed011a2ffab10d74ccd63aceff6e55357aac261516ec",
+    "hover.py": "35b91b75ea4be702e4c368e7800046e4d4ce5c18edeba45734ab3bcd0978a532",
+    "integrity.py": "7796ed70fc18f5b0b405334f2a1b24f6ba2d9e019181886d5070f315cbffbfec",
+    "px4_navigation.py": "c99a24f4d98be4447aeb3be2c82fedeb1cb17f8a4cbf5c13f6f8ea135c92f8a9"
+  },
+  "baseline_px4_source": "",
+  "before_connectivity": "prior staged PX4 lost EV XY/yaw before arming",
+  "after_connectivity": "fresh simulation, cuVSLAM tracker initialized, EV XY/yaw and range height active on initial check"
+}

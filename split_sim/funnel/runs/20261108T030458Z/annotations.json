@@ -1,0 +1,5 @@
+{
+  "notes":["First airborne attempt in this funnel. The preceding run is a fixed-camera bench. Flight motion and PX4 state are recorded independently in flight/track.json. See flight/result.json for bearing and motion measurements."],
+  "confounds":["Renderer, camera rate, viewpoint and vehicle dynamics changed together between the two runs. The observed error is from the left optical camera. The controller only used the central view of a level, bright-backed opening. Traversal and hardware flight were outside the approved plan."],
+  "changes":[{"field":"fixture and execution","before":"fixed stereo rig in Jetson-local Gazebo","after":"dynamic quad in Mac Gazebo and PX4 SITL, with Jetson cuVSLAM and OpenCV yaw control","evidence":["split_laptop.sh","simulated-quad.sdf","flight/mission.log","flight/track.json"]}]
+}

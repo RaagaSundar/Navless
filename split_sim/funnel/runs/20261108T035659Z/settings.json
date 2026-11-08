@@ -1,0 +1,32 @@
+{
+  "estimator": "stereo cuVSLAM on Jetson, PX4 EV XY/yaw + downward range height",
+  "takeoff_height_m": 1,
+  "start_bearing_deg": 96,
+  "yaw_policy": "OpenCV hover alignment then hold yaw; continuously update metric midpoint during approach",
+  "yaw_rate_deg_s": 5,
+  "limit_deg": 10,
+  "hold_s": 1,
+  "cruise_m_s": 0.25,
+  "max_lead_m": 0.16,
+  "aim_settle_s": 3,
+  "landing_distance_beyond_midpoint_m": 1,
+  "commit_distance_m": 1.2,
+  "disturbance": {
+    "seed": 409250586,
+    "spawn_enu_m": [
+      0.0307,
+      0.2409,
+      0.075
+    ],
+    "yaw_deg": -6,
+    "wind_enu_m_s": [
+      0,
+      1.0,
+      0
+    ],
+    "gust_amplitude_m_s": 0.65,
+    "period_sim_s": 4.426,
+    "wind_response_per_s": 0.18,
+    "wind_link": "base_link"
+  }
+}

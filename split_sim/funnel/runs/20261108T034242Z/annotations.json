@@ -1,0 +1,5 @@
+{
+  "notes":["Retry of the staged traversal on fresh Gazebo and PX4 instances. Compare runs by UTC ID. Independent flight outcome is recorded separately in flight/result.json."],
+  "confounds":["Network availability, simulation startup and sensor timing differed. The baseline remained disarmed. This comparison cannot estimate repeatability."],
+  "changes":[{"field":"connection and estimator at preflight","before":"previous run lost the Jetson link and PX4 visual fusion before arming","after":"Jetson reconnected; fresh PX4 reports EV position/yaw fusion and valid XY","evidence":["retry-check.json","flight/initial_status.log"]}]
+}

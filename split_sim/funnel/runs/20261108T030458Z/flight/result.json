@@ -1,0 +1,14 @@
+{
+  "run_id": "20261108T030458Z",
+  "airborne_samples": 1723,
+  "peak_height_above_launch_m": 1.0301584648845679,
+  "max_horizontal_offset_m": 0.06415061208549061,
+  "initial_median_bearing_right_deg": -5.839067422847784,
+  "pre_land_median_bearing_right_deg": 0.037560018859741494,
+  "pre_land_frame_count": 32,
+  "pre_land_approx_sim_s": 153.248,
+  "contact_topics_verified": true,
+  "recorded_non_ground_contacts": 0,
+  "final_landed": true,
+  "final_armed": false
+}

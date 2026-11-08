@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "run_id": "20261108T034904Z",
+  "name": "Windy funnel 01 \u00b7 seed 1058784111",
+  "kind": "flight attempted",
+  "baseline_id": "20261108T034242Z",
+  "changes": [
+    {
+      "field": "renderer-source.json:spawn_sdf_sha256",
+      "before": "a5d6131addc341245d145647efbc332f0e264a14ee38e775c20cf0c211aca852",
+      "after": "b0f060a96a6a3d4deafdfcd5648c3525decc4f10e6e0604cac41544971bb7e24",
+      "evidence": [
+        "renderer-source.json"
+      ],
+      "provenance": "archived field difference"
+    },
+    {
+      "field": "renderer-source.json:world_sha256",
+      "before": "6d6c08b581db8adbda1e7a8915fc69bc2952182686bc2cd6ab2ea5590a4d142e",
+      "after": "5af7f423277e1e151b26b05d7dd2f86b89800fa3a001ece30116e17c850ec720",
+      "evidence": [
+        "renderer-source.json"
+      ],
+      "provenance": "archived field difference"
+    },
+    {
+      "field": "initial position and wind",
+      "before": "centered spawn and calm air",
+      "after": {
+        "seed": 1058784111,
+        "spawn_enu_m": [
+          0.0834,
+          -0.3064,
+          0.075
+        ],
+        "yaw_deg": -6,
+        "wind_enu_m_s": [
+          0,
+          -1.0,
+          0
+        ],
+        "gust_amplitude_m_s": 0.65,
+        "period_sim_s": 6.652,
+        "wind_response_per_s": 0.18,
+        "wind_link": "base_link"
+      },
+      "evidence": [
+        "wind-fixture.json",
+        "simulated-quad.sdf",
+        "spawn-request.txt",
+        "wind.jsonl"
+      ],
+      "provenance": "human annotation; inspect evidence"
+    }
+  ],
+  "notes": [
+    "See flight/result.json for the independent grade and wind.jsonl for sampled Gazebo state."
+  ],
+  "confounds": [
+    "Launch position and wind change together. Gust phase at takeoff depends on startup timing. Gazebo wind response is a simplified force model."
+  ],
+  "evidence": [
+    "settings.json",
+    "renderer-source.json"
+  ],
+  "source_sha256": {
+    "settings.json": "04a2c76535d88f7dcf8bfc033bdcf11fe978a6aa6b85f00d579cdda2dbe360f9",
+    "renderer-source.json": "b14c5514c34efa236fa39134e5225587687793b8bfce7e1db3408f7bb34a9ac9"
+  },
+  "telemetry": {
+    "state": "observed armed airborne samples",
+    "observed_flight": true,
+    "source": "flight/track.json",
+    "sample_count": 11606
+  },
+  "snapshot": {
+    "settings.json:estimator": "stereo cuVSLAM on Jetson, PX4 EV XY/yaw + downward range height",
+    "settings.json:start_bearing_deg": 96,
+    "settings.json:takeoff_height_m": 1,
+    "settings.json:cruise_m_s": 0.25,
+    "settings.json:max_lead_m": 0.16,
+    "settings.json:yaw_policy": "OpenCV hover alignment then hold yaw; continuously update metric midpoint during approach",
+    "settings.json:yaw_rate_deg_s": 5,
+    "renderer-source.json:world_sha256": "5af7f423277e1e151b26b05d7dd2f86b89800fa3a001ece30116e17c850ec720",
+    "renderer-source.json:spawn_sdf_sha256": "b0f060a96a6a3d4deafdfcd5648c3525decc4f10e6e0604cac41544971bb7e24"
+  },
+  "comparison_state": "recorded differences with annotations"
+}

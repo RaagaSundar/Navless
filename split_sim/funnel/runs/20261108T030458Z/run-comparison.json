@@ -1,0 +1,105 @@
+{
+  "schema": 1,
+  "run_id": "20261108T030458Z",
+  "name": "Funnel hover and center the opening",
+  "kind": "flight attempted",
+  "baseline_id": "20261108T030115Z",
+  "changes": [
+    {
+      "field": "renderer-source.json:spawn_sdf_sha256",
+      "before": "not archived",
+      "after": "a5d6131addc341245d145647efbc332f0e264a14ee38e775c20cf0c211aca852",
+      "evidence": [
+        "renderer-source.json"
+      ],
+      "provenance": "archived field difference"
+    },
+    {
+      "field": "settings.json:estimator",
+      "before": "not archived",
+      "after": "stereo cuVSLAM on Jetson, PX4 EV XY/yaw + downward range height",
+      "evidence": [
+        "settings.json"
+      ],
+      "provenance": "archived field difference"
+    },
+    {
+      "field": "settings.json:start_bearing_deg",
+      "before": "not archived",
+      "after": 96,
+      "evidence": [
+        "settings.json"
+      ],
+      "provenance": "archived field difference"
+    },
+    {
+      "field": "settings.json:takeoff_height_m",
+      "before": "not archived",
+      "after": 1,
+      "evidence": [
+        "settings.json"
+      ],
+      "provenance": "archived field difference"
+    },
+    {
+      "field": "settings.json:yaw_policy",
+      "before": "not archived",
+      "after": "OpenCV opening center during in-place hover",
+      "evidence": [
+        "settings.json"
+      ],
+      "provenance": "archived field difference"
+    },
+    {
+      "field": "settings.json:yaw_rate_deg_s",
+      "before": "not archived",
+      "after": 5,
+      "evidence": [
+        "settings.json"
+      ],
+      "provenance": "archived field difference"
+    },
+    {
+      "field": "fixture and execution",
+      "before": "fixed stereo rig in Jetson-local Gazebo",
+      "after": "dynamic quad in Mac Gazebo and PX4 SITL, with Jetson cuVSLAM and OpenCV yaw control",
+      "evidence": [
+        "split_laptop.sh",
+        "simulated-quad.sdf",
+        "flight/mission.log",
+        "flight/track.json"
+      ],
+      "provenance": "human annotation; inspect evidence"
+    }
+  ],
+  "notes": [
+    "First airborne attempt in this funnel. The preceding run is a fixed-camera bench. Flight motion and PX4 state are recorded independently in flight/track.json. See flight/result.json for bearing and motion measurements."
+  ],
+  "confounds": [
+    "Renderer, camera rate, viewpoint and vehicle dynamics changed together between the two runs. The observed error is from the left optical camera. The controller only used the central view of a level, bright-backed opening. Traversal and hardware flight were outside the approved plan."
+  ],
+  "evidence": [
+    "settings.json",
+    "renderer-source.json"
+  ],
+  "source_sha256": {
+    "settings.json": "dcd2ad890083707a25894da22a513d84d7f2a6ea15e9d0df7e6d427b67bc4f31",
+    "renderer-source.json": "e903d3b0b70e45e87685a96c0ea72461420de8e0b855c6bd7b5f54c86f14bfa6"
+  },
+  "telemetry": {
+    "state": "observed armed airborne samples",
+    "observed_flight": true,
+    "source": "flight/track.json",
+    "sample_count": 6959
+  },
+  "snapshot": {
+    "settings.json:estimator": "stereo cuVSLAM on Jetson, PX4 EV XY/yaw + downward range height",
+    "settings.json:start_bearing_deg": 96,
+    "settings.json:takeoff_height_m": 1,
+    "settings.json:yaw_policy": "OpenCV opening center during in-place hover",
+    "settings.json:yaw_rate_deg_s": 5,
+    "renderer-source.json:world_sha256": "4a0f3528180fc5ae179fd25e8e26812ba2c85b36c39e979eb4667b74cb2ed26b",
+    "renderer-source.json:spawn_sdf_sha256": "a5d6131addc341245d145647efbc332f0e264a14ee38e775c20cf0c211aca852"
+  },
+  "comparison_state": "recorded differences with annotations"
+}

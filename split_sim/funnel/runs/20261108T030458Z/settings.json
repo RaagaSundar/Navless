@@ -1,0 +1,9 @@
+{
+  "estimator": "stereo cuVSLAM on Jetson, PX4 EV XY/yaw + downward range height",
+  "takeoff_height_m": 1,
+  "start_bearing_deg": 96,
+  "yaw_policy": "OpenCV opening center during in-place hover",
+  "yaw_rate_deg_s": 5,
+  "limit_deg": 10,
+  "hold_s": 5
+}

@@ -1,0 +1,237 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Team quad stand-in for PX4 SITL on Gazebo Harmonic.
+
+  Rotor positions are the real airframe's measured control-allocation geometry (body FRD from the
+  centre of mass): front x +0.08, y +-0.16; rear x -0.15, y +-0.14. 6.1 in props, so the
+  footprint is 0.385 m long x 0.475 m wide, as in the course file. Mass 1.5 kg, thrust-to-weight ~3.
+  A downward laser rangefinder sits 2.7 cm left of and 3.4 cm below the body origin (as measured);
+  its readings come from sensor_bridge.py, which ray-casts against the course.
+
+  Sensors, topic names and motor plugins follow PX4's x500 so PX4's gz_bridge attaches unchanged.
+  Inertia is scaled with arm length and motor constant so PX4's stock x500 rate gains still fit.
+  The OdometryPublisher stands in for the visual odometry. With DH_PX4_PROFILE=sim/stock PX4 reads it
+  directly; with DH_PX4_PROFILE=drone run_sim.sh hides it from PX4 and sensor_bridge.py delivers it the
+  way the real drone does (30 Hz, delayed, FRD frame, horizontal position + yaw only).
+-->
+<sdf version="1.9">
+  <model name="dh_quad">
+    <pose>0 0 0.07 0 0 0</pose>
+    <self_collide>false</self_collide>
+    <static>false</static>
+    <link name="base_link">
+      <inertial>
+        <mass>1.5</mass>
+        <inertia>
+          <ixx>0.0237</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.0185</iyy><iyz>0</iyz>
+          <izz>0.0400</izz>
+        </inertia>
+      </inertial>
+      <gravity>true</gravity>
+      <velocity_decay/>
+
+      <!-- body, battery, camera, arms (visual only) -->
+      <visual name="body"><pose>0 0 0.005 0 0 0</pose><geometry><box><size>0.20 0.09 0.04</size></box></geometry>
+        <material><ambient>0.08 0.08 0.09 1</ambient><diffuse>0.08 0.08 0.09 1</diffuse></material></visual>
+      <visual name="battery"><pose>-0.01 0 0.042 0 0 0</pose><geometry><box><size>0.15 0.05 0.034</size></box></geometry>
+        <material><ambient>0.85 0.45 0.05 1</ambient><diffuse>0.85 0.45 0.05 1</diffuse></material></visual>
+      <visual name="rangefinder"><pose>0 0.027 -0.034 0 0 0</pose><geometry><box><size>0.02 0.015 0.01</size></box></geometry>
+        <material><ambient>0.1 0.5 0.1 1</ambient><diffuse>0.1 0.5 0.1 1</diffuse></material></visual>
+      <visual name="stereo_camera"><pose>0.105 0 0.01 0 0 0</pose><geometry><box><size>0.022 0.097 0.03</size></box></geometry>
+        <material><ambient>0.6 0.6 0.65 1</ambient><diffuse>0.6 0.6 0.65 1</diffuse></material></visual>
+      <visual name="arm_fr"><pose>0.04 -0.08 0 0 0 -1.1071</pose><geometry><box><size>0.179 0.022 0.008</size></box></geometry>
+        <material><ambient>0.12 0.12 0.12 1</ambient><diffuse>0.12 0.12 0.12 1</diffuse></material></visual>
+      <visual name="arm_fl"><pose>0.04 0.08 0 0 0 1.1071</pose><geometry><box><size>0.179 0.022 0.008</size></box></geometry>
+        <material><ambient>0.12 0.12 0.12 1</ambient><diffuse>0.12 0.12 0.12 1</diffuse></material></visual>
+      <visual name="arm_rr"><pose>-0.075 -0.07 0 0 0 0.7509</pose><geometry><box><size>0.205 0.022 0.008</size></box></geometry>
+        <material><ambient>0.12 0.12 0.12 1</ambient><diffuse>0.12 0.12 0.12 1</diffuse></material></visual>
+      <visual name="arm_rl"><pose>-0.075 0.07 0 0 0 -0.7509</pose><geometry><box><size>0.205 0.022 0.008</size></box></geometry>
+        <material><ambient>0.12 0.12 0.12 1</ambient><diffuse>0.12 0.12 0.12 1</diffuse></material></visual>
+      <visual name="nose_marker"><pose>0.12 0 0.03 0 0 0</pose><geometry><box><size>0.02 0.02 0.01</size></box></geometry>
+        <material><ambient>0.9 0.1 0.1 1</ambient><diffuse>0.9 0.1 0.1 1</diffuse><emissive>0.5 0 0 1</emissive></material></visual>
+
+      <!-- collisions: body, arms and four feet -->
+      <collision name="body_collision"><pose>0 0 0.01 0 0 0</pose><geometry><box><size>0.22 0.10 0.07</size></box></geometry></collision>
+      <collision name="arm_fr_collision"><pose>0.04 -0.08 0 0 0 -1.1071</pose><geometry><box><size>0.179 0.022 0.008</size></box></geometry></collision>
+      <collision name="arm_fl_collision"><pose>0.04 0.08 0 0 0 1.1071</pose><geometry><box><size>0.179 0.022 0.008</size></box></geometry></collision>
+      <collision name="arm_rr_collision"><pose>-0.075 -0.07 0 0 0 0.7509</pose><geometry><box><size>0.205 0.022 0.008</size></box></geometry></collision>
+      <collision name="arm_rl_collision"><pose>-0.075 0.07 0 0 0 -0.7509</pose><geometry><box><size>0.205 0.022 0.008</size></box></geometry></collision>
+      <collision name="foot_fr"><pose>0.10 -0.12 -0.045 0 0 0</pose><geometry><box><size>0.02 0.02 0.05</size></box></geometry></collision>
+      <collision name="foot_fl"><pose>0.10 0.12 -0.045 0 0 0</pose><geometry><box><size>0.02 0.02 0.05</size></box></geometry></collision>
+      <collision name="foot_rr"><pose>-0.10 -0.11 -0.045 0 0 0</pose><geometry><box><size>0.02 0.02 0.05</size></box></geometry></collision>
+      <collision name="foot_rl"><pose>-0.10 0.11 -0.045 0 0 0</pose><geometry><box><size>0.02 0.02 0.05</size></box></geometry></collision>
+      <visual name="foot_fr_v"><pose>0.10 -0.12 -0.045 0 0 0</pose><geometry><box><size>0.02 0.02 0.05</size></box></geometry></visual>
+      <visual name="foot_fl_v"><pose>0.10 0.12 -0.045 0 0 0</pose><geometry><box><size>0.02 0.02 0.05</size></box></geometry></visual>
+      <visual name="foot_rr_v"><pose>-0.10 -0.11 -0.045 0 0 0</pose><geometry><box><size>0.02 0.02 0.05</size></box></geometry></visual>
+      <visual name="foot_rl_v"><pose>-0.10 0.11 -0.045 0 0 0</pose><geometry><box><size>0.02 0.02 0.05</size></box></geometry></visual>
+
+      <sensor name="body_contact" type="contact">
+        <always_on>1</always_on>
+        <update_rate>100</update_rate>
+        <topic>/dh/contact/base</topic>
+        <contact>
+          <collision>body_collision</collision>
+          <collision>arm_fr_collision</collision>
+          <collision>arm_fl_collision</collision>
+          <collision>arm_rr_collision</collision>
+          <collision>arm_rl_collision</collision>
+        </contact>
+      </sensor>
+
+      <!-- PX4 sensors (same names, rates and noise as PX4's x500) -->
+      <sensor name="air_pressure_sensor" type="air_pressure">
+        <always_on>1</always_on>
+        <update_rate>50</update_rate>
+        <air_pressure><pressure><noise type="gaussian"><mean>0</mean><stddev>3</stddev></noise></pressure></air_pressure>
+      </sensor>
+      <sensor name="magnetometer_sensor" type="magnetometer">
+        <always_on>1</always_on>
+        <update_rate>100</update_rate>
+        <magnetometer>
+          <x><noise type="gaussian"><stddev>0.0001</stddev></noise></x>
+          <y><noise type="gaussian"><stddev>0.0001</stddev></noise></y>
+          <z><noise type="gaussian"><stddev>0.0001</stddev></noise></z>
+        </magnetometer>
+      </sensor>
+      <sensor name="imu_sensor" type="imu">
+        <always_on>1</always_on>
+        <update_rate>250</update_rate>
+        <imu>
+          <angular_velocity>
+            <x><noise type="gaussian"><mean>0.0</mean><stddev>0.0008726646</stddev></noise></x>
+            <y><noise type="gaussian"><mean>0.0</mean><stddev>0.0008726646</stddev></noise></y>
+            <z><noise type="gaussian"><mean>0.0</mean><stddev>0.0008726646</stddev></noise></z>
+          </angular_velocity>
+          <linear_acceleration>
+            <x><noise type="gaussian"><mean>0.0</mean><stddev>0.00637</stddev></noise></x>
+            <y><noise type="gaussian"><mean>0.0</mean><stddev>0.00637</stddev></noise></y>
+            <z><noise type="gaussian"><mean>0.0</mean><stddev>0.00686</stddev></noise></z>
+          </linear_acceleration>
+        </imu>
+      </sensor>
+      <sensor name="navsat_sensor" type="navsat">
+        <always_on>1</always_on>
+        <update_rate>30</update_rate>
+      </sensor>
+    
+      <sensor name="oak_left" type="camera">
+        <pose>0.1053 0.0375 0.0304 0 0 0</pose>
+        <always_on>1</always_on>
+        <update_rate>31.25</update_rate>
+        <topic>/oak/left/image_raw</topic>
+        <gz_frame_id>oak_left_camera_optical_frame</gz_frame_id>
+        <camera>
+          <camera_info_topic>/oak/left/camera_info</camera_info_topic>
+          <horizontal_fov>1.396263</horizontal_fov>
+          <image><width>640</width><height>400</height><format>L8</format></image>
+          <clip><near>0.1</near><far>12</far></clip>
+          <noise><type>gaussian</type><mean>0</mean><stddev>0.007</stddev></noise>
+        </camera>
+      </sensor>
+      <sensor name="oak_right" type="camera">
+        <pose>0.1053 -0.0375 0.0304 0 0 0</pose>
+        <always_on>1</always_on>
+        <update_rate>31.25</update_rate>
+        <topic>/oak/right/image_raw</topic>
+        <gz_frame_id>oak_right_camera_optical_frame</gz_frame_id>
+        <camera>
+          <camera_info_topic>/oak/right/camera_info</camera_info_topic>
+          <horizontal_fov>1.396263</horizontal_fov>
+          <image><width>640</width><height>400</height><format>L8</format></image>
+          <clip><near>0.1</near><far>12</far></clip>
+          <noise><type>gaussian</type><mean>0</mean><stddev>0.007</stddev></noise>
+        </camera>
+      </sensor>
+    </link>
+
+    <!-- rotors: 0 front-right ccw, 1 rear-left ccw, 2 front-left cw, 3 rear-right cw (PX4 quad-X order) -->
+    <link name="rotor_0">
+      <pose>0.08 -0.16 0.03 0 0 0</pose>
+      <inertial><mass>0.008</mass><inertia><ixx>1e-07</ixx><iyy>1.6e-05</iyy><izz>1.6e-05</izz></inertia></inertial>
+      <visual name="prop"><geometry><cylinder><radius>0.0775</radius><length>0.003</length></cylinder></geometry><transparency>0.55</transparency>
+        <material><ambient>0.2 0.6 0.9 1</ambient><diffuse>0.2 0.6 0.9 1</diffuse></material></visual>
+      <visual name="motor"><pose>0 0 -0.015 0 0 0</pose><geometry><cylinder><radius>0.017</radius><length>0.025</length></cylinder></geometry>
+        <material><ambient>0.3 0.3 0.3 1</ambient><diffuse>0.3 0.3 0.3 1</diffuse></material></visual>
+      <collision name="prop_collision"><geometry><cylinder><radius>0.0775</radius><length>0.006</length></cylinder></geometry></collision>
+      <sensor name="prop0_contact" type="contact"><always_on>1</always_on><update_rate>100</update_rate><topic>/dh/contact/prop0</topic><contact><collision>prop_collision</collision></contact></sensor>
+    </link>
+    <joint name="rotor_0_joint" type="revolute"><parent>base_link</parent><child>rotor_0</child>
+      <axis><xyz>0 0 1</xyz><limit><lower>-1e+16</lower><upper>1e+16</upper></limit></axis></joint>
+
+    <link name="rotor_1">
+      <pose>-0.15 0.14 0.03 0 0 0</pose>
+      <inertial><mass>0.008</mass><inertia><ixx>1e-07</ixx><iyy>1.6e-05</iyy><izz>1.6e-05</izz></inertia></inertial>
+      <visual name="prop"><geometry><cylinder><radius>0.0775</radius><length>0.003</length></cylinder></geometry><transparency>0.55</transparency>
+        <material><ambient>0.2 0.6 0.9 1</ambient><diffuse>0.2 0.6 0.9 1</diffuse></material></visual>
+      <visual name="motor"><pose>0 0 -0.015 0 0 0</pose><geometry><cylinder><radius>0.017</radius><length>0.025</length></cylinder></geometry>
+        <material><ambient>0.3 0.3 0.3 1</ambient><diffuse>0.3 0.3 0.3 1</diffuse></material></visual>
+      <collision name="prop_collision"><geometry><cylinder><radius>0.0775</radius><length>0.006</length></cylinder></geometry></collision>
+      <sensor name="prop1_contact" type="contact"><always_on>1</always_on><update_rate>100</update_rate><topic>/dh/contact/prop1</topic><contact><collision>prop_collision</collision></contact></sensor>
+    </link>
+    <joint name="rotor_1_joint" type="revolute"><parent>base_link</parent><child>rotor_1</child>
+      <axis><xyz>0 0 1</xyz><limit><lower>-1e+16</lower><upper>1e+16</upper></limit></axis></joint>
+
+    <link name="rotor_2">
+      <pose>0.08 0.16 0.03 0 0 0</pose>
+      <inertial><mass>0.008</mass><inertia><ixx>1e-07</ixx><iyy>1.6e-05</iyy><izz>1.6e-05</izz></inertia></inertial>
+      <visual name="prop"><geometry><cylinder><radius>0.0775</radius><length>0.003</length></cylinder></geometry><transparency>0.55</transparency>
+        <material><ambient>0.2 0.6 0.9 1</ambient><diffuse>0.2 0.6 0.9 1</diffuse></material></visual>
+      <visual name="motor"><pose>0 0 -0.015 0 0 0</pose><geometry><cylinder><radius>0.017</radius><length>0.025</length></cylinder></geometry>
+        <material><ambient>0.3 0.3 0.3 1</ambient><diffuse>0.3 0.3 0.3 1</diffuse></material></visual>
+      <collision name="prop_collision"><geometry><cylinder><radius>0.0775</radius><length>0.006</length></cylinder></geometry></collision>
+      <sensor name="prop2_contact" type="contact"><always_on>1</always_on><update_rate>100</update_rate><topic>/dh/contact/prop2</topic><contact><collision>prop_collision</collision></contact></sensor>
+    </link>
+    <joint name="rotor_2_joint" type="revolute"><parent>base_link</parent><child>rotor_2</child>
+      <axis><xyz>0 0 1</xyz><limit><lower>-1e+16</lower><upper>1e+16</upper></limit></axis></joint>
+
+    <link name="rotor_3">
+      <pose>-0.15 -0.14 0.03 0 0 0</pose>
+      <inertial><mass>0.008</mass><inertia><ixx>1e-07</ixx><iyy>1.6e-05</iyy><izz>1.6e-05</izz></inertia></inertial>
+      <visual name="prop"><geometry><cylinder><radius>0.0775</radius><length>0.003</length></cylinder></geometry><transparency>0.55</transparency>
+        <material><ambient>0.2 0.6 0.9 1</ambient><diffuse>0.2 0.6 0.9 1</diffuse></material></visual>
+      <visual name="motor"><pose>0 0 -0.015 0 0 0</pose><geometry><cylinder><radius>0.017</radius><length>0.025</length></cylinder></geometry>
+        <material><ambient>0.3 0.3 0.3 1</ambient><diffuse>0.3 0.3 0.3 1</diffuse></material></visual>
+      <collision name="prop_collision"><geometry><cylinder><radius>0.0775</radius><length>0.006</length></cylinder></geometry></collision>
+      <sensor name="prop3_contact" type="contact"><always_on>1</always_on><update_rate>100</update_rate><topic>/dh/contact/prop3</topic><contact><collision>prop_collision</collision></contact></sensor>
+    </link>
+    <joint name="rotor_3_joint" type="revolute"><parent>base_link</parent><child>rotor_3</child>
+      <axis><xyz>0 0 1</xyz><limit><lower>-1e+16</lower><upper>1e+16</upper></limit></axis></joint>
+
+    <!-- motors: same time constants as PX4's x500, motor constant raised for thrust-to-weight ~3 at 1.5 kg -->
+    <plugin filename="gz-sim-multicopter-motor-model-system" name="gz::sim::systems::MulticopterMotorModel">
+      <jointName>rotor_0_joint</jointName><linkName>rotor_0</linkName><turningDirection>ccw</turningDirection>
+      <timeConstantUp>0.0125</timeConstantUp><timeConstantDown>0.025</timeConstantDown><maxRotVelocity>1000.0</maxRotVelocity>
+      <motorConstant>1.1025e-05</motorConstant><momentConstant>0.016</momentConstant><commandSubTopic>command/motor_speed</commandSubTopic>
+      <motorNumber>0</motorNumber><rotorDragCoefficient>8.06428e-05</rotorDragCoefficient><rollingMomentCoefficient>1e-06</rollingMomentCoefficient>
+      <rotorVelocitySlowdownSim>10</rotorVelocitySlowdownSim><motorType>velocity</motorType>
+    </plugin>
+    <plugin filename="gz-sim-multicopter-motor-model-system" name="gz::sim::systems::MulticopterMotorModel">
+      <jointName>rotor_1_joint</jointName><linkName>rotor_1</linkName><turningDirection>ccw</turningDirection>
+      <timeConstantUp>0.0125</timeConstantUp><timeConstantDown>0.025</timeConstantDown><maxRotVelocity>1000.0</maxRotVelocity>
+      <motorConstant>1.1025e-05</motorConstant><momentConstant>0.016</momentConstant><commandSubTopic>command/motor_speed</commandSubTopic>
+      <motorNumber>1</motorNumber><rotorDragCoefficient>8.06428e-05</rotorDragCoefficient><rollingMomentCoefficient>1e-06</rollingMomentCoefficient>
+      <rotorVelocitySlowdownSim>10</rotorVelocitySlowdownSim><motorType>velocity</motorType>
+    </plugin>
+    <plugin filename="gz-sim-multicopter-motor-model-system" name="gz::sim::systems::MulticopterMotorModel">
+      <jointName>rotor_2_joint</jointName><linkName>rotor_2</linkName><turningDirection>cw</turningDirection>
+      <timeConstantUp>0.0125</timeConstantUp><timeConstantDown>0.025</timeConstantDown><maxRotVelocity>1000.0</maxRotVelocity>
+      <motorConstant>1.1025e-05</motorConstant><momentConstant>0.016</momentConstant><commandSubTopic>command/motor_speed</commandSubTopic>
+      <motorNumber>2</motorNumber><rotorDragCoefficient>8.06428e-05</rotorDragCoefficient><rollingMomentCoefficient>1e-06</rollingMomentCoefficient>
+      <rotorVelocitySlowdownSim>10</rotorVelocitySlowdownSim><motorType>velocity</motorType>
+    </plugin>
+    <plugin filename="gz-sim-multicopter-motor-model-system" name="gz::sim::systems::MulticopterMotorModel">
+      <jointName>rotor_3_joint</jointName><linkName>rotor_3</linkName><turningDirection>cw</turningDirection>
+      <timeConstantUp>0.0125</timeConstantUp><timeConstantDown>0.025</timeConstantDown><maxRotVelocity>1000.0</maxRotVelocity>
+      <motorConstant>1.1025e-05</motorConstant><momentConstant>0.016</momentConstant><commandSubTopic>command/motor_speed</commandSubTopic>
+      <motorNumber>3</motorNumber><rotorDragCoefficient>8.06428e-05</rotorDragCoefficient><rollingMomentCoefficient>1e-06</rollingMomentCoefficient>
+      <rotorVelocitySlowdownSim>10</rotorVelocitySlowdownSim><motorType>velocity</motorType>
+    </plugin>
+
+    <!-- vision stand-in: pose for PX4's external-vision fusion (/model/<name>/odometry_with_covariance) -->
+    <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">
+      <dimensions>3</dimensions><odom_covariance_topic>/split/unused_truth</odom_covariance_topic>
+      <odom_publish_frequency>100</odom_publish_frequency>
+    </plugin>
+  </model>
+</sdf>

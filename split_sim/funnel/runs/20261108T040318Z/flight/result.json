@@ -1,0 +1,90 @@
+{
+  "run_id": "20261108T040318Z",
+  "crossing_verified": true,
+  "airborne_samples": 4450,
+  "opening_width_m": 1.0000000000000002,
+  "center_at_crossing": {
+    "t": 72.12735800758114,
+    "x": 3.9999999999999996,
+    "y": 0.032569691871059576,
+    "z": 1.098148660248598
+  },
+  "lateral_error_m": 0.032569691871059576,
+  "max_centerline_error_last_meter_m": 0.052858223799293697,
+  "landing_distance_beyond_plane_m": 0.546487712877759,
+  "final_landed_disarmed": true,
+  "contacts_verified": true,
+  "wall_contacts": 0,
+  "phases": [
+    {
+      "event": "passage",
+      "state": "CLIMB",
+      "t": 26.004,
+      "reason": "Offboard active",
+      "position": [
+        0.0003203640671463423,
+        0.0010403396515535491,
+        0.0023628047201782448
+      ],
+      "center": null
+    },
+    {
+      "event": "passage",
+      "state": "AIM",
+      "t": 37.800000000000004,
+      "reason": "at traversal height",
+      "position": [
+        0.012199485240820379,
+        -0.013362298623224557,
+        0.9286434657406062
+      ],
+      "center": null
+    },
+    {
+      "event": "passage",
+      "state": "APPROACH",
+      "t": 40.904,
+      "reason": "metric opening acquired",
+      "position": [
+        0.006991235160202107,
+        -0.06379107811331688,
+        0.9968324310611933
+      ],
+      "center": [
+        4.032432798828897,
+        0.2275295379794097
+      ]
+    },
+    {
+      "event": "passage",
+      "state": "CROSS",
+      "t": 63.2,
+      "reason": "center locked before edges leave view",
+      "position": [
+        2.8075065888504063,
+        0.1587111736984088,
+        0.9853531725239009
+      ],
+      "center": [
+        3.9965229921572667,
+        0.23362933342159503
+      ]
+    }
+  ],
+  "operator_stopped": true,
+  "index": 5,
+  "seed": 1746907054,
+  "configured_offset_m": 0.2036,
+  "measured_spawn_xy_m": [
+    -0.015899992588077432,
+    0.2035988424397943
+  ],
+  "gust_period_s": 4.259,
+  "wind_mean_y_m_s": -1.0,
+  "airborne_wind_samples": 304,
+  "wind_min_m_s": 0.35,
+  "wind_max_m_s": 1.65,
+  "wind_max_gap_sim_s": 0.2079999999999984,
+  "windy_link_verified": true,
+  "mission_exit": null
+}

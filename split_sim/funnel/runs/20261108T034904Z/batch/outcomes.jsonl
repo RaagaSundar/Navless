@@ -1,0 +1,5 @@
+{"index": 1, "run_id": "20261108T034904Z", "seed": 1058784111, "crossing_verified": true, "lateral_error_m": -0.06306905108373154, "wall_contacts": 0, "final_landed_disarmed": true, "windy_link_verified": true}
+{"index": 2, "run_id": "20261108T035354Z", "seed": 2693231125, "crossing_verified": true, "lateral_error_m": 0.007931270065516935, "wall_contacts": 0, "final_landed_disarmed": true, "windy_link_verified": true}
+{"index": 3, "run_id": "20261108T035659Z", "seed": 409250586, "crossing_verified": true, "lateral_error_m": -0.001181854379797395, "wall_contacts": 0, "final_landed_disarmed": true, "windy_link_verified": true}
+{"index": 4, "run_id": "20261108T040016Z", "seed": 3152770479, "crossing_verified": true, "lateral_error_m": -0.02602530939466278, "wall_contacts": 0, "final_landed_disarmed": true, "windy_link_verified": true}
+{"index": 5, "run_id": "20261108T040318Z", "seed": 1746907054, "crossing_verified": true, "lateral_error_m": 0.032569691871059576, "wall_contacts": 0, "final_landed_disarmed": true, "windy_link_verified": true, "operator_stopped": true}

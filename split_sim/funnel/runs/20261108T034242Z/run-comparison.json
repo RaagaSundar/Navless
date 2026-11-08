@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "run_id": "20261108T034242Z",
+  "name": "Jetson funnel crossing and far-side landing",
+  "kind": "flight attempted",
+  "baseline_id": "20261108T032239Z",
+  "changes": [
+    {
+      "field": "connection and estimator at preflight",
+      "before": "previous run lost the Jetson link and PX4 visual fusion before arming",
+      "after": "Jetson reconnected; fresh PX4 reports EV position/yaw fusion and valid XY",
+      "evidence": [
+        "retry-check.json",
+        "flight/initial_status.log"
+      ],
+      "provenance": "human annotation; inspect evidence"
+    }
+  ],
+  "notes": [
+    "Retry of the staged traversal on fresh Gazebo and PX4 instances. Compare runs by UTC ID. Independent flight outcome is recorded separately in flight/result.json."
+  ],
+  "confounds": [
+    "Network availability, simulation startup and sensor timing differed. The baseline remained disarmed. This comparison cannot estimate repeatability."
+  ],
+  "evidence": [
+    "settings.json",
+    "renderer-source.json"
+  ],
+  "source_sha256": {
+    "settings.json": "a7daf5ee8ce5799b3be1e723f4bc0d56bda89bdeda321ecee53bc92e3f1ce700",
+    "renderer-source.json": "59a8f5244c5caf125d4c99cc4e8c700eab27219184cfadbd0b537a0271d3e767"
+  },
+  "telemetry": {
+    "state": "observed armed airborne samples",
+    "observed_flight": true,
+    "source": "flight/track.json",
+    "sample_count": 8450
+  },
+  "snapshot": {
+    "settings.json:estimator": "stereo cuVSLAM on Jetson, PX4 EV XY/yaw + downward range height",
+    "settings.json:start_bearing_deg": 96,
+    "settings.json:takeoff_height_m": 1,
+    "settings.json:cruise_m_s": 0.25,
+    "settings.json:max_lead_m": 0.16,
+    "settings.json:yaw_policy": "OpenCV hover alignment then hold yaw; continuously update metric midpoint during approach",
+    "settings.json:yaw_rate_deg_s": 5,
+    "renderer-source.json:world_sha256": "6d6c08b581db8adbda1e7a8915fc69bc2952182686bc2cd6ab2ea5590a4d142e",
+    "renderer-source.json:spawn_sdf_sha256": "a5d6131addc341245d145647efbc332f0e264a14ee38e775c20cf0c211aca852"
+  },
+  "comparison_state": "recorded differences with annotations"
+}
