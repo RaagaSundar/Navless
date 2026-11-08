@@ -74,7 +74,9 @@ def test_asbuilt_route_uses_active_ego_planner(monkeypatch):
     assert node.planner_router is not None
     assert len(called) == 1
     assert len(node.route) > 20
-    assert max(max(abs(p[0]), abs(p[1])) for p in node.route) <= NET_HALF_M
+    # node.route is in odom (launch mark at the origin): check it inside the net in the course frame
+    course = [tb.cm.odom_to_course(p, node.frame[0], node.frame[1], node.start_height) for p in node.route]
+    assert max(max(abs(p[0]), abs(p[1])) for p in course) <= NET_HALF_M
 
 
 def test_asbuilt_world_replanning_ignores_known_walls_and_detours_around_old_m3():

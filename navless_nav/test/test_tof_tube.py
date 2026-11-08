@@ -85,7 +85,9 @@ def test_pulls_toward_the_measured_centre_at_the_rate_limit():
     rows = run(node, px4, pos, centre, 15)
     s = shifts(rows)
     assert all(abs(b - a) <= RATE * TICK + 1e-9 for a, b in zip([0.0] + s, s))
-    assert s[-1] == pytest.approx(-0.10, abs=0.01)          # target on the real centre
+    # the target ends on the real centre (the planner's path may drift inside the tube, so the
+    # shift itself is not always exactly the 10 cm offset)
+    assert rows[-1][2] == pytest.approx(centre, abs=0.01)
     assert rows[-1][0] == pytest.approx(centre, abs=0.02)   # and the drone with it
 
 
@@ -163,7 +165,7 @@ def test_keeps_correcting_on_px4_estimate_during_a_blind_carry():
     run(node, px4, pos, centre, 12)
     rows = run(node, px4, pos, centre, 8, vo_state=2)       # VIO lost: no odometry
     assert node.blind_carrying
-    assert shifts(rows)[-1] == pytest.approx(-0.10, abs=0.01)
+    assert rows[-1][2] == pytest.approx(centre, abs=0.01)
 
 
 def test_frozen_carrot_drops_the_correction():
@@ -180,7 +182,7 @@ def test_heading_off_the_tube_still_finds_the_centre():
     enter_tube(node, px4, pos)
     centre = course_x(node, node.carrot.point) - 0.10
     rows = run(node, px4, pos, centre, 15, yaw=math.radians(12))
-    assert shifts(rows)[-1] == pytest.approx(-0.10, abs=0.01)
+    assert rows[-1][2] == pytest.approx(centre, abs=0.01)
 
 
 @pytest.mark.parametrize('off_centre', [0.10, -0.12])

@@ -132,6 +132,19 @@ def wrap_pi(a):
     """Angle wrapped to [-pi, pi)."""
     return (a + math.pi) % (2.0 * math.pi) - math.pi
 
+
+def drop_floor_points(pts, min_height_m):
+    """Live stereo points (N x 3, course frame, z up from the floor) without
+    those below min_height_m, before they go into the planner's obstacle map.
+    The decoder already drops z < 0.15 m, but it places points with the
+    drone's yaw only: pitched forward in flight (~5 deg), the floor 2-3 m ahead
+    lands 0.15-0.25 m up and, inflated, blocks detours. Nothing that matters
+    to the drone at flight height is lower than this (boulders 0.53 m, walls
+    1.73 m)."""
+    if pts is None or len(pts) == 0 or min_height_m <= 0.0:
+        return pts
+    return pts[pts[:, 2] >= min_height_m]
+
 # The tube (course_v3.json `tunnel`: footprint x 182-240 in, y 108-168 in,
 # axis north-south, "Dark inside"), in course metres (in * 0.0254 - 3.048).
 TUBE_X = (1.5748, 3.048)
@@ -281,6 +294,9 @@ PARAMETERS = (
     ('tof_tube_rate_mps', 0.10),
     ('tof_tube_timeout_s', 0.3),
     ('replan_on_obstacles', True),
+    # Live stereo points lower than this (above the floor) never enter the
+    # obstacle map: tilted-camera floor returns otherwise block detours.
+    ('obstacle_min_height_m', 0.30),
     # 'planner' (Favour's EGO planner, default) or 'file' (fly route_file as
     # exported: Raaga's gated routes; no planning, no re-planning).
     ('route_source', 'planner'),
@@ -437,6 +453,7 @@ class CourseMission(Node):
             source = 'planner'
         self.static_asbuilt_route = source == 'file'
         self.replan_on_obstacles = str(self.get_parameter('replan_on_obstacles').value).lower() in ('true', '1')
+        self.obstacle_min_height = param('obstacle_min_height_m')
         self.planner_cfg, self.planner_grid, self.planner_router = create_live_course_planner()
         self.live_grid_updated = False
         self.last_replan_at = 0.0
@@ -562,8 +579,8 @@ class CourseMission(Node):
         yaw_enu = 0.5 * math.pi - math.radians(self.frame[1])
         if self.yaw is not None:
             yaw_enu = wrap_pi(yaw_enu + self.yaw - self.corr[2])
-        pts_world = decode_ros_pointcloud2_optical(
-            msg, cur_course, yaw_enu, max_depth_m=2.80)
+        pts_world = drop_floor_points(decode_ros_pointcloud2_optical(
+            msg, cur_course, yaw_enu, max_depth_m=2.80), self.obstacle_min_height)
         if pts_world.size > 0:
             n_added = self.planner_grid.insert_point_cloud(
                 pts_world, sensor_origin_m=cur_course, min_live_hits=2)
