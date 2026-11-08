@@ -1,0 +1,9 @@
+{
+  "kind": "bench",
+  "environment": "Mac \u00b7 Python ROS stubs and a loopback browser",
+  "jetson_connection": false,
+  "planner_commit": "7a7883250c6e783c357a14d56ed9626d7300ba58",
+  "aircraft_course_commit": "865db6b995f20c16164786b57ff7dcb9c66eeaa9",
+  "dashboard_default": "offline",
+  "artifact_sha256": "772cda2686a91e84fe2ef32ad655e0992ae843847d0138aff66c5f22941df046"
+}

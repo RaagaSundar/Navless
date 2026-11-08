@@ -1,0 +1,7 @@
+{
+  "rendered_offline": true,
+  "api": {
+    "status": "offline",
+    "reason": "Live source disabled"
+  }
+}

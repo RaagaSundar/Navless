@@ -1,0 +1,79 @@
+{
+  "navless_nav/__init__.py": {
+    "commit": "865db6b995f20c16164786b57ff7dcb9c66eeaa9",
+    "source": "navless_nav/navless_nav/__init__.py",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "navless_nav/course_mission.py": {
+    "commit": "865db6b995f20c16164786b57ff7dcb9c66eeaa9",
+    "source": "navless_nav/navless_nav/course_mission.py",
+    "sha256": "066a8bbd42cb7f50e07e75935aa15fcf4daaa315513e6e1d27dce56b21367726"
+  },
+  "navless_nav/route.py": {
+    "commit": "865db6b995f20c16164786b57ff7dcb9c66eeaa9",
+    "source": "navless_nav/navless_nav/route.py",
+    "sha256": "c2cba5f502586642eca334f826d423538b9a681a92e63023f3cd84a140171386"
+  },
+  "navless_nav/tube_guidance.py": {
+    "commit": "865db6b995f20c16164786b57ff7dcb9c66eeaa9",
+    "source": "navless_nav/navless_nav/tube_guidance.py",
+    "sha256": "0ea1ebea1c06ac0f146c0e46e96e2111d9eda8960afa496cd784c76be8760446"
+  },
+  "planner/__init__.py": {
+    "commit": "7a7883250c6e783c357a14d56ed9626d7300ba58",
+    "source": "planner/__init__.py",
+    "sha256": "5f4bab7c124971a85fb113bd4dcfce5a18fd0271e3096c432e1344ea09cc4491"
+  },
+  "planner/config.py": {
+    "commit": "7a7883250c6e783c357a14d56ed9626d7300ba58",
+    "source": "planner/config.py",
+    "sha256": "5deedd513deeaae729a7a688ccb523e4a75e34f7f5d8be75e554ded07ae53890"
+  },
+  "planner/grid_map.py": {
+    "commit": "7a7883250c6e783c357a14d56ed9626d7300ba58",
+    "source": "planner/grid_map.py",
+    "sha256": "471f16fcb7e5099efe938dcbe52f3cf1cca8a245a3552a1a0beb9cf3fb9fc3fc"
+  },
+  "planner/bspline.py": {
+    "commit": "7a7883250c6e783c357a14d56ed9626d7300ba58",
+    "source": "planner/bspline.py",
+    "sha256": "209d0ad21c8b57adf3c58c29ce85196d45d1842a627edd44ca7c8ac19351aced"
+  },
+  "planner/fsm_router.py": {
+    "commit": "7a7883250c6e783c357a14d56ed9626d7300ba58",
+    "source": "planner/fsm_router.py",
+    "sha256": "8b7580703cf97d94411294af6c4db6b02d90371e9878936715f6f997c6964b11"
+  },
+  "planner/frames.py": {
+    "commit": "7a7883250c6e783c357a14d56ed9626d7300ba58",
+    "source": "planner/frames.py",
+    "sha256": "98b200a28719f0d377dabea2a503da6d0cbcb8e653aa4d0764fdd3579de3c8ac"
+  },
+  "planner/config/course_config.json": {
+    "commit": "7a7883250c6e783c357a14d56ed9626d7300ba58",
+    "source": "planner/config/course_config.json",
+    "sha256": "c6e7b1dce3261260d6ea42a60086fc6409b6c6073509ce0d4f6ac25faf0ac179"
+  },
+  "planner/config/prior_course_map.json": {
+    "commit": "7a7883250c6e783c357a14d56ed9626d7300ba58",
+    "source": "planner/config/prior_course_map.json",
+    "sha256": "2cd64c39e20bed907d7107309f3ffd49fc591c453a7de2cbf48d609dd79fc653"
+  },
+  "plan_source/route_lib/route.py": {
+    "commit": "7a7883250c6e783c357a14d56ed9626d7300ba58",
+    "source": "navless_nav/navless_nav/route.py",
+    "sha256": "bc8559493ee34bc79665ea8aaaa8274714db368e779b9268101a6307f2995092"
+  },
+  "telemetry.py": {
+    "workspace_source": "skybeta19_test_flights/examples/telemetry.py",
+    "sha256": "a43755e3c29e880e4f23cd30ea041abe09b09451a64365add77a30a82c5969b8"
+  },
+  "jetson_slam_health.py": {
+    "workspace_source": "skybeta19_test_flights/jetson_slam_health.py",
+    "sha256": "0bca67cba5e65db5e3a6886ec20e7de78b0fb7d73ab8e942d031e874fc5c6036"
+  },
+  "interface_monitor.py": {
+    "adapted_from": "skybeta19_test_flights/examples/skybeta_test.py",
+    "upstream_sha256": "b4e51f7bd57b5f42acb053e720a32505c963fa75404c8410d487d328418ce4f6"
+  }
+}

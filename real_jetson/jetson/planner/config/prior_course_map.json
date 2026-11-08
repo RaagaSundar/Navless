@@ -1,0 +1,24 @@
+{
+  "shape": [
+    62,
+    62,
+    26
+  ],
+  "packed_raw_grid_b64": "eNrtWj2O4jAYfcGImSKKKSlGs3OElCkQcBSOsCXFFpb2Yu72Gj5CtqNAYh17IAmTDHb8JSRoM0jMJ6M4L+/7eZ/t8/l5rhMGvbbnnFPPySwSOSgQPSnI59zeUML1PAo4AusJU8KEgfACRNLgUVOlJLNgUiAGEvOZBiX6bk9Cib7bbZRoFpieIjf8YKqUTDdxNVAyzVrynxIaSgo8z0EJoYs9nhLzDpcjo8T99ZZRcnWxXR+UFLUxN4qL+9+t9q5dEteOwsVaKNnYwvjTU0GWEGp4GmK7hrT8GS0lsRXBxZeWK8JAooiFBqPpHRBSIgwlkaXkQCbqm/AQZuX2KDkaPLzXxNUSZsD8Ccp7Vxcbo+JadnGxcSquLoX/SsmZIg3SieAuWZldgFQSyprlvAj4h4pg76xci5LiVeHE5BY5t3hOD6Hk5mdR1zWuZZF763gK4yF9ibuLfZu4tItV8ITW4I6tomPIOCauAk+D2hikVXQs/N61hAKPtyiho8RRGtK6i+/jBJb3e9J9kO4dpIvz7v5G371TUNLyoD7d+9goCWhSxkqJRy2hi/oWShLbZ6m+FRdppf3aKkrTKmowPKh7dyzvRFHfRMnadu8p8GZa335FMFVhaaHkzS6o2P2f3kUwRdS3UMJtiPS0S/olMCgKS0vikmYLKx6uVQyO+qFqyd01ro4LEIPUEvdlR+9uakDF5b4STOVifYlg58X5gCaSlpJv3OVFItKu8gv4UTcuSNtHxhUl7I/AX4X1Afzdx6CLkvSyyxB4qRgZ03pHMpF6GESJ6/PQ0MEolLATKhn2CVaRWGAfiRX2i6uRVY1yRJkRKkrsCZWiKubmE+Bb+k9CLpHOEUfa2F0MVjXKkdiOUFEizJZPbPCE7ZekWMVYMERCYu9uUFGS211FEX5oaAYIgY8PvL5i5mEQimBBc2jIG4I1BinvmW26rDx2QCoKOMWzzbyM/hVX2bHo/+42kWOmZFNtItd3E5dnoH8aQ1FysCnNoa9PsYwx18+mE/HO3RhKBPPrIcK7txZMZz65QrrQFUMb+4vBqkY5ktiR8fUlGyiu67VKtA4RCRS7GpuqUY4czcgIW8VDhvcEL79FpJSHEUTJk1z/ANTmhK0=",
+  "concentric_pad": {
+    "center_xy_m": [
+      -2.04216,
+      -0.79247935
+    ],
+    "ring_radii_m": [
+      0.229,
+      0.508,
+      0.762
+    ],
+    "outer_radius_m": 0.762
+  },
+  "launch_mark_xy": [
+    -2.5146,
+    0.9144
+  ]
+}
