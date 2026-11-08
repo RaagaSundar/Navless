@@ -6,6 +6,8 @@
 #   bash fly_test.sh status             what the competitor window is running, last log lines
 #   bash fly_test.sh stop               DISARMED ONLY: competitor window -> idle ("sleep infinity")
 #   bash fly_test.sh restore            DISARMED ONLY: competitor window -> the team's normal code (navless_nav)
+#   bash fly_test.sh logs               list the flight logs (~/team_ws/flight_logs, one CSV per test run)
+#   bash fly_test.sh offset             print the live PX4-vs-cuVSLAM frame offset from the newest log
 #
 # After `hover|yaw|forward` the window runs flight_interface + the test node, which streams "stay here"
 # and waits. Then, props on, drone on the floor and still, cuVSLAM tracking:
@@ -60,10 +62,33 @@ case "${1:-}" in
     armed && exit 1
     respawn "sleep infinity" "idle (sleep infinity)"
     ;;
+  logs)
+    ls -lt "$HOME/team_ws/flight_logs" 2>/dev/null | head -15 || echo "no logs yet"
+    echo "copy one to a laptop:  scp dronehacks@<drone>:team_ws/flight_logs/<file>.csv ."
+    ;;
+  offset)
+    f=$(ls -t "$HOME/team_ws/flight_logs"/*.csv 2>/dev/null | head -1)
+    [ -n "$f" ] || { echo "no logs yet: run a test first (it logs while waiting, before arming)"; exit 1; }
+    echo "$f"
+    python3 - "$f" <<'PY'
+import csv, sys
+rows = [r for r in csv.DictReader(open(sys.argv[1])) if r['off_x'] not in ('', None)]
+if not rows:
+    sys.exit('no offset rows yet (needs both PX4 position and cuVSLAM odometry)')
+last = rows[-50:]
+f = lambda k: [float(r[k]) for r in last if r[k] not in ('', None)]
+for k in ('off_x', 'off_y', 'off_z', 'off_yaw_deg'):
+    v = f(k)
+    print(f"{k:12s} now {v[-1]:+.3f}   last {len(v)} rows: min {min(v):+.3f} max {max(v):+.3f}")
+r = last[-1]
+print("EKF2 fusing: vision pos", r.get('ekf_ev_pos'), " vision yaw", r.get('ekf_ev_yaw'),
+      " magnetometer heading", r.get('ekf_mag_hdg'), " | cuVSLAM vo_state", r.get('vo_state'))
+PY
+    ;;
   restore)
     armed && exit 1
     respawn "bash -lc 'source skybeta_env.sh; exec run_competitor.sh'" "the team's code (COMPETITOR_PKG from drone.env)"
     ;;
   *)
-    sed -n '2,16p' "$0"; exit 1 ;;
+    sed -n "2,18p" "$0"; exit 1 ;;
 esac

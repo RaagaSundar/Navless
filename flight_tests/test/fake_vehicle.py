@@ -5,8 +5,13 @@ Run it on an ISOLATED ROS domain (e.g. ROS_DOMAIN_ID=77 ROS_LOCALHOST_ONLY=1), n
 It plays the pilot and PX4: arms after arm_after_s, switches to Position (Offboard starts) a moment
 later, flies toward /skybeta/setpoint/pose (max speed 0.8 m/s, yaw 60 deg/s, floored at 0.3 m like
 the interface) or along /skybeta/setpoint/twist (expires after 1 s), detects a landing when it's on
-the floor and still being pushed down, and disarms 2 s later. Publishes /visual_slam/tracking/odometry
-and /skybeta/state. Logs a summary line per second and a final JSON line "FAKE_RESULT ...".
+the floor and still being pushed down, and disarms 2 s later. Publishes /visual_slam/tracking/odometry,
+/fmu/out/vehicle_local_position and /skybeta/state. Logs a summary line per second and a final JSON
+line "FAKE_RESULT ...".
+
+Its true state lives in PX4's frame (setpoints are interpreted there, as flight_interface's plain
+ENU->NED map does). cuVSLAM's odometry is published in a frame offset from PX4's by (dx, dy, dyaw),
+like the real constant offset between EKF2 and the vision frame.
 """
 import json
 import math
@@ -15,14 +20,21 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
+from px4_msgs.msg import VehicleLocalPosition
+
+PX4_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                     history=HistoryPolicy.KEEP_LAST, depth=1)
 
 
 class Fake(Node):
-    def __init__(self, start_yaw_deg, arm_after_s, fail):
+    def __init__(self, start_yaw_deg, arm_after_s, fail, offset=(0.0, 0.0, 0.0)):
         super().__init__('fake_vehicle')
+        self.off = (offset[0], offset[1], math.radians(offset[2]))
+        self.px4_pub = self.create_publisher(VehicleLocalPosition, '/fmu/out/vehicle_local_position', PX4_QOS)
         self.x, self.y, self.z, self.yaw = 0.0, 0.0, 0.07, math.radians(start_yaw_deg)
         self.vz = 0.0
         self.pose = None
@@ -99,9 +111,19 @@ class Fake(Node):
         o = Odometry()
         o.header.frame_id, o.child_frame_id = 'odom', 'base_link'
         o.header.stamp = self.get_clock().now().to_msg()
-        o.pose.pose.position.x, o.pose.pose.position.y, o.pose.pose.position.z = self.x, self.y, self.z
-        o.pose.pose.orientation.z, o.pose.pose.orientation.w = math.sin(self.yaw / 2), math.cos(self.yaw / 2)
+        # cuVSLAM's frame = PX4's, shifted by (dx, dy) and rotated by dyaw: odom = R(-dyaw) (px4 - d)
+        dx, dy, da = self.off
+        ox, oy = self.x - dx, self.y - dy
+        c, s = math.cos(-da), math.sin(-da)
+        oyaw = self.yaw - da
+        o.pose.pose.position.x, o.pose.pose.position.y, o.pose.pose.position.z = c * ox - s * oy, s * ox + c * oy, self.z
+        o.pose.pose.orientation.z, o.pose.pose.orientation.w = math.sin(oyaw / 2), math.cos(oyaw / 2)
         self.odom_pub.publish(o)
+        lp = VehicleLocalPosition()                       # PX4's own estimate, NED
+        lp.x, lp.y, lp.z = float(self.y), float(self.x), float(-self.z)
+        lp.heading = float((math.pi / 2 - self.yaw + math.pi) % (2 * math.pi) - math.pi)
+        lp.xy_valid = lp.z_valid = True
+        self.px4_pub.publish(lp)
         self.state_pub.publish(String(data=json.dumps({"armed": self.armed, "offboard_active": self.offboard,
                                                        "landed": self.landed, "clamped": []})))
         self.track.append((round(t, 2), round(self.x, 3), round(self.y, 3), round(self.z, 3), round(math.degrees(self.yaw), 1)))
@@ -115,8 +137,9 @@ def main():
     start_yaw = float(sys.argv[1]) if len(sys.argv) > 1 else 90.0
     limit = float(sys.argv[2]) if len(sys.argv) > 2 else 90.0
     fail = sys.argv[3] if len(sys.argv) > 3 else ''
+    offset = tuple(float(v) for v in sys.argv[4].split(',')) if len(sys.argv) > 4 else (0.0, 0.0, 0.0)
     rclpy.init()
-    f = Fake(start_yaw, 3.0, fail)
+    f = Fake(start_yaw, 3.0, fail, offset)
     t_end = time.monotonic() + limit
     while rclpy.ok() and time.monotonic() < t_end and not (f.done and time.monotonic() - f.t0 > 2):
         rclpy.spin_once(f, timeout_sec=0.05)
