@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Render the README's animations from the course model and a recorded Gazebo lap.
+"""Render the README's animations, figures and 3D model from the course model and recorded logs.
 
-  python docs/media/make_readme_media.py                 # all three GIFs
-  python docs/media/make_readme_media.py hero            # just one: hero | asbuilt | tube
+  python docs/media/make_readme_media.py                 # everything
+  python docs/media/make_readme_media.py hero            # just one: hero | maze | asbuilt | tube | flights | stl
 
 Inputs (all in the repo):
-  gazebo_sim/course/course_asbuilt.json, course_v3.json          the as-built course and the organisers' plan
+  gazebo_sim/course/course_asbuilt.json, course_v3.json          the as-built course (new maze) and the organisers' plan
   gazebo_sim/course/route_centreline_window*.json                 the routes planned on each
   docs/media/data/gate_lap/{log.csv,summary.json}                 one lap of gazebo_sim/tools/gate_asbuilt.sh
-Outputs: docs/media/hero_lap.gif, plan_vs_asbuilt.gif, tube_tof.gif.
+  docs/media/data/maze_2026-11-06/                                the scanned course and route from before the maze change
+  docs/media/data/course_runs_2026-11-08/                         skybeta-19's two real course runs (flight recorder,
+                                                                  trimmed from branch flight-logs/2026-11-08)
+Outputs: docs/media/hero_lap.gif, maze_change.gif, plan_vs_asbuilt.gif, tube_tof.gif, flight_recorder_nov8.png,
+course_newmaze.stl (binary STL: GitHub shows it as an interactive 3D model).
 
 The hero lap's position, height, speed, wall clearance and checkpoint times are the recorded Gazebo SITL lap.
 The camera cone, the side-ToF beams (2D raycast against the course model) and the dark tube are drawn on top.
@@ -32,6 +36,8 @@ from PIL import Image  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 COURSE = os.path.join(REPO, "gazebo_sim", "course")
+OLD_MAZE = os.path.join(HERE, "data", "maze_2026-11-06")
+RUNS = os.path.join(HERE, "data", "course_runs_2026-11-08")
 IN = 0.0254
 
 # Palette (dark, reads well on GitHub's light and dark themes alike).
@@ -75,8 +81,13 @@ def wall_poly(start, end, thick):
     return np.array([a + n, b + n, b - n, a - n])
 
 
+def course_path(name):
+    """A bare file name is in gazebo_sim/course; anything else is a path."""
+    return name if os.path.dirname(name) else os.path.join(COURSE, name)
+
+
 def load_course(name):
-    c = json.load(open(os.path.join(COURSE, name)))
+    c = json.load(open(course_path(name)))
     walls = {w["name"]: dict(w, poly=wall_poly(w["start_in"], w["end_in"], w["thickness_in"])) for w in c["walls"]}
     t = c["tunnel"]["footprint_in"]
     tube = (to_m((t["x_min"], t["y_min"])), to_m((t["x_max"], t["y_max"])))
@@ -93,8 +104,18 @@ def load_course(name):
 
 
 def load_route(name):
-    r = json.load(open(os.path.join(COURSE, name)))
+    r = json.load(open(course_path(name)))
     return r, np.array([w[:2] for w in r["waypoints_enu"]])
+
+
+def seg_intersect(p, q, a, b):
+    """Where segment p-q crosses segment a-b, or None."""
+    def orient(u, v, w):
+        return (v[0] - u[0]) * (w[1] - u[1]) - (v[1] - u[1]) * (w[0] - u[0])
+    d1, d2, d3, d4 = orient(a, b, p), orient(a, b, q), orient(p, q, a), orient(p, q, b)
+    if (d1 > 0) != (d2 > 0) and (d3 > 0) != (d4 > 0):
+        return p + d1 / (d1 - d2) * (q - p)
+    return None
 
 
 def obstacle_segments(course):
@@ -296,12 +317,21 @@ def hero(lap_dir, out, fps=15, target_s=11.0, code_label=""):
     dt = np.maximum(np.diff(t[i0:]), 1e-3)
     spd[i0 + 1:] = np.convolve(d / dt, np.ones(5) / 5, mode="same")
     walls_min = s.get("min_clearance_cm")
-    walls_at = (s.get("min_clearance_at") or "").replace("_", " ").replace("net north", "north net")
+    walls_at = (s.get("min_clearance_at") or "").replace("_wall", "").replace("_", " ").replace("net north", "north net")
+    if cp.get("corridor_done") is None:
+        # Laps on the new maze leave corridor_done empty: take the moment the drone leaves checkpoint 1's zone.
+        zone = next((z for z in course["raw"].get("checkpoints", []) if z.get("n") == 1), None)
+        done = cp["gate_a"]
+        if zone:
+            poly = np.array([to_m(p) for p in zone["area_in"]])
+            out_k = [k for k in range(i0, len(t)) if xyz[k, 2] > 0.3 and not poly_contains(poly, xyz[k, :2])]
+            done = float(t[out_k[0]]) if out_k else done
+        cp = dict(cp, corridor_done=done)
 
     stages = [("1", "CORRIDOR", 4, cp["corridor_done"]), ("2", "MAZE", 7, cp["gate_a"]),
               ("3", "TUNNEL", 10, cp["tube_out"]), ("4", "WINDOW", 7, cp["window"]), ("5", "LANDING", 7, t_land)]
     tube_in, tube_out = cp["tube_in"], cp["tube_out"]
-    marks = {"1": to_m((21, 214)), "2": to_m((130, 226)), "3": to_m((211, 186)), "4": to_m((80, 40)), "5": to_m((76, 88.8))}
+    marks = {"1": to_m((14, 186)), "2": to_m((40, 228)), "3": to_m((225, 190)), "4": to_m((80, 40)), "5": to_m((76, 88.8))}
 
     W, H = 8.0, 9.2
     times = np.arange(t[i0], t_end, speedup / fps)
@@ -355,8 +385,8 @@ def hero(lap_dir, out, fps=15, target_s=11.0, code_label=""):
         # header
         fig.text(0.03, 0.962, "NAVLESS", fontsize=24, fontweight="bold", color=TEXT, va="center")
         fig.text(0.255, 0.966, "autonomous lap of the DroneHacks course, no GPS", fontsize=12, color=TEXT, va="center")
-        fig.text(0.255, 0.945, "recorded in Gazebo + PX4 SITL on the as-built course, real flight code", fontsize=9.5,
-                 color=MUTED, va="center")
+        fig.text(0.255, 0.945, "recorded in Gazebo + PX4 SITL on the new maze, skybeta-19's real flight code",
+                 fontsize=9.5, color=MUTED, va="center")
         x = 0.03
         cw = (0.94 - 4 * 0.01) / 5
         for key, name, pts, tdone in stages:
@@ -369,9 +399,9 @@ def hero(lap_dir, out, fps=15, target_s=11.0, code_label=""):
         elif in_tube:
             mode, mc = "TUNNEL: dark, side ToF centring", ORANGE
         elif now < cp["corridor_done"]:
-            mode, mc = "CORRIDOR: stereo SLAM, nose north", CYAN
+            mode, mc = "CORRIDOR: north-east beside MD, nose held north", CYAN
         elif now < cp["gate_a"]:
-            mode, mc = "MAZE: following the as-built route", CYAN
+            mode, mc = "MAZE: round MD's tip, through the 1 m gap", CYAN
         elif now < tube_in:
             mode, mc = "TO THE TUNNEL", CYAN
         elif now < cp["window"] + 0.5:
@@ -397,10 +427,11 @@ def hero(lap_dir, out, fps=15, target_s=11.0, code_label=""):
 # --------------------------------------------------------------------------- 2. plan vs as-built
 
 def plan_vs_asbuilt(out, fps=12.5):
+    # The scan as it was on Nov 6-7, before the organisers rebuilt the maze (maze_change() shows that step).
     plan = load_course("course_v3.json")
-    asb = load_course("course_asbuilt.json")
+    asb = load_course(os.path.join(OLD_MAZE, "course_asbuilt.json"))
     r_old, old = load_route("route_centreline_window.json")
-    r_new, new = load_route("route_centreline_window_asbuilt.json")
+    r_new, new = load_route(os.path.join(OLD_MAZE, "route_centreline_window_asbuilt.json"))
     moved = [n for n in asb["walls"] if not np.allclose(asb["walls"][n]["poly"], plan["walls"][n]["poly"])]
     # where the plan's route (its centre line, i.e. the drone's centre) comes closest to a real, as-built wall face
     worst = (np.inf, None, None)
@@ -562,9 +593,312 @@ def tube_tof(out, fps=15):
     frames_to_gif(frames, out, fps, hold_last=1.0, colors=128)
 
 
+# --------------------------------------------------------------------------- 4. the maze change (Nov 7)
+
+def maze_change(out, fps=12.5):
+    old = load_course(os.path.join(OLD_MAZE, "course_asbuilt.json"))
+    new = load_course("course_asbuilt.json")
+    _, r_old = load_route(os.path.join(OLD_MAZE, "route_centreline_window_asbuilt.json"))
+    meta, r_new = load_route("route_centreline_window_asbuilt.json")
+    gone = [n for n in old["walls"] if n not in new["walls"]]
+    added = [n for n in new["walls"] if n not in old["walls"]]
+    common = {n: w for n, w in new["walls"].items() if n in old["walls"]}
+    md = new["walls"]["MD"]
+    a, b = to_m(md["start_in"]), to_m(md["end_in"])
+    cross = next((x for x in (seg_intersect(r_old[i], r_old[i + 1], a, b) for i in range(len(r_old) - 1))
+                  if x is not None), None)
+    mn = new["walls"]["MN"]["poly"]
+    clip_i = min(range(len(r_old)), key=lambda i: footprint_clearance(r_old[i], mn))
+    clip_cm = footprint_clearance(r_old[clip_i], mn) * 100
+    print(f"old route vs new maze: crosses MD at {None if cross is None else np.round(cross, 3)}; "
+          f"props {clip_cm:.1f} cm from MN at waypoint {clip_i}")
+    tip = b if b[1] > a[1] else a                      # MD's north tip; gate A runs from it to the north net
+    seq = [("old", 1.8), ("change", 2.0), ("clash", 2.6), ("new", 2.4), ("hold", 2.8)]
+    frames = []
+    W, H = 7.2, 8.0
+    for phase, dur in seq:
+        n = int(round(dur * fps))
+        for k in range(n):
+            f = (k + 1) / n
+            m = 0.0 if phase == "old" else (ease(f) if phase == "change" else 1.0)
+            fig = plt.figure(figsize=(W, H), dpi=100)
+            ax = setup_map_axes(fig, [0.03, 0.03, 0.94, 0.94 * W / H], new)
+            draw_static(ax, dict(new, walls=common))
+            for nm in gone:
+                poly = old["walls"][nm]["poly"]
+                if m < 1:
+                    ax.add_patch(Polygon(poly, closed=True, facecolor=WALL, edgecolor="#f3f6f9", lw=0.6,
+                                         alpha=1 - m, zorder=3))
+                if m > 0:
+                    ax.add_patch(Polygon(poly, closed=True, facecolor="none", edgecolor=RED, lw=1.2, ls=(0, (3, 2)),
+                                         alpha=0.85 * min(1, m * 1.5), zorder=2.5))
+                c = poly.mean(0)
+                ax.text(c[0], c[1] + 0.14, nm, ha="center", fontsize=9, color=RED if m > 0 else MUTED,
+                        alpha=0.9, zorder=9)
+            for nm in added:
+                if m > 0:
+                    ax.add_patch(Polygon(new["walls"][nm]["poly"], closed=True,
+                                         facecolor=AMBER if phase == "change" else WALL,
+                                         edgecolor=AMBER, lw=0.9, alpha=m, zorder=3.2))
+                    c = new["walls"][nm]["poly"].mean(0)
+                    off = {"MN": (0.0, -0.2), "MD": (0.22, -0.16), "MT": (0.18, -0.2)}.get(nm, (0, 0.15))
+                    ax.text(c[0] + off[0], c[1] + off[1], nm, ha="center", fontsize=10, fontweight="bold",
+                            color=AMBER, alpha=m, zorder=9)
+            old_col = GREEN if phase in ("old", "change") else RED
+            ax.plot(r_old[:, 0], r_old[:, 1], color=old_col, lw=2.2, alpha=0.9 if phase != "hold" else 0.3,
+                    zorder=5, solid_capstyle="round")
+            if phase in ("clash", "new") and cross is not None:
+                pulse = 0.15 + 0.05 * math.sin(f * 2 * math.pi * 2) if phase == "clash" else 0.15
+                ax.add_patch(Circle(cross, pulse, facecolor="none", edgecolor=RED, lw=2.2, zorder=9))
+                ax.text(cross[0] + 0.22, cross[1] - 0.08, "runs through MD", ha="left", va="center", fontsize=10.5,
+                        color=RED, fontweight="bold", zorder=9,
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor=BG, edgecolor=RED, lw=1.0, alpha=0.92))
+                q = r_old[clip_i]
+                ax.add_patch(Circle(q, pulse, facecolor="none", edgecolor=RED, lw=2.2, zorder=9))
+                ax.text(q[0] - 0.05, q[1] - 0.3, "props clip MN" if clip_cm <= 0.5 else f"props {clip_cm:.0f} cm from MN",
+                        ha="center", va="center", fontsize=10.5, color=RED, fontweight="bold", zorder=9,
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor=BG, edgecolor=RED, lw=1.0, alpha=0.92))
+            if phase in ("new", "hold"):
+                upto = len(r_new) if phase == "hold" else max(2, int(len(r_new) * ease(f)))
+                ax.plot(r_new[:upto, 0], r_new[:upto, 1], color=CYAN, lw=7, alpha=0.12, zorder=6)
+                ax.plot(r_new[:upto, 0], r_new[:upto, 1], color=CYAN, lw=2.4, zorder=6.1, solid_capstyle="round")
+                top = new["half"]
+                ax.annotate("", xy=(tip[0] + 0.12, top - 0.02), xytext=(tip[0] + 0.12, tip[1] + 0.02),
+                            arrowprops=dict(arrowstyle="<|-|>", color=CYAN, lw=1.4), zorder=9)
+                ax.text(tip[0] + 0.22, top - 0.13, "1 m gap", ha="left", va="center", fontsize=10,
+                        color=CYAN, fontweight="bold", zorder=9)
+            if phase == "old":
+                title, sub, col = "The maze we planned for", "scanned on Nov 6; our route was gated on it", GREEN
+            elif phase == "change":
+                title, sub, col = "Nov 7: the organisers rebuilt the maze", \
+                    f"{', '.join(gone)} out; {', '.join(added)} in, with one 1 m gap", AMBER
+            elif phase == "clash":
+                title, sub, col = "Our gated route now hits a wall", "it runs straight through MD", RED
+            else:
+                title, sub, col = "New route, the same night", \
+                    (f"{meta['length_m']:.1f} m, north-east beside MD, round its tip; "
+                     f"≥ {meta['min_clearance_m_nose_north'] * 100:.1f} cm from every wall (planned)"), CYAN
+            fig.text(0.04, 0.955, title, fontsize=17, fontweight="bold", color=col, va="center")
+            fig.text(0.04, 0.918, sub, fontsize=10.5, color=MUTED, va="center")
+            if phase == "hold":
+                fig.text(0.04, 0.885, "Gazebo + PX4 SITL with skybeta-19's code: 3/3 laps landed, 0 contacts",
+                         fontsize=10.5, color=GREEN, va="center", fontweight="bold")
+            frames.append(grab(fig))
+            plt.close(fig)
+    frames_to_gif(frames, out, fps, hold_last=2.0)
+
+
+# --------------------------------------------------------------------------- 5. the real course runs (Nov 8)
+
+def load_run(name):
+    rows = list(csv.DictReader(open(os.path.join(RUNS, name))))
+    ticks = [r for r in rows if r["kind"] == "tick"]
+
+    def col(k):
+        return np.array([float(r[k]) if r[k] not in ("", None) else np.nan for r in ticks])
+    run = {k: col(k) for k in ("t", "x", "y", "z", "sent_x", "sent_y", "carrot_x", "carrot_y", "yaw_deg")}
+    run["state"] = [r["state"] for r in ticks]
+    return run
+
+
+def flight_recorder(out):
+    course = load_course("course_asbuilt.json")
+    _, route = load_route("route_centreline_window_asbuilt.json")
+    lm = course["launch"]
+
+    def to_course(x, y):            # flight recorder odom: x north, y west at start bearing 0, origin on the mark
+        return np.stack([lm[0] - y, lm[1] + x], axis=-1)
+
+    fig = plt.figure(figsize=(13.0, 8.2), dpi=110)
+    fig.text(0.03, 0.962, "skybeta-19's first two course runs, from its flight recorder", fontsize=17,
+             fontweight="bold", color=TEXT, va="center")
+    fig.text(0.03, 0.925, "Nov 8, 01:14–01:24 PT · code nav-stabilize-travel-heading 2ffac5d · nose along "
+             "travel · 0.5 m/s · positions are where the drone thought it was", fontsize=10.5, color=MUTED,
+             va="center")
+    panels = [
+        ("run1.csv", 58.8, "Run 1: hit MD 1.5 m in",
+         ["By its own tracking it was on its line,", "props 32 cm clear of MD, when it hit.",
+          "So the real drone was ≥ 32 cm closer to MD:", "what a ~12° start-heading error does (red)."]),
+        ("run2.csv", 46.8, "Run 2: hit the north net on the turn east",
+         ["Momentum from the north-east leg carried it", "19 cm north of its setpoint, 18 cm behind.",
+          "Side-on to the net: props 17 cm away by its", "own tracking (25 cm if the nose faced north)."]),
+    ]
+    for k, (fname, t_hit, title, notes) in enumerate(panels):
+        run = load_run(fname)
+        fig.text(0.03 + k * 0.49, 0.875, title, fontsize=13.5, fontweight="bold", color=TEXT, va="center")
+        ax = fig.add_axes([0.02 + k * 0.49, 0.33, 0.47, 0.52])
+        draw_static(ax, course)
+        ax.set_xlim(-3.12, 0.75)
+        ax.set_ylim(0.35, 3.14)
+        ax.set_aspect("equal")
+        ax.axis("off")
+        for label, (lx, ly), rot in (("MD", (-0.95, 1.12), 40), ("MN", (-1.69, 2.83), 0), ("north net", (-0.62, 3.085), 0),
+                                     ("west net", (-3.0, 1.9), 90)):
+            ax.text(lx, ly, label, color=MUTED, fontsize=8.5, rotation=rot, ha="center", va="center", zorder=9)
+        ax.plot(route[:, 0], route[:, 1], color=MUTED, lw=1.2, ls=(0, (4, 4)), alpha=0.7, zorder=4.6,
+                label="planned route")
+        if k == 0:
+            th = math.radians(-12.0)                  # 12 deg clockwise about the launch mark
+            R = np.array([[math.cos(th), -math.sin(th)], [math.sin(th), math.cos(th)]])
+            ghost = (route - lm) @ R.T + lm
+            ax.plot(ghost[:, 0], ghost[:, 1], color=RED, lw=1.4, ls=(0, (2, 2)), alpha=0.9, zorder=4.7,
+                    label="same route, nose 12° right at start")
+        live = run["t"] <= t_hit
+        P = to_course(run["x"][live], run["y"][live])
+        S = to_course(run["sent_x"][live], run["sent_y"][live])
+        ok = ~np.isnan(S[:, 0])
+        ax.plot(S[ok, 0], S[ok, 1], color=AMBER, lw=1.3, ls=(0, (1, 1.5)), zorder=5, label="setpoints sent")
+        ax.plot(P[:, 0], P[:, 1], color=CYAN, lw=2.4, zorder=5.2, solid_capstyle="round", label="believed track")
+        hit = P[-1]
+        ax.plot([hit[0]], [hit[1]], marker="X", ms=15, color=RED, mec=BG, mew=1.2, zorder=9)
+        if k == 0:
+            ax.text(hit[0] + 0.12, hit[1] + 0.02, f"contact t = {t_hit:.1f} s", ha="left", color=RED, fontsize=10,
+                    fontweight="bold", zorder=9,
+                    bbox=dict(boxstyle="round,pad=0.25", facecolor=BG, edgecolor=RED, lw=0.8, alpha=0.9))
+        else:
+            ax.text(hit[0] - 0.14, hit[1] + 0.02, f"contact t = {t_hit:.1f} s", ha="right", color=RED, fontsize=10,
+                    fontweight="bold", zorder=9,
+                    bbox=dict(boxstyle="round,pad=0.25", facecolor=BG, edgecolor=RED, lw=0.8, alpha=0.9))
+        for i, line in enumerate(notes):
+            fig.text(0.035 + k * 0.49, 0.30 - i * 0.027, line, fontsize=10.5, color=TEXT if i < 2 else MUTED,
+                     va="center")
+        if k == 0:
+            leg = ax.legend(loc="lower right", fontsize=8.5, frameon=True, facecolor=BG, edgecolor="#273241")
+            for txt in leg.get_texts():
+                txt.set_color(TEXT)
+        else:
+            ax.text(-3.0, 2.68, "Then cuVSLAM jumped 2.9 m while still\n'tracking', and the node kept flying the\n"
+                    "route for 20 s on the jumped position.", ha="left", va="top", fontsize=9.5, color=ORANGE,
+                    zorder=10, bbox=dict(boxstyle="round,pad=0.35", facecolor=BG, edgecolor=ORANGE, lw=0.8, alpha=0.92))
+    # margin vs error, cm
+    ax = fig.add_axes([0.42, 0.03, 0.54, 0.13])
+    rows = [("start heading, each 1° at 3 m", 5.2, 5.2), ("camera drift, 3% over 4.4 m (assumed)", 13, 13),
+            ("overshoot on the turn at 0.5 m/s", 19, 19), ("run 1's start error (inferred)", 32, 32),
+            ("left push at liftoff", 31, 40)]
+    ax.axvspan(17, 25, color=GREEN, alpha=0.18, lw=0)
+    ax.text(25.6, len(rows) - 1, "← planned prop room at the tight spots (17–25 cm)", ha="left",
+            va="center", fontsize=8.5, color=GREEN)
+    for i, (name, lo, hi) in enumerate(rows):
+        y = len(rows) - 1 - i
+        ax.barh(y, lo, height=0.55, color=RED if lo > 17 else AMBER, alpha=0.85)
+        if hi > lo:
+            ax.barh(y, hi - lo, left=lo, height=0.55, color=RED, alpha=0.45)
+        ax.text(hi + 0.6, y, f"{lo:g}" + (f"–{hi:g}" if hi > lo else "") + " cm", va="center", fontsize=9,
+                color=TEXT)
+        ax.text(-0.6, y, name, va="center", ha="right", fontsize=9, color=TEXT)
+    ax.set_xlim(0, 46)
+    ax.set_ylim(-0.6, len(rows) - 0.4)
+    ax.axis("off")
+    fig.text(0.03, 0.135, "Margin vs error", fontsize=13, fontweight="bold", color=TEXT, va="center")
+    fig.text(0.03, 0.10, "Any one of these eats most", fontsize=9.5, color=MUTED, va="center")
+    fig.text(0.03, 0.078, "of the room we planned.", fontsize=9.5, color=MUTED, va="center")
+    fig.savefig(out, dpi=110)
+    plt.close(fig)
+    print(f"{os.path.relpath(out, REPO)}: {os.path.getsize(out) / 1e3:.0f} kB")
+
+
+# --------------------------------------------------------------------------- 6. the course in 3D (binary STL)
+
+def course_stl(out):
+    import struct
+    course = load_course("course_asbuilt.json")
+    meta = json.load(open(course_path("route_centreline_window_asbuilt.json")))
+    tris = []
+
+    def quad(p0, p1, p2, p3):
+        tris.extend([(p0, p1, p2), (p0, p2, p3)])
+
+    def prism(poly, z0, z1):
+        poly = [tuple(map(float, p)) for p in poly]
+        n = len(poly)
+        for i in range(n):
+            a, b = poly[i], poly[(i + 1) % n]
+            quad((a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], z1), (a[0], a[1], z1))
+        for i in range(1, n - 1):
+            tris.append(((poly[0][0], poly[0][1], z1), (poly[i][0], poly[i][1], z1), (poly[i + 1][0], poly[i + 1][1], z1)))
+            tris.append(((poly[0][0], poly[0][1], z0), (poly[i + 1][0], poly[i + 1][1], z0), (poly[i][0], poly[i][1], z0)))
+
+    def box(cx, cy, sx, sy, z0, z1):
+        prism([(cx - sx / 2, cy - sy / 2), (cx + sx / 2, cy - sy / 2), (cx + sx / 2, cy + sy / 2),
+               (cx - sx / 2, cy + sy / 2)], z0, z1)
+
+    raw = course["raw"]
+    for w in raw["walls"]:
+        prism(wall_poly(w["start_in"], w["end_in"], w["thickness_in"]), 0.0, w.get("height_in", 68) * IN)
+    # the tube: an oval shell along y
+    (x0, y0), (x1, y1) = course["tube"]
+    cx, cz = (x0 + x1) / 2, 37 * IN
+    ow, oh, wall = 29 * IN, 36 * IN, 0.035
+    N = 24
+    ring = [(math.cos(2 * math.pi * i / N), math.sin(2 * math.pi * i / N)) for i in range(N)]
+    for i in range(N):
+        (c0, s0), (c1, s1) = ring[i], ring[(i + 1) % N]
+        for rx, rz, inner in ((ow + wall, oh + wall, False), (ow, oh, True)):
+            p = [(cx + rx * c0, y0, cz + rz * s0), (cx + rx * c1, y0, cz + rz * s1),
+                 (cx + rx * c1, y1, cz + rz * s1), (cx + rx * c0, y1, cz + rz * s0)]
+            quad(*(p[::-1] if inner else p))
+        for yy, flip in ((y0, False), (y1, True)):
+            o0, o1 = (cx + (ow + wall) * c0, yy, cz + (oh + wall) * s0), (cx + (ow + wall) * c1, yy, cz + (oh + wall) * s1)
+            n0, n1 = (cx + ow * c0, yy, cz + oh * s0), (cx + ow * c1, yy, cz + oh * s1)
+            quad(*((n0, n1, o1, o0) if flip else (o0, o1, n1, n0)))
+    # boulders: half domes
+    for b in raw["boulders_in"]:
+        c, r, h = to_m(b["center"]), b["diameter"] / 2 * IN, b.get("height", b["diameter"] / 2) * IN
+        lat = [i * (math.pi / 2) / 4 for i in range(5)]
+        for i in range(4):
+            for j in range(12):
+                a0, a1 = 2 * math.pi * j / 12, 2 * math.pi * (j + 1) / 12
+                def pt(phi, th):
+                    return (c[0] + r * math.cos(phi) * math.cos(th), c[1] + r * math.cos(phi) * math.sin(th),
+                            h * math.sin(phi))
+                quad(pt(lat[i], a0), pt(lat[i], a1), pt(lat[i + 1], a1), pt(lat[i + 1], a0))
+    # landing pad (outer ring, raised a hair) and the launch mark
+    pc, rings = course["pad"]
+    prism([(pc[0] + rings[0] * math.cos(2 * math.pi * i / 32), pc[1] + rings[0] * math.sin(2 * math.pi * i / 32))
+           for i in range(32)], 0.0, 0.01)
+    lmk = course["launch"]
+    box(lmk[0], lmk[1], 0.16, 0.025, 0.0, 0.01)
+    box(lmk[0], lmk[1], 0.025, 0.16, 0.0, 0.01)
+    # the net: floor outline and corner posts, for scale
+    h = course["half"]
+    for sx, sy, w_, d_ in ((0, -h, 2 * h, 0.03), (0, h, 2 * h, 0.03), (-h, 0, 0.03, 2 * h), (h, 0, 0.03, 2 * h)):
+        box(sx, sy, w_, d_, 0.0, 0.01)
+    for sx in (-h, h):
+        for sy in (-h, h):
+            box(sx, sy, 0.04, 0.04, 0.0, raw["net_in"]["height"] * IN)
+    # the window route as a thin square tube at its flight height
+    wp = np.array(meta["waypoints_enu"])
+    pts = [wp[0]]
+    for p in wp[1:]:
+        if np.linalg.norm(p - pts[-1]) >= 0.25:
+            pts.append(p)
+    pts.append(wp[-1])
+    for p, q in zip(pts, pts[1:]):
+        d = np.array(q[:2]) - np.array(p[:2])
+        L = np.linalg.norm(d)
+        if L < 1e-6:
+            continue
+        nrm = np.array([-d[1], d[0]]) / L * 0.02
+        corners = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
+        ps = [(p[0] + nrm[0] * u, p[1] + nrm[1] * u, p[2] + 0.02 * v) for u, v in corners]
+        qs = [(q[0] + nrm[0] * u, q[1] + nrm[1] * u, q[2] + 0.02 * v) for u, v in corners]
+        for i in range(4):
+            j = (i + 1) % 4
+            quad(ps[i], ps[j], qs[j], qs[i])
+    with open(out, "wb") as fh:
+        fh.write(b"Navless: DroneHacks course, new maze (Nov 7), skybeta-19 window route".ljust(80, b" "))
+        fh.write(struct.pack("<I", len(tris)))
+        for a, b2, c in tris:
+            nv = np.cross(np.subtract(b2, a), np.subtract(c, a))
+            ln = np.linalg.norm(nv)
+            nv = nv / ln if ln > 0 else nv
+            fh.write(struct.pack("<12fH", *nv, *a, *b2, *c, 0))
+    print(f"{os.path.relpath(out, REPO)}: {len(tris)} triangles, {os.path.getsize(out) / 1e3:.0f} kB")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("which", nargs="*", default=["hero", "asbuilt", "tube"])
+    ap.add_argument("which", nargs="*", default=["hero", "maze", "asbuilt", "tube", "flights", "stl"])
     ap.add_argument("--lap", default=os.path.join(HERE, "data", "gate_lap"), help="gate lap dir (log.csv, summary.json)")
     ap.add_argument("--label", default="", help="code version to print under the hero lap")
     ap.add_argument("--out", default=HERE)
@@ -575,6 +909,12 @@ def main():
         plan_vs_asbuilt(os.path.join(a.out, "plan_vs_asbuilt.gif"))
     if "tube" in a.which:
         tube_tof(os.path.join(a.out, "tube_tof.gif"))
+    if "maze" in a.which:
+        maze_change(os.path.join(a.out, "maze_change.gif"))
+    if "flights" in a.which:
+        flight_recorder(os.path.join(a.out, "flight_recorder_nov8.png"))
+    if "stl" in a.which:
+        course_stl(os.path.join(a.out, "course_newmaze.stl"))
 
 
 if __name__ == "__main__":
