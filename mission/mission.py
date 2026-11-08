@@ -344,11 +344,14 @@ def run(route, a):
                 return self.land(f"impossible position jump {self.prev_pos} -> {here}")
             self.prev_pos = here
             if s == "STREAM":  # PX4 needs a setpoint stream before it accepts Offboard
-                self.publish_sp(route[0])
+                if not self.armed():
+                    self.pos_zero = self.raw_pos()
+                self.publish_sp((0.0, 0.0, 0.0) if not self.armed() else route[0])
                 if self.ticks == int(RATE_HZ):
                     self.cmd(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1, 6)
                     self.cmd(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1)
                 if self.armed() and self.offboard():
+                    self.prev_pos = self.pos()
                     self.state = "TAKEOFF"
                 elif self.ticks > 4 * RATE_HZ:
                     self.cmd(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 0)

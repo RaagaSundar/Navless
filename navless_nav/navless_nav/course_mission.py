@@ -504,7 +504,12 @@ class CourseMission(Node):
         except (TypeError, ValueError):
             xyz = ()
         ok = len(xyz) == 3 and all(math.isfinite(v) for v in xyz)
-        self.px4_pos = xyz if ok else None
+        self.px4_pos = (
+            (xyz[0] - self.odom_zero_offset[0],
+             xyz[1] - self.odom_zero_offset[1],
+             xyz[2] - self.odom_zero_offset[2])
+            if ok else None
+        )
         self.px4_at = self.now_s()
         if ok:
             # Keep the last valid height: one message without a position
@@ -530,9 +535,9 @@ class CourseMission(Node):
         msg = PoseStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = 'odom'
-        msg.pose.position.x = float(x)
-        msg.pose.position.y = float(y)
-        msg.pose.position.z = float(z)
+        msg.pose.position.x = float(x + self.odom_zero_offset[0])
+        msg.pose.position.y = float(y + self.odom_zero_offset[1])
+        msg.pose.position.z = float(z + self.odom_zero_offset[2])
         msg.pose.orientation.w = 0.0
         self.setpoint_pub.publish(msg)
 
@@ -570,11 +575,21 @@ class CourseMission(Node):
             self.prearm_passed = False
             self.prearm_anchor_pos = None
 
+    def zero_launch_origin(self):
+        """Anchor odom_zero_offset so where the drone is when armed counts as the launch mark (0, 0, 0)."""
+        if self.going_home or self.raw_position is None:
+            return
+        self.odom_zero_offset = self.raw_position
+        self.position = (0.0, 0.0, 0.0)
+        self.odom_zeroed = True
+
     def heights_agree(self):
         """Pre-arm check: PX4's height matches odom z, VIO is stationary, and launch offset is zeroed."""
         if self.prearm_tol <= 0.0:
             self.info_once('prearm_off', 'pre-arm height check is OFF '
                            '(prearm_height_tol_m 0).')
+            if not self.going_home and not self.armed:
+                self.zero_launch_origin()
             return True
         now = self.now_s()
         if not self.vio_ok():
@@ -592,7 +607,7 @@ class CourseMission(Node):
             return False
         fresh = (self.px4_z is not None
                  and now - self.px4_z_at <= PREARM_PX4_TIMEOUT_S)
-        dz = abs(self.px4_z - self.position[2]) if fresh else None
+        dz = abs(self.px4_z - raw_pos[2]) if fresh else None
         # Hysteresis: pass at prearm_height_tol_m held for prearm_settle_s;
         # once passed, only a clear disagreement (PREARM_HYSTERESIS_M more)
         # or no PX4 height for PREARM_PX4_TIMEOUT_S revokes it. Otherwise
@@ -609,7 +624,7 @@ class CourseMission(Node):
                 self.prearm_warned_at = now
                 seen = ('no valid local position from PX4' if dz is None else
                         f'PX4 height {self.px4_z:.2f} m vs odom '
-                        f'{self.position[2]:.2f} m: {dz:.2f} m apart')
+                        f'{raw_pos[2]:.2f} m: {dz:.2f} m apart')
                 self.get_logger().warn(
                     f'pre-arm height check: {seen} (limit '
                     f'{limit:.2f} m). Not streaming setpoints, so '
@@ -621,11 +636,8 @@ class CourseMission(Node):
             self.heights_agree_since = now
         if now - self.heights_agree_since < self.prearm_settle:
             return False
-        if not self.odom_zeroed and not self.going_home and raw_pos is not None:
-            if 0.0 < math.hypot(raw_pos[0], raw_pos[1]) <= 0.20 and abs(raw_pos[2]) <= 0.20:
-                self.odom_zero_offset = raw_pos
-                self.position = (0.0, 0.0, 0.0)
-            self.odom_zeroed = True
+        if not self.going_home and not self.armed:
+            self.zero_launch_origin()
         if not self.prearm_passed:
             self.prearm_passed = True
             self.prearm_warned_at = None
@@ -689,6 +701,8 @@ class CourseMission(Node):
             self.goto('REFUSED', self.position)
             self._state_refused()       # no tick without a setpoint
             return
+        if not self.going_home:
+            self.zero_launch_origin()
         self.goto('TAKEOFF', self.takeoff_target())
         self._state_takeoff()       # climb on this tick, not the next one
 
@@ -736,7 +750,7 @@ class CourseMission(Node):
         return (self.position[2] >= need
                 or (self.px4_z is not None
                     and self.now_s() - self.px4_z_at <= PREARM_PX4_TIMEOUT_S
-                    and self.px4_z >= need))
+                    and (self.px4_z - self.odom_zero_offset[2]) >= need))
 
     def start_route(self):
         if not self.route:

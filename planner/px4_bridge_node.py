@@ -252,6 +252,23 @@ class PX4TrajectoryTrackerCore:
         self.telemetry.vslam_vo_state = int(vo_state)
         self.telemetry.estimator_healthy = int(vo_state) == 1
 
+    def zero_tare_at_launch(self) -> None:
+        """Zero-tare the estimator so where the drone is when armed counts as `launch_origin_enu`."""
+        if self.router.primary_landed or self.pad_landing_completed or self.px4_leg != "course":
+            return
+        rx, ry, rz = self.raw_pos_ned
+        if not (math.isfinite(rx) and math.isfinite(ry) and math.isfinite(rz)):
+            return
+        expected_z_ned = 0.0 if abs(self.launch_origin_enu[2]) > 1e-4 else -self.start_height_m
+        self.nav_zero_offset_ned = (rx, ry, rz - expected_z_ned)
+        self.telemetry.pos_ned = (0.0, 0.0, expected_z_ned)
+        self.nav_zeroed = True
+        self.router.recorded_start_pos_enu = (
+            float(self.launch_origin_enu[0]),
+            float(self.launch_origin_enu[1]),
+            float(self.config.checkpoints.start_pad[2]),
+        )
+
     def check_prearm_navigation_ready(self, now_s: float) -> Tuple[bool, str]:
         """Verify 2-second pre-arm navigation stability, PX4/VIO height agreement, and zero-tare at launch."""
         if self.telemetry.last_local_pos_time_s is None:
@@ -303,18 +320,9 @@ class PX4TrajectoryTrackerCore:
         if (now_s - self.prearm_stable_since_s) < self.prearm_settle_s:
             return False, f"prearm_settling ({now_s - self.prearm_stable_since_s:.1f}/{self.prearm_settle_s:.1f}s)"
 
-        # Zero-tare the initial launch pad offset once settled before first takeoff
-        if not self.nav_zeroed and not self.router.primary_landed:
-            rx, ry, rz = self.raw_pos_ned
-            if math.hypot(rx, ry) <= 0.45 and abs(rz) <= 0.35:
-                expected_z_ned = 0.0 if abs(self.launch_origin_enu[2]) > 1e-4 else -self.start_height_m
-                self.nav_zero_offset_ned = (rx, ry, rz - expected_z_ned)
-                self.telemetry.pos_ned = (
-                    rx - self.nav_zero_offset_ned[0],
-                    ry - self.nav_zero_offset_ned[1],
-                    rz - self.nav_zero_offset_ned[2],
-                )
-            self.nav_zeroed = True
+        # Continuously zero-tare while disarmed on the initial leg so the position when armed is launch_origin_enu
+        if self.telemetry.arming_state != ARMING_STATE_ARMED and not self.router.primary_landed:
+            self.zero_tare_at_launch()
 
         self.prearm_settled = True
         return True, "prearm_ready_and_zeroed"
@@ -460,9 +468,12 @@ class PX4TrajectoryTrackerCore:
         *,
         landed: Optional[bool] = None,
     ) -> None:
+        was_armed = self.telemetry.arming_state == ARMING_STATE_ARMED
         self.telemetry.last_status_time_s = now_s
         self.telemetry.arming_state = int(arming_state)
         self.telemetry.nav_state = int(nav_state)
+        if not was_armed and self.telemetry.arming_state == ARMING_STATE_ARMED:
+            self.zero_tare_at_launch()
         if self.telemetry.arming_state != ARMING_STATE_ARMED:
             self.direct_takeoff_complete = False
             self.telemetry.position_jump_detected = False
@@ -1054,6 +1065,9 @@ class PX4TrajectoryTrackerCore:
                 self.router.stage = CourseStage.STAGE_6_FLY_HOME
                 self.router.step(now_s, pos_enu, force_replan=True)
             else:
+                self.zero_tare_at_launch()
+                pos_enu, current_yaw_enu = self.current_course_pose_enu(now_s)
+                pos_odom_cur = self._course_to_odom(pos_enu)
                 self.skybeta_state = "TAKEOFF"
 
         if self.skybeta_state == "TAKEOFF":
@@ -1313,6 +1327,10 @@ class PX4TrajectoryTrackerCore:
             state = "PRIME"
 
         if state in ("PRIME", "ARMING"):
+            if not armed and self.px4_leg == "course":
+                self.zero_tare_at_launch()
+                pos_enu, yaw_enu = self.current_course_pose_enu(now_s)
+                self.px4_takeoff_enu = (float(pos_enu[0]), float(pos_enu[1]), float(pos_enu[2]))
             hold = self._px4_hold(now_s, self.px4_takeoff_enu, self.commanded_yaw_enu_rad or yaw_enu)
             if state == "PRIME":
                 if armed or not healthy or not landed:  # nothing sent yet: just start over
