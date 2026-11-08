@@ -215,9 +215,13 @@ class FlightInterface:
     MASK_VEL = 0b010111000111    # vx vy vz + yaw rate
 
     def __init__(self, px4, p0, yaw0, pose_topic, twist_topic, min_alt=0.3, max_alt=2.5,
-                 max_speed=1.0, twist_timeout=1.0, px4_frame="world", rules=True, settle_tol=0.15):
+                 max_speed=1.0, twist_timeout=1.0, px4_frame="world", rules=True, settle_tol=0.15,
+                 px4_z_bias=0.0):
         self.px4, self.p0, self.yaw0 = px4, np.asarray(p0, float), yaw0
         self.px4_frame = px4_frame
+        # A PX4 whose height reads this much high (skybeta-19 on the floor, 2026-11-07: ~0.19 m): it reports
+        # true + bias, and holds its own reading at a setpoint, so it flies bias below what it is sent.
+        self.px4_z_bias = float(px4_z_bias)
         self.min_alt, self.max_alt, self.max_speed = min_alt, max_alt, max_speed
         self.twist_timeout = twist_timeout
         self.mode = "hold"
@@ -311,7 +315,7 @@ class FlightInterface:
 
     def local_world(self):
         loc = self.px4.local
-        return None if loc is None else self.px4_to_world(loc)
+        return None if loc is None else self.px4_to_world(loc) + np.array([0.0, 0.0, self.px4_z_bias])
 
     def commanded(self):
         """(mode, world ENU position or velocity) that this tick sends."""
@@ -327,6 +331,8 @@ class FlightInterface:
     def tick(self):
         kind, v = self.commanded()
         m, px4 = self.px4.m, self.px4
+        if kind == "position":          # the biased PX4 reads its setpoint in its own frame
+            v = np.asarray(v, float) - np.array([0.0, 0.0, self.px4_z_bias])
         ned = self.world_to_px4(v, velocity=(kind == "velocity"))
         if kind == "position":
             yaw = self.yaw_ned if self.mode == "position" else self.hold_yaw_ned
@@ -578,6 +584,8 @@ def main():
                          "vision from sensor_bridge.py) for DH_PX4_PROFILE=drone. Default follows DH_PX4_PROFILE")
     ap.add_argument("--noise", type=float, default=0.0, help="odometry position noise sigma, m")
     ap.add_argument("--odom-delay", type=float, default=0.05, help="odometry latency, s (cuVSLAM output)")
+    ap.add_argument("--px4-z-bias", type=float, default=0.0,
+                    help="PX4's height reads this much above truth, m (skybeta-19 on the floor: ~0.19)")
     ap.add_argument("--vio-dropout", default="", metavar="T0:T1",
                     help="report vo_state=2 between these seconds after takeover")
     ap.add_argument("--timeout", type=float, default=240.0, help="give up after this much sim time, s")
@@ -670,7 +678,7 @@ def main():
     node = course_mission.CourseMission()
     fi = FlightInterface(px4, p0, yaw0, course_mission.POSE_TOPIC, course_mission.TWIST_TOPIC,
                          a.min_alt, a.max_alt, a.max_speed, px4_frame=a.px4_frame, rules=(a.pilot == "modes"),
-                         settle_tol=a.settle_tol)
+                         settle_tol=a.settle_tol, px4_z_bias=a.px4_z_bias)
     print(f"PX4 local frame: {a.px4_frame}", flush=True)
     dropout = tuple(float(x) for x in a.vio_dropout.split(":")) if a.vio_dropout else None
     pilot = Pilot(px4, a.pilot, a.switch_delay, a.arm_in_position)
@@ -885,6 +893,7 @@ def main():
         "overrides": {k: v for k, v in OVERRIDES.items() if k != "route_file"},
         "odometry": {"noise_m": a.noise, "delay_s": a.odom_delay, "vio_dropout": a.vio_dropout or None},
         "px4_frame": a.px4_frame,
+        "px4_z_bias": a.px4_z_bias,
         "px4_profile": os.environ.get("DH_PX4_PROFILE"),
         "liftoff_after_arm_s": None if liftoff is None else round(float(liftoff), 2),
         "touchdown_time_from_arm_s": None if td is None else round(float(T[td]), 2),

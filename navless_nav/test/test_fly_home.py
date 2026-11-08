@@ -26,6 +26,10 @@ PX4_HOOK = [None]   # called as PX4_HOOK[0](node) each tick (PX4 heading tests)
 # Where the drone really is, off where it was flown to: ODOM_OFFSET[0](t)
 # -> (dx, dy, dz) added to the odometry (a liftoff slide PX4 is slow to undo).
 ODOM_OFFSET = [None]
+# PX4 flies its own height: it holds (true z + Z_BIAS) at a pose setpoint's z,
+# so the drone ends up Z_BIAS below it (as on skybeta-19). Off: the drone flies
+# to the setpoint's z directly, as every older test assumes.
+PX4_OWN_Z = [False]
 
 
 def reset_heading():
@@ -33,6 +37,7 @@ def reset_heading():
     YAW_DRIFT[0] = 0.0
     PX4_HOOK[0] = None
     ODOM_OFFSET[0] = None
+    PX4_OWN_Z[0] = False
 
 
 def wrap(a):
@@ -140,7 +145,8 @@ def fly(node, px4, pos, until, max_s=600.0, dt=0.1):
             topic, m = SENT[-1]
             rate = 0.0
             if topic == course_mission.POSE_TOPIC:
-                goal = (m.pose.position.x, m.pose.position.y, m.pose.position.z)
+                goal = (m.pose.position.x, m.pose.position.y,
+                        m.pose.position.z - (Z_BIAS[0] if PX4_OWN_Z[0] else 0.0))
                 d = math.dist(pos, goal)
                 f = min(1.0, 1.5 * dt / d) if d > 0 else 0.0     # 1.5 m/s cap
                 pos[:] = [a + (b - a) * f for a, b in zip(pos, goal)]
