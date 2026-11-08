@@ -1,4 +1,5 @@
-"""tools/export_route.py: the plan's route still exports unchanged, and the as-built route is the one 19 flies.
+"""tools/export_route.py: the plan's routes still export unchanged, and the as-built routes are the ones 19 flies
+(the window route; the Gate B route is its backup, navless_course_gate_b.launch.py on drone19/flight).
 
   python3 -m pytest gazebo_sim/dh/test_route_export.py
 """
@@ -6,6 +7,8 @@ import json
 import os
 import subprocess
 import sys
+
+import pytest
 
 GZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COURSE = os.path.join(GZ, "course")
@@ -21,6 +24,10 @@ def export(tmp_path, *args):
 def test_plan_route_exports_unchanged(tmp_path):
     # The detours default to the plan's route: no --course, no detour flags, same file byte for byte.
     assert export(tmp_path) == json.load(open(os.path.join(COURSE, "route_centreline_window.json")))
+
+
+def test_plan_gate_b_route_exports_unchanged(tmp_path):
+    assert export(tmp_path, "--route", "gate_b") == json.load(open(os.path.join(COURSE, "route_centreline_gate_b.json")))
 
 
 def test_another_course_needs_its_own_collision_model(tmp_path):
@@ -41,12 +48,24 @@ def test_asbuilt_route_records_how_it_was_made():
     assert 3.048 - 0.4 < top <= 3.048 - 0.25
 
 
-def test_asbuilt_route_keeps_the_rangefinder_off_the_boulders():
+def test_asbuilt_gate_b_route_records_how_it_was_made():
+    r = json.load(open(os.path.join(COURSE, "route_centreline_gate_b_asbuilt.json")))
+    assert r["route_type"] == "GATE_B_CENTRELINE"
+    assert r["course_file"] == "gazebo_sim/course/course_asbuilt.json"
+    assert r["gate_b_turns_in"] == [59.0, 151.5, 118.0, 86.5]
+    assert (r["pad_from_south_in"], r["maze_top_north_m"]) == (26.0, 0.04)
+    assert r["min_clearance_m_nose_north"] >= 0.08
+    top = max(abs(c) for p in r["waypoints_enu"] for c in p[:2])          # same maze crossings as the window route
+    assert 3.048 - 0.4 < top <= 3.048 - 0.25
+
+
+@pytest.mark.parametrize("route", ["route_centreline_window_asbuilt.json", "route_centreline_gate_b_asbuilt.json"])
+def test_asbuilt_route_keeps_the_rangefinder_off_the_boulders(route):
     # PX4 takes its height from the downward laser (~1 deg beam, 2.7 cm left of the body origin; nose
     # north, so 2.7 cm west). Over a 0.53 m boulder it reads that much short: keep its footprint >= 20 cm
     # outside every boulder (map: boulders_in, centre and diameter in inches).
     d = json.load(open(os.path.join(COURSE, "course_asbuilt.json")))
-    r = json.load(open(os.path.join(COURSE, "route_centreline_window_asbuilt.json")))
+    r = json.load(open(os.path.join(COURSE, route)))
     for b in d["boulders_in"]:
         bx, by = (c * 0.0254 - 3.048 for c in b["center"])
         radius = b["diameter"] / 2 * 0.0254
