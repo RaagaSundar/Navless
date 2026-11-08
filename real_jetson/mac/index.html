@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Skybeta 19 · Aircraft telemetry</title>
+<style>
+:root{color-scheme:dark;--bg:#10171a;--panel:#172023;--edge:#344044;--ink:#f2f5ee;--sub:#b2c2bd;--green:#8be2bb;--amber:#f1bc74}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px 'Inter',system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:48px 24px}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--edge);padding-bottom:24px;gap:12px}h1{font-size:clamp(30px,5vw,48px);letter-spacing:-.05em;margin:0}h2{font-size:18px;margin:0}small,dt,figcaption{color:var(--sub)}.pill{padding:7px 14px;border-radius:22px;background:#2c2520;color:var(--amber);white-space:nowrap}.on{color:var(--green);background:#20342b}#detail{min-height:22px;color:var(--sub)}section{background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:22px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin:20px 0}dl,dd,figure{margin:0}dd{font-size:21px;margin-top:6px}dt{font-size:13px}.m{font-family:'IBM Plex Mono',ui-monospace,monospace}canvas{display:block;width:100%;height:280px;margin:12px 0}figcaption{font-size:14px}.legend{color:var(--green)}.ekf{color:#a6bdfa}footer{color:var(--sub);margin-top:18px;font-size:14px}@media(max-width:600px){main{padding:22px 12px}section{padding:15px}}
+</style>
+<main><header><div><small>Physical aircraft · ROS domain 19</small><h1>Skybeta 19</h1></div><span id="link" class="pill">Offline</span></header>
+<p id="detail" role="status">Waiting for telemetry</p>
+<div id="cards" class="cards"></div>
+<section><h2>Local position estimates</h2>
+<figure><canvas id="plot" role="img" aria-label="Top view of recent local position estimates in metres"></canvas>
+<figcaption><span class="legend">● cuVSLAM odom</span> &nbsp; <span class="ekf">● PX4 local ENU</span> &nbsp; · &nbsp; X right / Y up · metres</figcaption></figure></section>
+<footer id="pose" class="m"></footer></main>
+<script>
+const el=id=>document.getElementById(id);
+const fields=[['link','PX4 link'],['armed','Arming'],['mode','PX4 mode'],['offboard','Offboard'],['landed','Ground state'],['tracking','Visual tracking']];
+const labels={link:['Down','Up'],armed:['Disarmed','Armed'],offboard:['Inactive','Active'],landed:['Airborne','Landed']};
+const values={};
+for(const [key,name] of fields){let section=document.createElement('section'),dl=document.createElement('dl'),dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=name;dd.textContent='Unknown';dl.append(dt,dd);section.append(dl);el('cards').append(section);values[key]=dd}
+let trails=[[],[]],lastSeq=null;
+function draw(){
+ const c=el('plot'),r=c.getBoundingClientRect(),scale=window.devicePixelRatio||1;
+ c.width=Math.round(r.width*scale);c.height=Math.round(r.height*scale);
+ const g=c.getContext('2d');g.scale(scale,scale);const w=r.width,h=r.height;
+ const points=trails.flat();let extent=Math.max(1,...points.flatMap(p=>p.slice(0,2).map(Math.abs)));
+ const bound=Math.ceil(extent*1.15),unit=(h-40)/(2*bound),x=v=>w/2+v*unit,y=v=>h/2-v*unit;
+ g.strokeStyle='#344044';g.beginPath();g.moveTo(0,y(0));g.lineTo(w,y(0));g.moveTo(x(0),0);g.lineTo(x(0),h);g.stroke();g.fillStyle='#a4b3ae';g.font='12px monospace';
+ g.fillText('Y +'+bound+' m',x(0)+6,15);g.fillText('X +'+bound+' m',x(bound)-45,y(0)+17);
+ if(!points.length){g.fillText('Waiting for fresh position',12,h-12);return}
+ trails.forEach((path,j)=>{if(!path.length)return;g.strokeStyle=g.fillStyle=['#8be2bb','#a6bdfa'][j];g.lineWidth=2;g.beginPath();path.forEach(([a,b],i)=>i?g.lineTo(x(a),y(b)):g.moveTo(x(a),y(b)));g.stroke();const p=path[path.length-1];g.beginPath();g.arc(x(p[0]),y(p[1]),4,0,2*Math.PI);g.fill()})
+}
+function render(s){
+ const live=s.status==='live';el('link').textContent=live?'Receiving':'Offline';el('link').className='pill'+(live?' on':'');
+ el('detail').textContent=live?'Aircraft sample '+s.sequence+' · '+new Date(s.stamp*1000).toLocaleTimeString()+' · '+(s.rate==null?'Odometry rate unknown':s.rate.toFixed(1)+' Hz odometry'):s.reason;
+ for(const [key] of fields){const v=s[key];values[key].textContent=v==null?'Unknown':typeof v==='boolean'?labels[key][Number(v)]:String(v)}
+ if(!live||s.sequence<lastSeq)trails=[[],[]];
+ [s.pose,s.px4].forEach((p,i)=>{if(!p){trails[i]=[];return}if(s.sequence!==lastSeq){trails[i].push(p);if(trails[i].length>120)trails[i].shift()}});
+ lastSeq=live?s.sequence:null;el('pose').textContent=[['cuVSLAM',s.pose],['PX4',s.px4]].map(([n,p])=>n+' XYZ '+(p?p.map(x=>x.toFixed(2)).join(' / ')+' m':'unknown')).join('   ·   ');draw()
+}
+async function poll(){try{const res=await fetch('/api/state',{cache:'no-store',signal:AbortSignal.timeout(2000)});if(!res.ok)throw Error();render(await res.json())}catch{render({status:'offline',reason:'Mac telemetry server unavailable'})}setTimeout(poll,750)}
+window.addEventListener('resize',draw);poll()
+</script></html>

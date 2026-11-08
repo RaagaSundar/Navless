@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "run_id": "20261108T054322Z-mac-package",
+  "name": "Skybeta 19 Mac package check",
+  "kind": "bench",
+  "baseline_id": null,
+  "changes": [
+    {
+      "field": "package",
+      "before": "No combined Mac-staged payload in this folder",
+      "after": "Pinned route and hardware course executor, physical handover checks and offline Mac console",
+      "evidence": [
+        "settings.json",
+        "payload-sha256.json",
+        "tests.txt",
+        "dashboard.json"
+      ],
+      "provenance": "human annotation; inspect evidence"
+    }
+  ],
+  "notes": [
+    "Evidence is local software verification, including the latched stop after handover and a loopback browser check."
+  ],
+  "confounds": [
+    "The Mac test uses ROS stubs, synthetic clock and source messages. Aircraft devices, DDS discovery, network timing, calibration and physical clearance were not measured."
+  ],
+  "evidence": [
+    "settings.json"
+  ],
+  "source_sha256": {
+    "settings.json": "e64413dd84449fa54e7453dcb052cf1ee83d754d61c1497d9fdf6c43ef212546"
+  },
+  "telemetry": {
+    "state": "arm/landed telemetry not archived",
+    "observed_flight": false,
+    "source": null,
+    "sample_count": 0
+  },
+  "snapshot": {},
+  "comparison_state": "recorded differences with annotations"
+}

@@ -1,0 +1,21 @@
+{
+  "notes": [
+    "Evidence is local software verification, including the latched stop after handover and a loopback browser check."
+  ],
+  "confounds": [
+    "The Mac test uses ROS stubs, synthetic clock and source messages. Aircraft devices, DDS discovery, network timing, calibration and physical clearance were not measured."
+  ],
+  "changes": [
+    {
+      "field": "package",
+      "before": "No combined Mac-staged payload in this folder",
+      "after": "Pinned route and hardware course executor, physical handover checks and offline Mac console",
+      "evidence": [
+        "settings.json",
+        "payload-sha256.json",
+        "tests.txt",
+        "dashboard.json"
+      ]
+    }
+  ]
+}
