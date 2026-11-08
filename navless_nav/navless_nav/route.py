@@ -84,6 +84,21 @@ def load_route(path):
         'route_type', '?')
 
 
+def load_route_headings(path):
+    """Per-waypoint headings (deg clockwise from course north, the heading of the
+    leg that starts at each waypoint) from a route file, or None when it has
+    none (gazebo_sim/tools/add_leg_headings.py writes them)."""
+    with open(path) as f:
+        data = json.load(f)
+    headings = data.get('headings_deg')
+    if headings is None:
+        return None
+    if len(headings) != len(data['waypoints_enu']) or not all(
+            math.isfinite(float(h)) for h in headings):
+        raise ValueError(f'{path}: headings_deg must give one finite heading per waypoint')
+    return [float(h) for h in headings]
+
+
 def _point_along(path, cum, s):
     s = min(max(s, 0.0), cum[-1])
     i = min(bisect.bisect_right(cum, s) - 1, len(path) - 2)

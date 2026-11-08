@@ -87,7 +87,7 @@ from rcl_interfaces.msg import ParameterDescriptor
 from std_msgs.msg import String
 
 from navless_nav.route import (Carrot, clamp_to_net, course_to_odom,
-                               load_route, odom_to_course,
+                               load_route, load_route_headings, odom_to_course,
                                resolve_route_path)
 from navless_nav.tube_guidance import TubeGuidance
 
@@ -173,6 +173,21 @@ PARAMETERS = (
     # Pre-arm: also refuse to stream while PX4's heading and the camera's
     # disagree by more than this (PX4 on the magnetometer), deg; 0 = off.
     ('prearm_heading_tol_deg', 10.0),
+    # Per-leg headings (prototype, 2026-11-08). A route file with
+    # `headings_deg` (gazebo_sim/tools/add_leg_headings.py; the heading of the
+    # leg that starts at each waypoint, deg clockwise from course north) is
+    # flown leg by leg: where the heading changes, the carrot stops at that
+    # waypoint, the drone flies to it, turns on the spot at
+    # heading_turn_rate_dps (slow enough that PX4's lag stays inside the
+    # heading guard), and goes on once the camera's heading is within
+    # heading_turn_tol_deg. A turn not done in heading_turn_timeout_s keeps
+    # the heading the nose has and goes on. Routes without headings_deg, and
+    # route_headings false, hold the takeoff heading as before.
+    ('route_headings', True),
+    ('heading_turn_rate_dps', 15.0),
+    ('heading_turn_arrive_m', 0.10),
+    ('heading_turn_tol_deg', 5.0),
+    ('heading_turn_timeout_s', 20.0),
     ('publish_rate_hz', 10.0),
     # Where we read our own position. Use the same odometry that feeds PX4's
     # vision fusion: cuVSLAM's raw topic through the stock px4_odom_bridge,
@@ -392,6 +407,16 @@ class CourseMission(Node):
         self.prearm_passed = False
         self.prearm_warned_at = None
         self.frame = None          # (launch mark xy, start bearing) once known
+        self.route_headings = str(self.get_parameter('route_headings').value
+                                  ).lower() in ('true', '1')
+        self.turn_rate = math.radians(param('heading_turn_rate_dps'))
+        self.turn_arrive = param('heading_turn_arrive_m')
+        self.turn_tol = math.radians(param('heading_turn_tol_deg'))
+        self.turn_timeout = param('heading_turn_timeout_s')
+        self.route_yaw = None      # per-waypoint heading (route-frame ENU yaw), or None
+        self.turn = None           # the turn on the spot under way, or None
+        self.yaw_target = None     # the leg heading the profile last reached
+        self.turn_checked = 0      # carrot index up to which turns were looked for
         self.route = self.load_route(
             str(self.get_parameter('route_file').value),
             param('start_bearing_deg'), param('start_height_m'))
@@ -471,6 +496,20 @@ class CourseMission(Node):
             f'route {kind} from {path}: {len(odom)} waypoints, launch mark '
             f'{launch}, start bearing {bearing_deg:.1f} deg, ends at odom '
             f'({odom[-1][0]:.2f}, {odom[-1][1]:.2f}, {odom[-1][2]:.2f})')
+        try:
+            headings = load_route_headings(path) if self.route_headings else None
+        except (OSError, ValueError) as exc:
+            self.get_logger().error(f'route headings ignored ({exc}); holding the takeoff heading.')
+            headings = None
+        if headings is not None:
+            # odom x is the nose at power-up (start_bearing_deg); ENU yaw is
+            # counter-clockwise, bearings clockwise.
+            self.route_yaw = [wrap_pi(-math.radians(h - bearing_deg)) for h in headings]
+            turns = [i for i in range(1, len(headings))
+                     if abs(wrap_pi(self.route_yaw[i] - self.route_yaw[i - 1])) > 1e-6]
+            self.get_logger().info(
+                f'route headings: {len(turns)} turns on the spot, at waypoints '
+                + ', '.join(f'{i} ({headings[i - 1]:.0f} -> {headings[i]:.0f} deg)' for i in turns))
         return odom
 
     # -- inputs ----------------------------------------------------------
@@ -901,6 +940,7 @@ class CourseMission(Node):
                 # origin is the launch mark where the walls put it.
                 x, y, _ = self.corr_to_route(self.position)
                 self.route = [(x, y, self.home_z), (0.0, 0.0, self.home_z)]
+                self.route_yaw = None       # the hop holds its takeoff heading
                 self.going_home = True
                 self.get_logger().info(
                     'touched down on the pad and disarmed. fly_home: the '
@@ -1036,6 +1076,9 @@ class CourseMission(Node):
             self.goto('HOLD', self.target)
             return
         self.carrot = carrot
+        self.turn = None
+        self.turn_checked = carrot.index
+        self.yaw_target = self.hold_yaw
         self.blind_since = None     # a fly_home leg starts with a clean slate
         self.blind_carrying = False
         self.last_tick = self.now_s()
@@ -1071,7 +1114,14 @@ class CourseMission(Node):
         if vio_ok:
             self.blind_since = None
             self.set_carrying(False, 'VIO back')
-            point = self.carrot.step(pos, dt)
+            if self.turn is not None:
+                point = self.turn_step(pos, now, dt)
+            else:
+                point = self.carrot.step(pos, dt)
+                j = self.next_turn()
+                if j is not None:
+                    self.begin_turn(j, now)
+                    point = self.turn['point']
             ref = self.position     # where the drone is, in the flown (odom) frame
         else:
             # With no trustworthy position, do not move the target: PX4
@@ -1130,6 +1180,63 @@ class CourseMission(Node):
                 f'({math.dist(self.position, point):.2f} m off); holding. '
                 f'Check `clamped` in {STATE_TOPIC} and VIO.')
             self.goto('HOLD', self.position)
+
+    # -- per-leg headings (route_headings) ---------------------------------
+    def next_turn(self):
+        """The first waypoint the carrot passed since the last look whose leg
+        heading differs from the one held, or None (no route headings or no
+        held heading)."""
+        idx = self.carrot.index
+        lo, self.turn_checked = self.turn_checked, max(self.turn_checked, idx)
+        if self.route_yaw is None or self.yaw_target is None or self.hold_yaw is None:
+            return None
+        for j in range(lo + 1, idx + 1):
+            if abs(wrap_pi(self.route_yaw[j] - self.yaw_target)) > self.turn_tol:
+                return j
+        return None
+
+    def begin_turn(self, j, now):
+        self.turn = {'index': j, 'point': self.route[j], 'target': self.route_yaw[j],
+                     'since': now, 'arrived': False}
+        self.get_logger().info(
+            f'turn on the spot at waypoint {j}: stopping there, then heading '
+            f'{math.degrees(self.yaw_target):.0f} -> {math.degrees(self.route_yaw[j]):.0f} deg '
+            '(route frame, ENU).')
+
+    def turn_step(self, pos, now, dt):
+        """Hold the turn point; once there, ramp the held heading to the leg's
+        at heading_turn_rate_dps; done when the camera's heading is within
+        heading_turn_tol_deg of it (in odom: the target turned by D's dyaw).
+        Returns the target (route frame)."""
+        t = self.turn
+        self.progress_at = (now, self.carrot.index, t['point'])    # turning is progress
+        if now - t['since'] > self.turn_timeout:
+            self.get_logger().warn(
+                f'turn at waypoint {t["index"]} not done in {self.turn_timeout:.0f} s: '
+                'keeping the heading the nose has and going on.')
+            if self.yaw is not None and self.hold_yaw is not None:
+                self.hold_yaw = wrap_pi(self.yaw - self.corr[2])
+            self.yaw_target = t['target']       # this leg's turn is spent either way
+            self.turn = None
+            return t['point']
+        if not t['arrived']:
+            if math.dist(pos[:2], t['point'][:2]) > self.turn_arrive:
+                return t['point']
+            t['arrived'] = True
+        if self.heading_suspended or self.hold_yaw is None:
+            return t['point']   # the heading guard owns the heading; the timeout ends a long wait
+        err = wrap_pi(t['target'] - self.hold_yaw)
+        step = self.turn_rate * dt
+        self.hold_yaw = (t['target'] if abs(err) <= step
+                         else wrap_pi(self.hold_yaw + math.copysign(step, err)))
+        if (self.hold_yaw == t['target'] and self.yaw is not None
+                and abs(wrap_pi(t['target'] + self.corr[2] - self.yaw)) <= self.turn_tol):
+            self.get_logger().info(
+                f'turned to {math.degrees(t["target"]):.0f} deg at waypoint {t["index"]} '
+                f'in {now - t["since"]:.1f} s; going on.')
+            self.yaw_target = t['target']
+            self.turn = None
+        return t['point']
 
     def in_tube(self, position, point):
         """Drone and target both inside the tube's footprint, at flying
