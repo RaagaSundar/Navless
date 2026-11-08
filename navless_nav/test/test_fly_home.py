@@ -7,7 +7,11 @@ import json
 import math
 import os
 import sys
+import tempfile
 import types
+
+# course_mission's flight recorder: keep test runs out of ~/team_ws/flight_logs
+os.environ.setdefault('NAVLESS_FLIGHT_LOG_DIR', os.path.join(tempfile.gettempdir(), 'navless_test_flight_logs'))
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

@@ -62,7 +62,7 @@ def start(feed=None, **overrides):
                 node.odom_correction_cb(corr_msg(*d))
         h.PX4_HOOK[0] = hook
     h.OVERRIDES.clear()
-    h.OVERRIDES.update(route_file='route_gate_b.json', cruise_speed_mps=1.0, **overrides)
+    h.OVERRIDES.update(route_file='route_gate_b.json', cruise_speed_mps=1.0, heading_mode='hold', **overrides)
     node = cm.CourseMission()
     px4 = {'armed': False, 'offboard_active': False, 'landed': True}
     pos = [0.0, 0.0, 0.0]
